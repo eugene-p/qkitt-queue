@@ -1,0 +1,178 @@
+import {
+    createTypedEmit,
+    type EventCallback,
+    type EventMap,
+    type MergeEventMaps,
+} from '../../events'
+import type { WorkerFn } from '../../worker/types'
+import { forwardQueue, type PreserveQueueExtras } from '../core/forward.util'
+import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
+import type { Queue, QueueEvents } from '../core/queue'
+
+export type { WorkerFn }
+
+export type WorkerEvents<T, R = unknown> = {
+    /** Fired just before the worker runs an item. */
+    'worker:started': { item: T }
+    /** Fired when the worker resolves successfully. */
+    'worker:completed': { item: T; result: R }
+    /** Fired when the worker throws or rejects. */
+    'worker:failed': { item: T; error: unknown }
+    /** Fired when nothing is in-flight and the queue is empty. */
+    'worker:idle': undefined
+}
+
+export type WithWorkerOptions = {
+    /** Max items processed at the same time. Defaults to 1. Must be a finite number ≥ 1. */
+    concurrency?: number
+    /** Start pumping immediately. Defaults to true. */
+    autoStart?: boolean
+}
+
+type WorkerQueueEvents<T, R, TEvents extends EventMap> = MergeEventMaps<
+    TEvents,
+    WorkerEvents<T, R>
+>
+
+export type WorkerControls = {
+    /** Begin processing queued items. */
+    start: () => void
+    /** Stop taking new items. In-flight work still finishes. */
+    stop: () => void
+    /** Whether the worker is allowed to take new items. */
+    isRunning: () => boolean
+    /** Whether any items are currently being processed. */
+    isProcessing: () => boolean
+    /** Number of items currently being processed. */
+    activeCount: () => number
+}
+
+export type QueueWithWorker<
+    T,
+    R = unknown,
+    TEvents extends EventMap = WorkerQueueEvents<T, R, QueueEvents<T>>,
+> = Queue<T, TEvents> & WorkerControls
+
+const resolveConcurrency = (value: number | undefined): number => {
+    const concurrency = value ?? 1
+    if (!Number.isFinite(concurrency) || concurrency < 1) {
+        throw new Error('concurrency must be a finite number >= 1')
+    }
+    return Math.floor(concurrency)
+}
+
+/**
+ * Wrap a queue with a worker that dequeues and processes items FIFO-style.
+ * Listens for `queue:enqueued` and pumps work up to `concurrency`.
+ *
+ * **Composition (required when using persist):** worker must be the **outer**
+ * decorator so `dequeue` hits the persist override:
+ * `withWorker(withRowPersist(buildQueue(), store), worker)` — not the reverse.
+ *
+ * Inner decorator extras (e.g. `flush` from row/snapshot persist) are preserved
+ * at runtime and in the return type via {@link PreserveQueueExtras}.
+ */
+export const withWorker = <
+    T,
+    R = unknown,
+    TEvents extends QueueEvents<T> = QueueEvents<T>,
+    TQueue extends Queue<T, TEvents> = Queue<T, TEvents>,
+>(
+    queue: TQueue & Queue<T, TEvents>,
+    worker: WorkerFn<T, R>,
+    options: WithWorkerOptions = {},
+): QueueWithWorker<T, R, WorkerQueueEvents<T, R, TEvents>> &
+    PreserveQueueExtras<TQueue> => {
+    const concurrency = resolveConcurrency(options.concurrency)
+    const autoStart = options.autoStart ?? true
+
+    const inner = queue.expand<WorkerEvents<T, R>>() as TQueue &
+        Queue<T, WorkerQueueEvents<T, R, TEvents>>
+    const emitWorker = createTypedEmit<WorkerEvents<T, R>>(
+        inner.emit as (eventName: string, data: unknown) => void,
+    )
+    const onQueue = inner.on as <K extends keyof QueueEvents<T>>(
+        eventName: K,
+        callback: EventCallback<QueueEvents<T>[K]>,
+    ) => () => void
+
+    let running = false
+    let active = 0
+
+    const processItem = async (item: T): Promise<void> => {
+        emitWorker('worker:started', { item })
+
+        try {
+            const result = await worker(item)
+            emitWorker('worker:completed', { item, result })
+        } catch (error) {
+            emitWorker('worker:failed', { item, error })
+        } finally {
+            active -= 1
+
+            if (active === 0 && inner.isEmpty()) {
+                emitWorker('worker:idle', undefined)
+            }
+
+            pump()
+        }
+    }
+
+    const pump = (): void => {
+        // Dequeue can throw while a stacked persist layer is hydrating.
+        // Swallow and stop this pump; post-hydrate `queue:enqueued` kick resumes.
+        try {
+            while (running && active < concurrency) {
+                const item = inner.dequeue()
+                if (item === undefined) break
+
+                active += 1
+                void processItem(item)
+            }
+        } catch {
+            // Intentionally empty — hydrate / capacity errors must not reject
+            // the worker's fire-and-forget processItem finally path.
+        }
+    }
+
+    const start = (): void => {
+        if (running) return
+        running = true
+        pump()
+    }
+
+    const stop = (): void => {
+        running = false
+    }
+
+    // Kick the pump when new work arrives (including post-hydrate restore kick).
+    onQueue('queue:enqueued', () => {
+        pump()
+    })
+
+    if (autoStart) {
+        start()
+    }
+
+    // `expand` must return this wrapper so further decorators keep worker methods.
+    const api = markQueueLayer(
+        forwardQueue(inner, {
+            expand: <TExtra extends EventMap>() =>
+                api as QueueWithWorker<
+                    T,
+                    R,
+                    MergeEventMaps<WorkerQueueEvents<T, R, TEvents>, TExtra>
+                > &
+                    PreserveQueueExtras<TQueue>,
+            start,
+            stop,
+            isRunning: () => running,
+            isProcessing: () => active > 0,
+            activeCount: () => active,
+        }),
+        WORKER_LAYER,
+    )
+
+    return api as QueueWithWorker<T, R, WorkerQueueEvents<T, R, TEvents>> &
+        PreserveQueueExtras<TQueue>
+}

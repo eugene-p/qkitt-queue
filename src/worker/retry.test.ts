@@ -1,0 +1,98 @@
+import { describe, expect, it, vi } from 'vitest'
+import { RetryExhaustedError, withRetry } from './retry'
+
+describe('withRetry', () => {
+    it('returns on first success without retrying', async () => {
+        const inner = vi.fn(async (n: number) => n * 2)
+        const worker = withRetry(inner, 3)
+
+        await expect(worker(21)).resolves.toBe(42)
+        expect(inner).toHaveBeenCalledTimes(1)
+    })
+
+    it('retries the given number of times then succeeds', async () => {
+        const inner = vi
+            .fn()
+            .mockRejectedValueOnce(new Error('1'))
+            .mockRejectedValueOnce(new Error('2'))
+            .mockResolvedValueOnce('ok')
+
+        const worker = withRetry(inner, { retries: 2 })
+
+        await expect(worker('job')).resolves.toBe('ok')
+        expect(inner).toHaveBeenCalledTimes(3)
+    })
+
+    it('throws RetryExhaustedError after all attempts fail', async () => {
+        const cause = new Error('always')
+        const inner = vi.fn(async () => {
+            throw cause
+        })
+        const worker = withRetry(inner, 2)
+
+        let caught: unknown
+        try {
+            await worker(1)
+        } catch (error) {
+            caught = error
+        }
+
+        expect(caught).toBeInstanceOf(RetryExhaustedError)
+        expect(caught).toMatchObject({
+            name: 'RetryExhaustedError',
+            attempts: 3,
+            cause,
+        })
+        expect(inner).toHaveBeenCalledTimes(3)
+    })
+
+    it('accepts a bare number as retries', async () => {
+        const inner = vi
+            .fn()
+            .mockRejectedValueOnce(new Error('x'))
+            .mockResolvedValueOnce(1)
+
+        const worker = withRetry(inner, 1)
+        await expect(worker(0)).resolves.toBe(1)
+        expect(inner).toHaveBeenCalledTimes(2)
+    })
+
+    it('honors shouldRetry to stop early', async () => {
+        const fatal = Object.assign(new Error('fatal'), { fatal: true })
+        const inner = vi.fn(async () => {
+            throw fatal
+        })
+        const worker = withRetry(inner, {
+            retries: 5,
+            shouldRetry: (error) =>
+                !(error instanceof Error && 'fatal' in error && error.fatal),
+        })
+
+        await expect(worker(1)).rejects.toMatchObject({
+            name: 'RetryExhaustedError',
+            attempts: 1,
+            cause: fatal,
+        })
+        expect(inner).toHaveBeenCalledTimes(1)
+    })
+
+    it('waits delay between retries', async () => {
+        vi.useFakeTimers()
+        const inner = vi
+            .fn()
+            .mockRejectedValueOnce(new Error('1'))
+            .mockResolvedValueOnce('done')
+
+        const worker = withRetry(inner, { retries: 1, delay: 50 })
+        const pending = worker('x')
+
+        await Promise.resolve()
+        expect(inner).toHaveBeenCalledTimes(1)
+
+        await vi.advanceTimersByTimeAsync(50)
+        await expect(pending).resolves.toBe('done')
+        expect(inner).toHaveBeenCalledTimes(2)
+
+        vi.useRealTimers()
+    })
+})
