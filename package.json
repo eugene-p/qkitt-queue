@@ -1,6 +1,6 @@
 {
   "name": "@qkitt/queue",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "A small, typed FIFO queue toolkit for TypeScript",
   "license": "ISC",
@@ -36,7 +36,38 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
-    }
+    },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "import": "./dist/config/index.js",
+      "default": "./dist/config/index.js"
+    },
+    "./events": {
+      "types": "./dist/events/index.d.ts",
+      "import": "./dist/events/index.js",
+      "default": "./dist/events/index.js"
+    },
+    "./persist": {
+      "types": "./dist/persist/index.d.ts",
+      "import": "./dist/persist/index.js",
+      "default": "./dist/persist/index.js"
+    },
+    "./queue": {
+      "types": "./dist/queue/index.d.ts",
+      "import": "./dist/queue/index.js",
+      "default": "./dist/queue/index.js"
+    },
+    "./router": {
+      "types": "./dist/router/index.d.ts",
+      "import": "./dist/router/index.js",
+      "default": "./dist/router/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "import": "./dist/worker/index.js",
+      "default": "./dist/worker/index.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist/**/*.js",

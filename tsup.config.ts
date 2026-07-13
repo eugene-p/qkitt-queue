@@ -1,16 +1,25 @@
 import { defineConfig } from 'tsup'
 
+// Root + area barrels → `@qkitt/queue` and `@qkitt/queue/<area>`.
+// Declarations still come from `tsc -p tsconfig.build.json` (tsup dts is
+// incompatible with TypeScript 7's compiler host APIs today).
 export default defineConfig({
-    entry: ['src/index.ts'],
+    entry: {
+        index: 'src/index.ts',
+        'config/index': 'src/config/index.ts',
+        'events/index': 'src/events/index.ts',
+        'persist/index': 'src/persist/index.ts',
+        'queue/index': 'src/queue/index.ts',
+        'router/index': 'src/router/index.ts',
+        'worker/index': 'src/worker/index.ts',
+    },
     format: ['esm'],
-    // Declarations come from `tsc -p tsconfig.build.json` (tsup dts is
-    // incompatible with TypeScript 7's compiler host APIs today).
     dts: false,
     sourcemap: true,
     clean: true,
     target: 'es2022',
     outDir: 'dist',
     treeshake: true,
-    // Keep the public surface as a proper ESM package for Node + bundlers.
-    splitting: false,
+    // Shared modules across root + subpath entries (avoid full duplication).
+    splitting: true,
 })

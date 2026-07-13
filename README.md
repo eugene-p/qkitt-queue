@@ -23,7 +23,9 @@ npm install @qkitt/queue
 
 **Requirements:** Node.js **18+** (see `engines`). **ESM only** — `"type": "module"`, no CommonJS/`require` build.
 
-Zero runtime dependencies (TypeScript + Vitest + tsup are dev-only). Published entry is compiled ESM + declarations under `dist/` (`import` / `types`). Tree-shaking friendly (`sideEffects: false`).
+Zero runtime dependencies (TypeScript + Vitest + tsup are dev-only). Published entries are compiled ESM + declarations under `dist/` (`import` / `types`). Tree-shaking friendly (`sideEffects: false`).
+
+Root import (everything):
 
 ```ts
 import {
@@ -42,6 +44,17 @@ import {
   buildFromJson,
   defineConfig,
 } from '@qkitt/queue'
+```
+
+Area subpaths (same symbols as the root barrel for that area):
+
+```ts
+import { buildQueue, withWorker } from '@qkitt/queue/queue'
+import { pipeline, withRetry } from '@qkitt/queue/worker'
+import { buildRouter } from '@qkitt/queue/router'
+import { createMemoryRowStore } from '@qkitt/queue/persist'
+import { defineConfig, buildFromConfig } from '@qkitt/queue/config'
+import { buildEventEmitter } from '@qkitt/queue/events'
 ```
 
 ## Quick start
@@ -648,24 +661,24 @@ queue.on('worker:idle', () => console.log('inbox empty'))
 | Events | Typed emitter; listener errors are isolated so pumps keep running |
 | Routing | MQTT/AMQP-style patterns; unmatched sink does not count as a match |
 | Config | Named stores + named queues; workers/`impl` are JS-only; JSON is data-only |
-| Packaging | Zero runtime deps; ESM-only npm package; `npm run build` emits ESM + `.d.ts` to `dist/` |
+| Packaging | Zero runtime deps; ESM-only; root + area subpaths; `npm run build` emits ESM + `.d.ts` to `dist/` |
 
 ## Source layout
 
-Consumers always import `@qkitt/queue` (root only). The tree under `src/` mirrors composition layers:
+Consumers import `@qkitt/queue` (root) or an area subpath (`@qkitt/queue/router`, …). The tree under `src/` mirrors composition layers:
 
-| Folder | Meaning |
-| --- | --- |
-| `queue/core` | FIFO queue (`buildQueue`) |
-| `queue/worker` | Attach a processor (`withWorker`) |
-| `queue/persist` | Durable queue decorators + store contracts |
-| `persist` | Storage backends (memory, Web Storage) |
-| `worker` | Processor helpers (`pipeline`, `withRetry`) — not queue decoration |
-| `router` | Topic routing |
-| `config` | Declarative system build |
-| `events` | Typed emitter |
+| Folder | npm subpath | Meaning |
+| --- | --- | --- |
+| `queue/core` | `@qkitt/queue/queue` | FIFO queue (`buildQueue`) |
+| `queue/worker` | `@qkitt/queue/queue` | Attach a processor (`withWorker`) |
+| `queue/persist` | `@qkitt/queue/queue` | Durable queue decorators + store contracts |
+| `persist` | `@qkitt/queue/persist` | Storage backends (memory, Web Storage) |
+| `worker` | `@qkitt/queue/worker` | Processor helpers (`pipeline`, `withRetry`) — not queue decoration |
+| `router` | `@qkitt/queue/router` | Topic routing |
+| `config` | `@qkitt/queue/config` | Declarative system build |
+| `events` | `@qkitt/queue/events` | Typed emitter |
 
-**Name disambiguation:** `src/worker` = functions that process items; `src/queue/worker` = the decorator that runs them on a queue. `src/persist` = store adapters; `src/queue/persist` = queue decorators that use those stores.
+**Name disambiguation:** `src/worker` / `@qkitt/queue/worker` = functions that process items; `src/queue/worker` / `@qkitt/queue/queue` = the decorator that runs them on a queue. `src/persist` / `@qkitt/queue/persist` = store adapters; `src/queue/persist` lives under `@qkitt/queue/queue`.
 
 ## Naming convention
 
@@ -690,19 +703,18 @@ Rules:
 
 ## API map
 
-Public surface (via `@qkitt/queue` / `src/index.ts`):
+Public surface via `@qkitt/queue` (`src/index.ts`) and matching area subpaths:
 
-| Area | Exports |
-| --- | --- |
-| Queue | `buildQueue`, `QueueFullError`, `Queue`, `QueueEvents`, `BuildQueueOptions` |
-| Worker | `withWorker`, `QueueWithWorker`, `WorkerEvents`, `WithWorkerOptions` |
-| Snapshot persist | `withSnapshotPersist`, `SnapshotStore`, `SnapshotPersistOptions` |
-| Row persist | `withRowPersist`, `RowStore`, `RowRecord`, `createId`, `RowPersistOptions` |
-| Worker helpers | `pipeline`, `withRetry`, `RetryExhaustedError`, `WorkerFn`, `StepFn` |
-| Router | `buildRouter`, `RouteMessage`, `matchTopic`, `isValidTopic`, `isValidPattern`, … |
-| Persist stores | memory + Web Storage factories, `StorageCodecError`, `WebStorageLike` |
-| Config | `defineConfig`, `buildFromConfig`, `buildFromJson`, `parseSystemConfig`, `validate*`, `SystemConfig`, … |
-| Events | `buildEventEmitter`, `createTypedEmit`, `EventEmitter`, `MergeEventMaps` |
+| Area | Subpath | Exports |
+| --- | --- | --- |
+| Queue + queue worker + queue persist | `@qkitt/queue/queue` | `buildQueue`, `QueueFullError`, `withWorker`, `withRowPersist`, `withSnapshotPersist`, `createId`, types… |
+| Worker helpers | `@qkitt/queue/worker` | `pipeline`, `withRetry`, `RetryExhaustedError`, `WorkerFn`, `StepFn` |
+| Router | `@qkitt/queue/router` | `buildRouter`, `RouteMessage`, `matchTopic`, `isValidTopic`, `isValidPattern`, … |
+| Persist stores | `@qkitt/queue/persist` | memory + Web Storage factories, `StorageCodecError`, `WebStorageLike` |
+| Config | `@qkitt/queue/config` | `defineConfig`, `buildFromConfig`, `buildFromJson`, `parseSystemConfig`, `validate*`, `SystemConfig`, … |
+| Events | `@qkitt/queue/events` | `buildEventEmitter`, `createTypedEmit`, `EventEmitter`, `MergeEventMaps` |
+
+Root `@qkitt/queue` re-exports all of the above.
 
 Internals (`forward.util`, `hydrate-gate.util`, `write-chain.util`, `row-ids.util`, codecs) are not part of the stable public contract.
 
