@@ -216,14 +216,29 @@ After all attempts fail: `RetryExhaustedError` with `attempts` and `cause`.
 
 ## Pipeline
 
+Takes an array of steps — bare functions and/or `{ name, fn, metadata? }` objects (mixable). Each step is called as `fn(input, ctx)` where `ctx` is `{ name, index, metadata }`. Empty arrays throw at construction (and invalid step shapes). Failures throw `PipelineStepError` with the same fields plus `cause`. Bare functions get default names like `step[0]`.
+
+Heterogeneous step lists cannot infer end-to-end types; use `pipeline<In, Out>([...])` when you need a precise result type.
+
 ```ts
 import { buildQueue, pipeline, withWorker } from '@qkitt/queue'
 
-const worker = pipeline(
+// bare functions (one-arg still fine)
+const worker = pipeline([
   async (id: string) => fetchUser(id),
   async (user) => enrich(user),
   async (enriched) => save(enriched),
-)
+])
+
+// named steps + metadata available to fn and on error
+const named = pipeline([
+  { name: 'fetch', fn: async (id: string) => fetchUser(id) },
+  {
+    name: 'save',
+    metadata: { table: 'users' },
+    fn: async (user, ctx) => save(user, ctx.metadata),
+  },
+])
 
 const queue = withWorker(buildQueue<string>(), worker)
 queue.enqueue('user-42')
@@ -233,10 +248,10 @@ With retry:
 
 ```ts
 const worker = withRetry(
-  pipeline(
-    async (job: Job) => validate(job),
-    async (job) => deliver(job),
-  ),
+  pipeline([
+    { name: 'validate', fn: async (job: Job) => validate(job) },
+    { name: 'deliver', fn: async (job) => deliver(job) },
+  ]),
   { retries: 2, delay: 250 },
 )
 ```
@@ -587,16 +602,22 @@ const base = withRowPersist(buildQueue<RouteMessage<EmailJob>>(), store)
 await base.hydrate()
 
 const worker = withRetry(
-  pipeline(
-    async (msg: RouteMessage<EmailJob>) => {
-      if (!msg.data.to.includes('@')) throw new Error('bad recipient')
-      return msg
+  pipeline([
+    {
+      name: 'validate',
+      fn: async (msg: RouteMessage<EmailJob>) => {
+        if (!msg.data.to.includes('@')) throw new Error('bad recipient')
+        return msg
+      },
     },
-    async (msg) => {
-      await sendEmail(msg.data)
-      return msg.data.to
+    {
+      name: 'send',
+      fn: async (msg) => {
+        await sendEmail(msg.data)
+        return msg.data.to
+      },
     },
-  ),
+  ]),
   { retries: 3, delay: (n) => 50 * n },
 )
 
@@ -617,7 +638,7 @@ queue.on('worker:failed', ({ error }) => console.error(error))
 | --- | --- |
 | `@qkitt/queue` | Everything |
 | `@qkitt/queue/queue` | `buildQueue`, `withWorker`, `withRowPersist`, `withSnapshotPersist`, … |
-| `@qkitt/queue/worker` | `pipeline`, `withRetry`, … |
+| `@qkitt/queue/worker` | `pipeline`, `withRetry`, `PipelineStepError`, `RetryExhaustedError`, types |
 | `@qkitt/queue/router` | `buildRouter`, … |
 | `@qkitt/queue/persist` | Memory + Web Storage stores |
 | `@qkitt/queue/config` | `defineConfig`, `buildFromConfig`, `buildFromJson`, … |

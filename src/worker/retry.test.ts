@@ -95,4 +95,30 @@ describe('withRetry', () => {
 
         vi.useRealTimers()
     })
+
+    it('supports function delay and clamps negative delay to 0', async () => {
+        vi.useFakeTimers()
+        const seen: Array<{ attempt: number; error: unknown }> = []
+        const inner = vi
+            .fn()
+            .mockRejectedValueOnce(new Error('1'))
+            .mockResolvedValueOnce('ok')
+
+        const worker = withRetry(inner, {
+            retries: 1,
+            delay: (attempt, error) => {
+                seen.push({ attempt, error })
+                return -25
+            },
+        })
+        const pending = worker('job')
+
+        await expect(pending).resolves.toBe('ok')
+        expect(inner).toHaveBeenCalledTimes(2)
+        expect(seen).toHaveLength(1)
+        expect(seen[0]!.attempt).toBe(1)
+        expect(seen[0]!.error).toBeInstanceOf(Error)
+
+        vi.useRealTimers()
+    })
 })

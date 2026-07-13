@@ -91,8 +91,12 @@ export {
 
 export {
     pipeline,
-    RetryExhaustedError,
+    PipelineStepError,
     withRetry,
+    RetryExhaustedError,
+    type PipelineStep,
+    type PipelineStepContext,
+    type PipelineStepObject,
     type RetryOptions,
     type StepFn,
     type WorkerFn,

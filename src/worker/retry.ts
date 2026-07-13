@@ -30,12 +30,13 @@ export class RetryExhaustedError extends Error {
 
 const sleep = (ms: number): Promise<void> =>
     new Promise((resolve) => {
+        // Avoid depending on DOM lib typings (tsconfig uses empty `types`).
         const schedule = (
             globalThis as unknown as {
                 setTimeout: (fn: () => void, delay: number) => unknown
             }
         ).setTimeout
-        schedule(() => resolve(), ms)
+        schedule(resolve, ms)
     })
 
 const resolveDelay = (

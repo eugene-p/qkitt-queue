@@ -9,8 +9,6 @@ import { forwardQueue, type PreserveQueueExtras } from '../core/forward.util'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 
-export type { WorkerFn }
-
 export type WorkerEvents<T, R = unknown> = {
     /** Fired just before the worker runs an item. */
     'worker:started': { item: T }

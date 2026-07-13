@@ -1,4 +1,4 @@
-export type { StepFn, WorkerFn } from './types'
+export type { PipelineStepContext, StepFn, WorkerFn } from './types'
 
 export {
     RetryExhaustedError,
@@ -6,4 +6,9 @@ export {
     type RetryOptions,
 } from './retry'
 
-export { pipeline } from './pipeline'
+export {
+    pipeline,
+    PipelineStepError,
+    type PipelineStep,
+    type PipelineStepObject,
+} from './pipeline'
