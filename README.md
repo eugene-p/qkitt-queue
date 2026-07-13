@@ -1,31 +1,45 @@
 # @qkitt/queue
 
-A small, typed **FIFO queue toolkit** for TypeScript: compose queues with workers, retries, pipelines, topic routing, and optional persistence.
+Typed FIFO queues for TypeScript. Compose a bare queue with a worker, retries, a pipeline, topic routing, and optional persistence.
 
-Zero runtime dependencies. Event-driven. Designed to stay readable and stackable.
+Zero runtime dependencies. ESM only. Node.js 18+.
 
 ## Features
 
-- **Typed FIFO queue** — `enqueue` / `dequeue` / `peek` with lifecycle events
-- **Workers** — process items with concurrency, start/stop, and idle detection
-- **Retries** — wrap any worker with backoff and `shouldRetry`
-- **Pipelines** — chain steps so each step’s output feeds the next
-- **Topic router** — MQTT/AMQP-style patterns (`*`, `#`) into queues
-- **Persistence** — snapshot or row-level stores (memory, `localStorage` / `sessionStorage`)
-- **JS config** — declare queues, persistence, router bindings, and imported workers in one module (JSON subset still supported)
-- **Events everywhere** — typed `on` / `once` / `off` / `emit` with `expand()` for composition
+### Queue types
+
+- **Queue** — FIFO: enqueue, dequeue, peek, clear. Optional max size.
+- **Queue with worker** — drains the queue with concurrency, start/stop, idle.
+- **Queue with persist** — durable via a snapshot or row store. Stack: queue → persist → worker.
+
+### Workers (build helpers)
+
+Functions you pass into a queue worker:
+
+- **Pipeline** — chain steps; each output feeds the next.
+- **Retry** — backoff and optional `shouldRetry`.
+
+### Router
+
+Publish on topics; bind queues with MQTT/AMQP-style patterns (`*`, `#`). Unmatched messages can go to a sink queue.
+
+### Persistence adapters
+
+Memory, `localStorage`, `sessionStorage`, or bring your own snapshot/row store.
+
+### Config
+
+Declare stores, queues, workers, and router bindings in one object and build from that. JS can import workers and custom stores; JSON is data-only.
+
+### Events
+
+Typed listeners on every layer (`queue:*`, `worker:*`, `router:*`, `persist:*`). The emitter also works on its own, without queues.
 
 ## Install
 
 ```bash
 npm install @qkitt/queue
 ```
-
-**Requirements:** Node.js **18+** (see `engines`). **ESM only** — `"type": "module"`, no CommonJS/`require` build.
-
-Zero runtime dependencies (TypeScript + Vitest + tsup are dev-only). Published entries are compiled ESM + declarations under `dist/` (`import` / `types`). Tree-shaking friendly (`sideEffects: false`).
-
-Root import (everything):
 
 ```ts
 import {
@@ -46,7 +60,7 @@ import {
 } from '@qkitt/queue'
 ```
 
-Area subpaths (same symbols as the root barrel for that area):
+Or import by area:
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue/queue'
@@ -90,48 +104,42 @@ const queue = buildQueue<number>()
 queue.enqueue(1)
 queue.enqueue(2)
 
-queue.peek()        // 1 (does not remove)
-queue.size()        // 2
-queue.dequeue()     // 1
-queue.toArray()     // [2]
-queue.isEmpty()     // false
-queue.clear()       // removes remaining items
+queue.peek()      // 1
+queue.size()      // 2
+queue.dequeue()   // 1
+queue.toArray()   // [2]
+queue.isEmpty()   // false
+queue.clear()
 
-// Optional capacity (backpressure): enqueue throws when full
 const bounded = buildQueue<number>({ maxSize: 100 })
 try {
   bounded.enqueue(1)
 } catch (error) {
   if (error instanceof QueueFullError) {
-    // drop, wait, or reject the producer
+    // drop, wait, or reject
   }
 }
 ```
 
-### Queue events
+### Events
 
 | Event | Payload | When |
 | --- | --- | --- |
-| `queue:enqueued` | `{ item, size }` | After an item is added |
-| `queue:dequeued` | `{ item, size }` | After an item is removed |
-| `queue:emptied` | `undefined` | When the last item is dequeued |
-| `queue:cleared` | `{ removed }` | After `clear()` removes items |
+| `queue:enqueued` | `{ item, size }` | Item added |
+| `queue:dequeued` | `{ item, size }` | Item removed |
+| `queue:emptied` | `undefined` | Last item dequeued |
+| `queue:cleared` | `{ removed }` | After `clear()` |
 
 ```ts
-queue.on('queue:enqueued', ({ item, size }) => {
-  console.log('added', item, 'size=', size)
-})
-
 const unsubscribe = queue.on('queue:emptied', () => {
   console.log('drained')
 })
-// later
 unsubscribe()
 ```
 
-## Workers
+## Queue with worker
 
-`withWorker` dequeues items and runs your async function. By default it **auto-starts** and processes with **concurrency 1**.
+`withWorker` dequeues items and runs your async function. Defaults: auto-start, concurrency 1.
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue'
@@ -139,25 +147,25 @@ import { buildQueue, withWorker } from '@qkitt/queue'
 const queue = withWorker(
   buildQueue<string>(),
   async (name) => `hello ${name}`,
-  { concurrency: 3, autoStart: true },
+  { concurrency: 3 },
 )
 
 queue.on('worker:started', ({ item }) => console.log('start', item))
 queue.on('worker:completed', ({ item, result }) => console.log(item, '→', result))
 queue.on('worker:failed', ({ item, error }) => console.error(item, error))
-queue.on('worker:idle', () => console.log('nothing left to do'))
+queue.on('worker:idle', () => console.log('idle'))
 
 queue.enqueue('a')
 queue.enqueue('b')
 
-queue.stop()           // stop taking new items (in-flight still finish)
-queue.start()          // resume
-queue.isRunning()      // boolean
-queue.isProcessing()   // any active work?
-queue.activeCount()    // how many in flight
+queue.stop()         // no new items; in-flight finish
+queue.start()
+queue.isRunning()
+queue.isProcessing()
+queue.activeCount()
 ```
 
-### Manual start
+Manual start:
 
 ```ts
 const queue = withWorker(buildQueue<number>(), async (n) => n * 2, {
@@ -165,21 +173,17 @@ const queue = withWorker(buildQueue<number>(), async (n) => n * 2, {
 })
 
 queue.enqueue(1)
-queue.enqueue(2)
-// still queued until:
 queue.start()
 ```
 
-### Worker events
-
 | Event | Payload | When |
 | --- | --- | --- |
-| `worker:started` | `{ item }` | Just before the worker runs |
-| `worker:completed` | `{ item, result }` | Worker resolved |
-| `worker:failed` | `{ item, error }` | Worker threw/rejected |
-| `worker:idle` | `undefined` | No in-flight work and queue empty |
+| `worker:started` | `{ item }` | Before run |
+| `worker:completed` | `{ item, result }` | Resolved |
+| `worker:failed` | `{ item, error }` | Rejected |
+| `worker:idle` | `undefined` | Empty and nothing in flight |
 
-Failed items are **not** re-queued automatically — use `withRetry` or handle `worker:failed`.
+Failed items are not re-queued. Use `withRetry` or handle `worker:failed`.
 
 ## Retry
 
@@ -193,30 +197,24 @@ const worker = withRetry(
     return res.json()
   },
   {
-    retries: 3, // total attempts = retries + 1
-    delay: (attempt) => 100 * 2 ** (attempt - 1), // exponential backoff
-    shouldRetry: (error) => !(error instanceof TypeError), // optional filter
+    retries: 3, // attempts = retries + 1
+    delay: (attempt) => 100 * 2 ** (attempt - 1),
+    shouldRetry: (error) => !(error instanceof TypeError),
   },
 )
 
 const queue = withWorker(buildQueue<{ url: string }>(), worker)
 ```
 
-Shorthand for retries only:
+Shorthand when you only need a retry count:
 
 ```ts
 const worker = withRetry(async (n: number) => callApi(n), 2)
 ```
 
-When all attempts fail, the worker throws a `RetryExhaustedError` class instance:
-
-- `instanceof RetryExhaustedError` works across normal module boundaries
-- `attempts` — how many tries ran
-- `cause` — last underlying error
+After all attempts fail: `RetryExhaustedError` with `attempts` and `cause`.
 
 ## Pipeline
-
-Compose steps so the output of step *n* becomes the input of step *n+1*:
 
 ```ts
 import { buildQueue, pipeline, withWorker } from '@qkitt/queue'
@@ -231,7 +229,7 @@ const queue = withWorker(buildQueue<string>(), worker)
 queue.enqueue('user-42')
 ```
 
-Combine with retry:
+With retry:
 
 ```ts
 const worker = withRetry(
@@ -243,13 +241,11 @@ const worker = withRetry(
 )
 ```
 
-## Topic router
-
-Publish on concrete topics; bind queues to patterns (MQTT/AMQP style):
+## Router
 
 | Pattern | Matches |
 | --- | --- |
-| `orders.created` | Exact topic only |
+| `orders.created` | Exact topic |
 | `orders.*` | One segment (`orders.created`, not `orders.a.b`) |
 | `orders.#` | Zero or more trailing segments |
 | `#` | Everything |
@@ -271,73 +267,76 @@ const allOrders = buildQueue<RouteMessage>()
 router.bind('orders.created', created)
 router.bind('orders.#', allOrders)
 
-// Optional: process routed messages with a worker
-const createdWorker = withWorker(created, async ({ topic, data }) => {
+withWorker(created, async ({ topic, data }) => {
   console.log(topic, data.id, data.total)
 })
 
 router.publish('orders.created', { id: 1, total: 42 })
-// → both queues receive { topic: 'orders.created', data: { id: 1, total: 42 } }
+// both queues get { topic, data }
 
 router.publish('orders.shipped', { id: 1, carrier: 'ups' })
-// → only `orders.#` matches
+// only orders.#
 
 const unbind = router.bind('jobs.*', buildQueue())
-unbind() // remove this binding only
+unbind()
 
 router.on('router:unmatched', ({ topic, data, delivered }) => {
-  console.warn('no route for', topic, data, 'sink=', delivered)
+  console.warn('no route', topic, data, delivered)
 })
 ```
 
-### Unrouted (unmatched) publishes
-
-When nothing binds, the router tracks the miss and can optionally park the message:
+### Unmatched
 
 ```ts
 const unrouted = buildQueue<RouteMessage>()
 const router = buildRouter({ unmatchedTarget: unrouted })
 
 router.publish('no.binding', { id: 1 })
-// → publish returns 0
-// → unrouted receives { topic: 'no.binding', data: { id: 1 } }
-// → router:unmatched with { delivered: true }
+// publish returns 0; message still lands in unrouted
 
-router.unmatchedCount()   // how many unrouted since last clear
-router.lastUnmatched()    // { topic, data } | undefined
-router.clearUnmatched()   // reset stats only (does not drain the sink queue)
-router.setUnmatchedTarget(unrouted) // attach / replace / clear (`undefined`)
+router.unmatchedCount()
+router.lastUnmatched()
+router.clearUnmatched() // stats only
+router.setUnmatchedTarget(unrouted) // or undefined to clear
 ```
 
-In config, point at a named queue (not a pattern bind):
+In config:
 
 ```ts
 router: {
   bindings: [{ pattern: 'mail.#', queue: 'mail' }],
-  unmatchedQueue: 'unrouted', // must exist under queues
+  unmatchedQueue: 'unrouted',
 }
 ```
 
-The unmatched sink does **not** count as a match (`publish` still returns `0`).
-
-### Router events
+The sink is not a match — `publish` still returns `0`.
 
 | Event | Payload |
 | --- | --- |
 | `router:bound` | `{ pattern }` |
 | `router:unbound` | `{ pattern, removed }` |
 | `router:published` | `{ topic, data, matched }` |
-| `router:unmatched` | `{ topic, data, delivered }` — `delivered` if the unmatched sink accepted it |
-| `router:error` | `{ operation, error, topic?, pattern? }` — `operation` is `publish` \| `bind` \| `unmatched` |
+| `router:unmatched` | `{ topic, data, delivered }` |
+| `router:error` | `{ operation, error, topic?, pattern? }` |
 
 ## Persistence
 
 Two strategies:
 
-1. **Snapshot** — rewrite the whole queue on change (simple backends)
-2. **Row** — insert/remove per item (DB / per-key storage)
+1. **Snapshot** — rewrite the whole queue on change
+2. **Row** — insert/remove per item
 
-### Snapshot (memory)
+Worker must be outer so `dequeue` goes through persist:
+
+```ts
+// correct
+withWorker(withRowPersist(buildQueue(), store), worker)
+
+// throws — worker already attached
+withRowPersist(withWorker(buildQueue(), worker), store)
+```
+
+### Snapshot
 
 ```ts
 import {
@@ -349,13 +348,13 @@ import {
 const store = createMemorySnapshotStore<string>()
 const queue = withSnapshotPersist(buildQueue<string>(), store)
 
-await queue.hydrate() // load from store into memory
+await queue.hydrate()
 queue.enqueue('a')    // auto-saves by default
-await queue.persist() // manual save (also used when autoSave is false)
-await queue.flush()   // wait for pending auto-saves
+await queue.persist() // manual save
+await queue.flush()   // wait for pending saves
 ```
 
-### Row (memory)
+### Row
 
 ```ts
 import {
@@ -366,39 +365,25 @@ import {
 
 const store = createMemoryRowStore<string>()
 const queue = withRowPersist(buildQueue<string>(), store)
-// Optional: override default nanoid-style ids
-// withRowPersist(buildQueue<string>(), store, { createId: () => crypto.randomUUID() })
+// optional: { createId: () => crypto.randomUUID() }
 
 await queue.hydrate()
 queue.enqueue('job-1')
-await queue.flush()   // wait for async store insert
-queue.rowIds() // stable ids aligned with toArray()
+await queue.flush()
+queue.rowIds()
 queue.dequeue()
 await queue.flush()
 ```
 
-### Durability notes
-
-Both persist wrappers keep **sync** `enqueue` / `dequeue` / `clear` and apply the same composition model: they **override** mutation methods, serialize store I/O on a write chain, and use a silent `replaceAll` during `hydrate` (no mid-hydrate worker drain). After hydrate completes they emit one `queue:enqueued` so a stacked worker pumps with store removes/saves enabled. Concurrent mutations during `hydrate` throw.
-
 | | Snapshot | Row |
 | --- | --- | --- |
-| Memory vs store | Snapshot rewrites the full list | Optimistic memory; store insert/remove per op |
-| Failed write | `persist:error` on save; memory unchanged by save failure | Failed **insert** rolls that row back out of memory (no clear/enqueue noise); failed remove/clear emit error only (call `hydrate` to resync) |
-| Wait for I/O | `flush()` or `persist()` | `flush()` |
-| Hydrate | Flushes pending saves, then loads | Flushes pending writes, then loads |
+| Writes | Full list rewrite | Insert/remove per op |
+| Failed write | `persist:error`; memory unchanged | Failed insert rolls back that row; failed remove/clear error only (hydrate to resync) |
+| Wait | `flush()` or `persist()` | `flush()` |
 
-**Composition (required):** worker must be **outer** so `dequeue` hits the persist override:
+`enqueue` / `dequeue` / `clear` stay sync; store I/O runs on a serialized write chain. Concurrent mutations during `hydrate` throw.
 
-```ts
-// correct
-withWorker(withRowPersist(buildQueue(), store), worker)
-
-// wrong — throws from withRowPersist / withSnapshotPersist if a worker is already attached
-withRowPersist(withWorker(buildQueue(), worker), store)
-```
-
-### Browser `localStorage`
+### Browser storage
 
 ```ts
 import {
@@ -409,14 +394,12 @@ import {
   createLocalStorageRowStore,
 } from '@qkitt/queue'
 
-// Whole queue as one JSON array
 const snapQueue = withSnapshotPersist(
   buildQueue<{ id: string }>(),
   createLocalStorageSnapshotStore('my-app:queue'),
 )
 await snapQueue.hydrate()
 
-// One key per row + order list
 const rowQueue = withRowPersist(
   buildQueue<{ id: string }>(),
   createLocalStorageRowStore('my-app:jobs'),
@@ -424,11 +407,11 @@ const rowQueue = withRowPersist(
 await rowQueue.hydrate()
 ```
 
-`sessionStorage` helpers: `createSessionStorageSnapshotStore`, `createSessionStorageRowStore`.
+Also: `createSessionStorageSnapshotStore`, `createSessionStorageRowStore`.
 
-**Web Storage limits:** not multi-tab safe and not transactional. Snapshot save is a single key write (last tab wins). Row ops touch multiple keys (`order` + per-row); a quota error or crash mid-op can leave order and rows inconsistent. Prefer a single owning tab, or a server/DB store when durability is shared across tabs or processes.
+Web Storage is not multi-tab safe or transactional. Prefer one owning tab, or a real DB, when durability is shared.
 
-Custom stores implement either:
+### Custom stores
 
 ```ts
 type SnapshotStore<T> = {
@@ -444,7 +427,7 @@ type RowStore<T> = {
 }
 ```
 
-### Persist events
+### Events
 
 **Snapshot:** `persist:loaded`, `persist:saved`, `persist:error`  
 **Row:** `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error`
@@ -454,36 +437,28 @@ queue.on('persist:error', ({ operation, error }) => {
   console.error(operation, error)
 })
 
-// Ensure durable writes finished (both strategies expose flush)
 await queue.flush()
 ```
 
-## Config (one object: stores + queues)
+## Config
 
-A **single config** has two sections:
+Named `stores` + named `queues` (+ optional `router`). Build the stack from that object.
 
-1. **`stores`** — named adapters (built-in factories or your own `SnapshotStore` / `RowStore`)
-2. **`queues`** — wire queues to store **names**, optional workers, plus router bindings
-
-Custom storage = implement the interface and register it. You never extend a hardcoded store list.
-
-### JS config (recommended)
+### JS (recommended)
 
 ```ts
 // queue.config.ts
 import { defineConfig } from '@qkitt/queue'
 import { handleMail } from './workers/mail'
-import { createRedisRowStore } from './stores/redis' // your impl of RowStore
+import { createRedisRowStore } from './stores/redis'
 
 export default defineConfig({
   stores: {
-    // built-in adapter
     mailDisk: {
       adapter: 'localStorage',
       strategy: 'row',
       key: 'mail',
     },
-    // custom adapter (JS only)
     redis: {
       strategy: 'row',
       impl: createRedisRowStore('queue:mail'),
@@ -491,20 +466,18 @@ export default defineConfig({
   },
   queues: {
     mail: {
-      maxSize: 1000, // optional backpressure (QueueFullError when full)
-      persist: { store: 'mailDisk' }, // reference by name
+      maxSize: 1000,
+      persist: { store: 'mailDisk' },
       worker: { run: handleMail, concurrency: 2 },
     },
     scratch: {},
-    // optional unmatched sink (see router.unmatchedQueue)
     unrouted: {},
   },
   router: {
     bindings: [{ pattern: 'mail.#', queue: 'mail' }],
     unmatchedQueue: 'unrouted',
   },
-  // defaults to true when any queue has persist
-  hydrate: true,
+  hydrate: true, // default when any queue has persist
 })
 ```
 
@@ -516,21 +489,16 @@ import config from './queue.config'
 const system = await buildFromConfig(config)
 
 system.router!.publish('mail.send', { to: 'a@b.c', body: 'hi' })
-// system.queues.mail is already a worker queue (start/stop/…)
-// system.stores.mailDisk is the resolved store instance
-
 await system.flushAll()
 ```
 
-Build order: **resolve stores → queue → persist → worker → router → hydrate**.
+Build order: stores → queue → persist → worker → router → hydrate.
 
-Composition rules enforced by the library:
+Rules: persist wraps the bare queue; worker is outer; one persist layer per queue.
 
-- Persist must wrap the **bare** queue; worker is always **outer**.
-- Only **one** persist layer per queue (row **or** snapshot, not both).
+### JSON
 
-
-### Data-only JSON (built-in adapters only)
+Built-in adapters only — no workers or custom `impl`.
 
 ```json
 {
@@ -561,47 +529,42 @@ const system = await buildFromJson(jsonText, { storage: myWebStorage })
 
 | Field | Meaning |
 | --- | --- |
-| `stores.<name>.adapter` | Built-in: `"memory"` \| `"localStorage"` \| `"sessionStorage"` |
-| `stores.<name>.strategy` | `"snapshot"` or `"row"` (required) |
+| `stores.<name>.adapter` | `"memory"` \| `"localStorage"` \| `"sessionStorage"` |
+| `stores.<name>.strategy` | `"snapshot"` \| `"row"` |
 | `stores.<name>.key` | Required for web adapters |
-| `stores.<name>.impl` | **JS only** — your `SnapshotStore` / `RowStore` instance |
-| `queues.<name>` | Named queue. `{}` = plain in-memory |
-| `queues.<name>.maxSize` | Optional capacity; enqueue throws `QueueFullError` when full |
-| `queues.<name>.persist.store` | **Name** of an entry in `stores` |
+| `stores.<name>.impl` | JS only — your store instance |
+| `queues.<name>` | `{}` = plain in-memory |
+| `queues.<name>.maxSize` | Capacity; throws `QueueFullError` when full |
+| `queues.<name>.persist.store` | Name of a store |
 | `queues.<name>.persist.autoSave` | Snapshot only; default `true` |
-| `queues.<name>.worker` | **JS only** — a function, or `{ run, concurrency?, autoStart? }` |
-| `router.bindings` | `{ pattern, queue }` → bind pattern to a named queue |
-| `hydrate` | Load persisted queues after build (default `true` if any queue has `persist`) |
+| `queues.<name>.worker` | JS only — function or `{ run, concurrency?, autoStart? }` |
+| `router.bindings` | `{ pattern, queue }` |
+| `hydrate` | Load after build (default `true` if any persist) |
 
-### Helpers
+### API
 
-| API | Role |
+| | |
 | --- | --- |
-| `defineConfig(config)` | Typed JS helper; validates and keeps function / store refs |
-| `buildFromConfig(config, options?)` | Resolve stores + build queues / workers / router |
-| `buildFromJson(json, options?)` | Data-only JSON → build (rejects `worker` / `impl`) |
-| `validateSystemConfig(value)` | Data-only validation |
-| `validateJsConfig(config)` | JS validation (allows workers + custom stores) |
-| `parseSystemConfig(json)` | Parse + data-only validate without building |
+| `defineConfig` | Typed JS config |
+| `buildFromConfig` | Build from JS config |
+| `buildFromJson` | Build from JSON (no workers / `impl`) |
+| `validateSystemConfig` / `validateJsConfig` | Validate without building |
+| `parseSystemConfig` | Parse + validate JSON |
 
-Build options:
-
-- `storage` — inject `localStorage` / `sessionStorage` (or a mock) for built-in web adapters
-
-Returned system:
+Build options: `storage` — inject Web Storage (or a mock).
 
 ```ts
-system.stores      // resolved store instances by name
-system.queues      // named queues (+ worker controls / hydrate / flush when configured)
-system.router      // present when config.router was set
+system.stores
+system.queues
+system.router      // if configured
 system.hydrateAll()
 system.flushAll()
-system.config      // shallow-frozen config (workers / impls preserved)
+system.config
 ```
 
-## Putting it together
+## Example
 
-Route jobs into a durable, concurrent worker with retries:
+Router → durable queue → concurrent worker with pipeline + retry:
 
 ```ts
 import {
@@ -620,10 +583,7 @@ type EmailJob = { to: string; body: string }
 const router = buildRouter()
 const store = createMemoryRowStore<RouteMessage<EmailJob>>()
 
-const base = withRowPersist(
-  buildQueue<RouteMessage<EmailJob>>(),
-  store,
-)
+const base = withRowPersist(buildQueue<RouteMessage<EmailJob>>(), store)
 await base.hydrate()
 
 const worker = withRetry(
@@ -643,92 +603,43 @@ const worker = withRetry(
 const queue = withWorker(base, worker, { concurrency: 2 })
 
 router.bind('mail.send', queue)
-router.bind('mail.#', queue) // same queue can have multiple bindings
+router.bind('mail.#', queue)
 
 router.publish('mail.send', { to: 'you@example.com', body: 'hi' })
 
 queue.on('worker:completed', ({ result }) => console.log('sent to', result))
 queue.on('worker:failed', ({ error }) => console.error(error))
-queue.on('worker:idle', () => console.log('inbox empty'))
 ```
 
-## Design notes
+## Package layout
 
-| Concern | Approach |
+| Subpath | Exports |
 | --- | --- |
-| Composition | Decorator stack: bare queue → persist (optional) → worker (optional) |
-| Sync API | `enqueue` / `dequeue` stay sync; store I/O is async on a serialized write chain |
-| Events | Typed emitter; listener errors are isolated so pumps keep running |
-| Routing | MQTT/AMQP-style patterns; unmatched sink does not count as a match |
-| Config | Named stores + named queues; workers/`impl` are JS-only; JSON is data-only |
-| Packaging | Zero runtime deps; ESM-only; root + area subpaths; `npm run build` emits ESM + `.d.ts` to `dist/` |
+| `@qkitt/queue` | Everything |
+| `@qkitt/queue/queue` | `buildQueue`, `withWorker`, `withRowPersist`, `withSnapshotPersist`, … |
+| `@qkitt/queue/worker` | `pipeline`, `withRetry`, … |
+| `@qkitt/queue/router` | `buildRouter`, … |
+| `@qkitt/queue/persist` | Memory + Web Storage stores |
+| `@qkitt/queue/config` | `defineConfig`, `buildFromConfig`, `buildFromJson`, … |
+| `@qkitt/queue/events` | `buildEventEmitter`, … |
 
-## Source layout
+`@qkitt/queue/worker` is worker helpers (pipeline, retry). `@qkitt/queue/queue` includes the queue worker decorator. Same split for persist: adapters under `/persist`, queue wrappers under `/queue`.
 
-Consumers import `@qkitt/queue` (root) or an area subpath (`@qkitt/queue/router`, …). The tree under `src/` mirrors composition layers:
-
-| Folder | npm subpath | Meaning |
-| --- | --- | --- |
-| `queue/core` | `@qkitt/queue/queue` | FIFO queue (`buildQueue`) |
-| `queue/worker` | `@qkitt/queue/queue` | Attach a processor (`withWorker`) |
-| `queue/persist` | `@qkitt/queue/queue` | Durable queue decorators + store contracts |
-| `persist` | `@qkitt/queue/persist` | Storage backends (memory, Web Storage) |
-| `worker` | `@qkitt/queue/worker` | Processor helpers (`pipeline`, `withRetry`) — not queue decoration |
-| `router` | `@qkitt/queue/router` | Topic routing |
-| `config` | `@qkitt/queue/config` | Declarative system build |
-| `events` | `@qkitt/queue/events` | Typed emitter |
-
-**Name disambiguation:** `src/worker` / `@qkitt/queue/worker` = functions that process items; `src/queue/worker` / `@qkitt/queue/queue` = the decorator that runs them on a queue. `src/persist` / `@qkitt/queue/persist` = store adapters; `src/queue/persist` lives under `@qkitt/queue/queue`.
-
-## Naming convention
-
-Files follow **`<concept>.<role>.ts`** with a closed role set (exactly **one** role suffix):
-
-| Role | Meaning | Example |
-| --- | --- | --- |
-| *(none)* | Primary implementation of that concept | `queue.ts`, `with-worker.ts`, `pipeline.ts` |
-| `.util` | Pure / small helper | `write-chain.util.ts`, `match.util.ts` |
-| `.support` | Shared glue for a feature | `persist.support.ts` |
-| `.types` | Shared contracts only | `persist.types.ts` |
-| `.test` | Co-located tests | `queue.test.ts` |
-
-Rules:
-
-- **Folders** answer *which product area / composition layer* (`core/`, `persist/`).
-- **Role suffix** answers *kind* (product vs helper vs types). Do not invent a second role word (e.g. not `web-storage.access.util.ts`).
-- **Mechanism words live in the concept**, hyphenated: `write-chain.util.ts`, `web-storage-access.util.ts`, `json-codec.util.ts` — not `write.chain.ts` or `json.codec.util.ts`.
-- Untagged file in a folder ≈ the thing users think of for that area.
-- Prefer folders for area + closed role suffixes for kind; avoid deep `utils/` trees unless util count grows large.
-- Extract `.types` when shared across modules or folders; keep types co-located when only one module uses them.
-
-## API map
-
-Public surface via `@qkitt/queue` (`src/index.ts`) and matching area subpaths:
-
-| Area | Subpath | Exports |
-| --- | --- | --- |
-| Queue + queue worker + queue persist | `@qkitt/queue/queue` | `buildQueue`, `QueueFullError`, `withWorker`, `withRowPersist`, `withSnapshotPersist`, `createId`, types… |
-| Worker helpers | `@qkitt/queue/worker` | `pipeline`, `withRetry`, `RetryExhaustedError`, `WorkerFn`, `StepFn` |
-| Router | `@qkitt/queue/router` | `buildRouter`, `RouteMessage`, `matchTopic`, `isValidTopic`, `isValidPattern`, … |
-| Persist stores | `@qkitt/queue/persist` | memory + Web Storage factories, `StorageCodecError`, `WebStorageLike` |
-| Config | `@qkitt/queue/config` | `defineConfig`, `buildFromConfig`, `buildFromJson`, `parseSystemConfig`, `validate*`, `SystemConfig`, … |
-| Events | `@qkitt/queue/events` | `buildEventEmitter`, `createTypedEmit`, `EventEmitter`, `MergeEventMaps` |
-
-Root `@qkitt/queue` re-exports all of the above.
-
-Internals (`forward.util`, `hydrate-gate.util`, `write-chain.util`, `row-ids.util`, codecs) are not part of the stable public contract.
+Internals (`*.util`, codecs, write chain) are not part of the public contract.
 
 ## Development
 
 ```bash
-npm test             # vitest
-npm run typecheck    # tsc --noEmit
-npm run build        # tsup (ESM) + tsc declarations → dist/
-npm run pack:check   # npm pack --dry-run (what would publish)
+npm test              # vitest
+npm run typecheck     # tsc --noEmit
+npm run build         # tsup + d.ts → dist/
+npm run pack:check    # npm pack --dry-run
 npm run release:check # typecheck + test + build + pack:check
 ```
 
-See [CHANGELOG.md](./CHANGELOG.md) for release history.
+Source files use `<concept>` or `<concept>.<role>.ts` where role is one of: `util`, `support`, `types`, `test`.
+
+See [CHANGELOG.md](./CHANGELOG.md).
 
 ## License
 
