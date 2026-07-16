@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- npm publish workflow triggered by `v*` tags (trusted publisher / OIDC)
+- npm publish workflow triggered by `v*` tags (authenticates with the `NPM_PUBLISH` repository secret)
 
 ## [0.3.0] — 2026-07-15
 

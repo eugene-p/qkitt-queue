@@ -669,6 +669,14 @@ npm run pack:check    # npm pack --dry-run
 npm run release:check # typecheck + test + build + pack:check
 ```
 
+### Release
+
+1. Bump `package.json` and [CHANGELOG.md](./CHANGELOG.md), commit, and tag `vX.Y.Z`.
+2. Push the tag — the [publish workflow](.github/workflows/publish.yml) runs `release:check` and `npm publish`.
+3. Add an npm **Automation** token (bypasses 2FA) as the `NPM_PUBLISH` repository secret in GitHub.
+
+Local publish still works with `npm publish --otp=<code>` after `npm login`.
+
 Source files use `<concept>` or `<concept>.<role>.ts` where role is one of: `util`, `support`, `types`, `test`.
 
 See [CHANGELOG.md](./CHANGELOG.md).
