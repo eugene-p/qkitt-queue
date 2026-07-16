@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-15
+
+### Changed
+
+- **Breaking:** `withRowPersist` requires an inner queue typed as `RowRecord<T>` (`buildQueue<RowRecord<T>>()`); callers still enqueue plain `T` values
+- **Breaking:** removed `expand()` from `buildEventEmitter`, `buildQueue`, and `buildRouter`
+- **Breaking:** config validation rejects multiple queues referencing the same named persist store
+- **Breaking:** router `publish` counts a binding as matched before `enqueue`; a throwing target no longer delivers to `unmatchedTarget` (`router:error` is emitted instead)
+- Queue core uses a two-stack FIFO instead of a head-index ring buffer (same public behavior)
+- Worker unsubscribes from `queue:enqueued` while stopped
+
+### Added
+
+- `replaceAll` on row-persisted queues: replaces in-memory rows and clears/reinserts the store with fresh ids
+
+### Removed
+
+- Internal `row-ids` helper (row ids now live in the inner `RowRecord` queue)
+- Internal `forwardQueue` decorator helper (replaced by `decorateQueue` via prototype fall-through)
+
 ## [0.2.0] — 2026-07-13
 
 ### Changed
@@ -60,6 +80,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.3.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.3.0
 [0.2.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.2.0
 [0.1.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.1.1
 [0.1.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.1.0

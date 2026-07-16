@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { forwardQueue } from './forward.util'
+import { decorateQueue } from './forward.util'
 import {
     hasQueueLayer,
     markQueueLayer,
@@ -8,25 +8,25 @@ import {
 } from './layers.util'
 import { buildQueue } from './queue'
 
-describe('forwardQueue', () => {
-    it('forwards base queue methods', () => {
+describe('decorateQueue', () => {
+    it('forwards base queue methods via prototype fall-through', () => {
         const base = buildQueue<number>()
         base.enqueue(1)
 
-        const wrapped = forwardQueue(base, { tag: 'x' as const })
+        const wrapped = decorateQueue(base, { tag: 'x' as const })
 
         expect(wrapped.tag).toBe('x')
         expect(wrapped.size()).toBe(1)
         expect(wrapped.dequeue()).toBe(1)
     })
 
-    it('lets extra override base methods', () => {
+    it('lets overrides shadow base methods', () => {
         const base = buildQueue<string>()
         const enqueue = vi.fn((item: string) => {
             base.enqueue(item)
         })
 
-        const wrapped = forwardQueue(base, { enqueue })
+        const wrapped = decorateQueue(base, { enqueue })
         wrapped.enqueue('a')
 
         expect(enqueue).toHaveBeenCalledWith('a')
@@ -35,12 +35,12 @@ describe('forwardQueue', () => {
 
     it('preserves extras already on the inner queue', () => {
         const base = buildQueue<number>()
-        const inner = forwardQueue(base, {
+        const inner = decorateQueue(base, {
             flush: async () => undefined,
             tag: 'inner' as const,
         })
 
-        const outer = forwardQueue(inner, {
+        const outer = decorateQueue(inner, {
             start: () => undefined,
         })
 
@@ -55,7 +55,7 @@ describe('forwardQueue', () => {
             markQueueLayer(base, PERSIST_LAYER),
             WORKER_LAYER,
         )
-        const outer = forwardQueue(branded, { start: () => undefined })
+        const outer = decorateQueue(branded, { start: () => undefined })
 
         expect(hasQueueLayer(outer, PERSIST_LAYER)).toBe(true)
         expect(hasQueueLayer(outer, WORKER_LAYER)).toBe(true)

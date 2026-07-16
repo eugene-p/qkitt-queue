@@ -1,4 +1,5 @@
 import { buildQueue } from '../queue/core/queue'
+import type { RowRecord } from '../queue/persist/persist.types'
 import { withRowPersist } from '../queue/persist/with-row-persist'
 import { withSnapshotPersist } from '../queue/persist/with-snapshot-persist'
 import {
@@ -47,11 +48,12 @@ const buildQueueFromConfig = <T>(
     storeDefs: Record<string, StoreDefinition> | undefined,
     resolvedStores: Record<string, ResolvedStore<T>>,
 ): ConfiguredQueue<T> => {
-    let queue: ConfiguredQueue<T> = buildQueue<T>(
+    const buildOptions =
         queueConfig.maxSize !== undefined
             ? { maxSize: queueConfig.maxSize }
-            : {},
-    )
+            : {}
+
+    let queue: ConfiguredQueue<T> = buildQueue<T>(buildOptions)
 
     if (queueConfig.persist) {
         const storeName = queueConfig.persist.store
@@ -79,7 +81,10 @@ const buildQueueFromConfig = <T>(
                     `config.stores.${storeName} is not a RowStore`,
                 )
             }
-            queue = withRowPersist(queue, store)
+            queue = withRowPersist(
+                buildQueue<RowRecord<T>>(buildOptions),
+                store,
+            )
         }
     }
 

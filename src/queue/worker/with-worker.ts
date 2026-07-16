@@ -5,7 +5,7 @@ import {
     type MergeEventMaps,
 } from '../../events'
 import type { WorkerFn } from '../../worker/types'
-import { forwardQueue, type PreserveQueueExtras } from '../core/forward.util'
+import { decorateQueue, type PreserveQueueExtras } from '../core/forward.util'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 
@@ -84,8 +84,7 @@ export const withWorker = <
     const concurrency = resolveConcurrency(options.concurrency)
     const autoStart = options.autoStart ?? true
 
-    const inner = queue.expand<WorkerEvents<T, R>>() as TQueue &
-        Queue<T, WorkerQueueEvents<T, R, TEvents>>
+    const inner = queue
     const emitWorker = createTypedEmit<WorkerEvents<T, R>>(
         inner.emit as (eventName: string, data: unknown) => void,
     )
@@ -133,35 +132,37 @@ export const withWorker = <
         }
     }
 
-    const start = (): void => {
-        if (running) return
-        running = true
-        pump()
+    let unsubscribeEnqueued: (() => void) | undefined
+
+    const subscribeEnqueued = (): void => {
+        if (unsubscribeEnqueued) return
+        unsubscribeEnqueued = onQueue('queue:enqueued', () => {
+            pump()
+        })
     }
 
     const stop = (): void => {
         running = false
+        unsubscribeEnqueued?.()
+        unsubscribeEnqueued = undefined
+    }
+
+    const start = (): void => {
+        if (running) return
+        running = true
+        subscribeEnqueued()
+        pump()
     }
 
     // Kick the pump when new work arrives (including post-hydrate restore kick).
-    onQueue('queue:enqueued', () => {
-        pump()
-    })
+    subscribeEnqueued()
 
     if (autoStart) {
         start()
     }
 
-    // `expand` must return this wrapper so further decorators keep worker methods.
     const api = markQueueLayer(
-        forwardQueue(inner, {
-            expand: <TExtra extends EventMap>() =>
-                api as QueueWithWorker<
-                    T,
-                    R,
-                    MergeEventMaps<WorkerQueueEvents<T, R, TEvents>, TExtra>
-                > &
-                    PreserveQueueExtras<TQueue>,
+        decorateQueue(inner, {
             start,
             stop,
             isRunning: () => running,
@@ -171,6 +172,10 @@ export const withWorker = <
         WORKER_LAYER,
     )
 
-    return api as QueueWithWorker<T, R, WorkerQueueEvents<T, R, TEvents>> &
+    return api as unknown as QueueWithWorker<
+        T,
+        R,
+        WorkerQueueEvents<T, R, TEvents>
+    > &
         PreserveQueueExtras<TQueue>
 }

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { buildQueue } from '../queue/core/queue'
-import { withRowPersist } from '../queue/persist/with-row-persist'
+import {
+    withRowPersist,
+    type RowRecord,
+} from '../queue/persist/with-row-persist'
 import { withSnapshotPersist } from '../queue/persist/with-snapshot-persist'
 import {
     createWebRowStore,
@@ -71,7 +74,7 @@ describe('createWebRowStore', () => {
             storage,
         })
         let n = 0
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
 
@@ -89,7 +92,7 @@ describe('createWebRowStore', () => {
         expect(storage.map.get('jobs:order')).toBe('["id-2"]')
         expect(storage.map.has('jobs:row:id-1')).toBe(false)
 
-        const restored = withRowPersist(buildQueue<string>(), store)
+        const restored = withRowPersist(buildQueue<RowRecord<string>>(), store)
         await restored.hydrate()
         expect(restored.toArray()).toEqual(['b'])
         expect(restored.rowIds()).toEqual(['id-2'])
@@ -102,9 +105,13 @@ describe('createWebRowStore', () => {
             storage,
         })
         let n = 0
-        const queue = withRowPersist(buildQueue<{ n: number }>(), store, {
-            createId: () => `r${++n}`,
-        })
+        const queue = withRowPersist(
+            buildQueue<RowRecord<{ n: number }>>(),
+            store,
+            {
+                createId: () => `r${++n}`,
+            },
+        )
 
         queue.enqueue({ n: 1 })
         queue.enqueue({ n: 2 })

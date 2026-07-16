@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { buildQueue } from '../queue/core/queue'
-import { withRowPersist } from '../queue/persist/with-row-persist'
+import {
+    withRowPersist,
+    type RowRecord,
+} from '../queue/persist/with-row-persist'
 import { withSnapshotPersist } from '../queue/persist/with-snapshot-persist'
 import { createMemoryRowStore, createMemorySnapshotStore } from './memory'
 
@@ -25,7 +28,7 @@ describe('createMemoryRowStore', () => {
         const store = createMemoryRowStore<string>([
             { id: '1', item: 'x' },
         ])
-        const first = withRowPersist(buildQueue<string>(), store, {
+        const first = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => '2',
         })
 
@@ -35,7 +38,7 @@ describe('createMemoryRowStore', () => {
         first.dequeue()
         await first.flush()
 
-        const second = withRowPersist(buildQueue<string>(), store)
+        const second = withRowPersist(buildQueue<RowRecord<string>>(), store)
         await second.hydrate()
 
         expect(second.toArray()).toEqual(['y'])

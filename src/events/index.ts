@@ -3,7 +3,7 @@ export type EventMap = Record<never, never>
 
 /**
  * Merge event maps. Extra keys overwrite base keys (no `A[K] & B[K]` intersection).
- * Needed so generic expand/withWorker emit payloads stay assignable.
+ * Needed so generic decorator emit payloads stay assignable.
  */
 export type MergeEventMaps<
     TBase extends EventMap,
@@ -57,17 +57,6 @@ export type EventEmitter<TEvents extends EventMap = EventMap> = {
     listenerCount: <K extends keyof TEvents>(eventName: K) => number
     /** Event names that currently have at least one listener. */
     eventNames: () => (keyof TEvents)[]
-    /**
-     * Widen the event map with additional event types.
-     * Returns the same instance (listeners preserved), typed as the merged map.
-     * Extra keys overwrite base keys (see {@link MergeEventMaps}).
-     *
-     * @example
-     * const base = buildEventEmitter<{ job: { id: string } }>()
-     * const events = base.expand<{ drained: undefined; error: Error }>()
-     * events.on('drained', () => {})
-     */
-    expand: <TExtra extends EventMap>() => EventEmitter<MergeEventMaps<TEvents, TExtra>>
 }
 
 export const buildEventEmitter = <
@@ -163,8 +152,6 @@ export const buildEventEmitter = <
         clear,
         listenerCount,
         eventNames,
-        expand: <TExtra extends EventMap>() =>
-            api as unknown as EventEmitter<MergeEventMaps<TEvents, TExtra>>,
     }
 
     return api

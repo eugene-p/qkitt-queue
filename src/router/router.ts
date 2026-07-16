@@ -3,7 +3,6 @@ import {
     createTypedEmit,
     type EventEmitter,
     type EventMap,
-    type MergeEventMaps,
 } from '../events'
 import { isValidPattern, isValidTopic, matchTopic } from './match.util'
 
@@ -112,7 +111,6 @@ export type Router<TEvents extends EventMap = RouterEvents> = {
     once: EventEmitter<TEvents>['once']
     off: EventEmitter<TEvents>['off']
     emit: EventEmitter<TEvents>['emit']
-    expand: <TExtra extends EventMap>() => Router<MergeEventMaps<TEvents, TExtra>>
 }
 
 /**
@@ -199,9 +197,9 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         // Snapshot so bind/unbind during publish is safe.
         for (const route of [...routes]) {
             if (!matchTopic(route.pattern, topic)) continue
+            matched += 1
             try {
                 route.target.enqueue(message as RouteMessage)
-                matched += 1
             } catch (error) {
                 emitRouter('router:error', {
                     operation: 'publish',
@@ -264,8 +262,6 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         once: events.once,
         off: events.off,
         emit: events.emit,
-        expand: <TExtra extends EventMap>() =>
-            api as unknown as Router<MergeEventMaps<RouterEvents, TExtra>>,
     }
 
     return api

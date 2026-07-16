@@ -150,6 +150,20 @@ describe('validateSystemConfig / parseSystemConfig', () => {
         ).toThrow(/only valid in JS config/)
     })
 
+    it('rejects when two queues reference the same persist store', () => {
+        expect(() =>
+            validateSystemConfig({
+                stores: {
+                    db: { adapter: 'memory', strategy: 'snapshot' },
+                },
+                queues: {
+                    q1: { persist: { store: 'db' } },
+                    q2: { persist: { store: 'db' } },
+                },
+            }),
+        ).toThrow(/Each queue must have a unique store instance/)
+    })
+
     it('rejects store.impl in data-only JSON validation', () => {
         expect(() =>
             validateSystemConfig({
@@ -499,24 +513,18 @@ describe('buildFromConfig', () => {
         expect(store.rows).toEqual([])
     })
 
-    it('reuses one named store across two queues', async () => {
-        const store = createMemorySnapshotStore<string>()
-        const system = await buildFromConfig({
-            stores: {
-                shared: { strategy: 'snapshot', impl: store },
-            },
-            queues: {
-                a: { persist: { store: 'shared' } },
-                b: { persist: { store: 'shared' } },
-            },
-            hydrate: false,
-        })
-
-        expect(system.stores.shared).toBe(store)
-        system.queues.a.enqueue('from-a')
-        await system.flushAll()
-        // Shared snapshot store holds last writer wins — both queues use same backend
-        expect(store.data).toEqual(['from-a'])
+    it('rejects shared store definitions across queues', () => {
+        expect(() =>
+            validateSystemConfig({
+                stores: {
+                    shared: { adapter: 'memory', strategy: 'row' },
+                },
+                queues: {
+                    a: { persist: { store: 'shared' } },
+                    b: { persist: { store: 'shared' } },
+                },
+            }),
+        ).toThrow(/Store "shared" is shared by queues "a" and "b"/)
     })
 
     it('preserves worker on config snapshot (no JSON strip)', async () => {

@@ -3,7 +3,7 @@ import {
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
-import { forwardQueue } from '../core/forward.util'
+import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 import {
@@ -72,7 +72,7 @@ export const withSnapshotPersist = <
     assertBareQueueForPersist(queue, 'withSnapshotPersist')
 
     const autoSave = options.autoSave ?? true
-    const inner = queue.expand<SnapshotPersistEvents>()
+    const inner = queue
     const emitPersist = createTypedEmit<SnapshotPersistEvents>(
         inner.emit as (eventName: string, data: unknown) => void,
     )
@@ -149,25 +149,21 @@ export const withSnapshotPersist = <
         })
     }
 
-    // `expand` must return this wrapper so stacked decorators keep overrides.
-    const api: QueueWithSnapshotPersist<T, SnapshotQueueEvents<T, TEvents>> =
-        markQueueLayer(
-            forwardQueue(inner, {
-                enqueue,
-                dequeue,
-                clear,
-                replaceAll,
-                expand: <TExtra extends EventMap>() =>
-                    api as QueueWithSnapshotPersist<
-                        T,
-                        MergeEventMaps<SnapshotQueueEvents<T, TEvents>, TExtra>
-                    >,
-                hydrate,
-                persist,
-                flush: writes.flush,
-            }),
-            PERSIST_LAYER,
-        )
+    const api = markQueueLayer(
+        decorateQueue(inner, {
+            enqueue,
+            dequeue,
+            clear,
+            replaceAll,
+            hydrate,
+            persist,
+            flush: writes.flush,
+        }),
+        PERSIST_LAYER,
+    )
 
-    return api
+    return api as unknown as QueueWithSnapshotPersist<
+        T,
+        SnapshotQueueEvents<T, TEvents>
+    >
 }

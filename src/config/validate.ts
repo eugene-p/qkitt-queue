@@ -294,6 +294,21 @@ const parseSystemConfigValue = (
         )
     }
 
+    const storeUsage = new Map<string, string>()
+    for (const [queueName, queueConfig] of Object.entries(queues)) {
+        const storeName = queueConfig.persist?.store
+        if (storeName === undefined) continue
+
+        const existingQueue = storeUsage.get(storeName)
+        if (existingQueue !== undefined) {
+            throw new Error(
+                `Store "${storeName}" is shared by queues "${existingQueue}" and "${queueName}". ` +
+                    'Each queue must have a unique store instance to prevent data corruption.',
+            )
+        }
+        storeUsage.set(storeName, queueName)
+    }
+
     const config: SystemConfig = { queues }
 
     if (Object.keys(stores).length > 0) {

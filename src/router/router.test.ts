@@ -169,6 +169,23 @@ describe('buildRouter', () => {
         })
     })
 
+    it('does not route to unmatchedTarget when a matched binding fails to enqueue', () => {
+        const sink = buildQueue<RouteMessage>()
+        const router = buildRouter({ unmatchedTarget: sink })
+        const onUnmatched = vi.fn()
+        router.on('router:unmatched', onUnmatched)
+
+        router.bind('orders.#', {
+            enqueue: () => {
+                throw new Error('queue full')
+            },
+        })
+
+        expect(router.publish('orders.created', { id: 1 })).toBe(1)
+        expect(sink.isEmpty()).toBe(true)
+        expect(onUnmatched).not.toHaveBeenCalled()
+    })
+
     it('emits router:published with match count', () => {
         const router = buildRouter()
         const published = vi.fn()

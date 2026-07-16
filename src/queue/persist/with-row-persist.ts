@@ -1,9 +1,10 @@
 import {
+    buildEventEmitter,
     createTypedEmit,
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
-import { forwardQueue } from '../core/forward.util'
+import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 import { createId } from './create-id.util'
@@ -12,8 +13,7 @@ import {
     createHydrateGate,
 } from './hydrate-gate.util'
 import { assertBareQueueForPersist, notifyQueueRestored } from './persist.support'
-import type { RowStore } from './persist.types'
-import { createRowIdList } from './row-ids.util'
+import type { RowRecord, RowStore } from './persist.types'
 import { createWriteChain } from './write-chain.util'
 
 export { createId } from './create-id.util'
@@ -68,8 +68,8 @@ export type QueueWithRowPersist<
  * Persist each queue mutation as a row operation.
  * Good for DB-style backends where enqueue/dequeue map to insert/delete.
  *
- * **Composition (required):** wrap the bare queue, then the worker:
- * `withWorker(withRowPersist(buildQueue(), store), worker)`.
+ * **Composition (required):** wrap a bare `RowRecord` queue, then the worker:
+ * `withWorker(withRowPersist(buildQueue<RowRecord<T>>(), store), worker)`.
  * Reverse order silently skips store removes — this helper throws if it
  * detects a worker already on the queue.
  *
@@ -86,24 +86,45 @@ export type QueueWithRowPersist<
  */
 export const withRowPersist = <
     T,
-    TEvents extends QueueEvents<T> = QueueEvents<T>,
+    TInnerEvents extends QueueEvents<RowRecord<T>> = QueueEvents<RowRecord<T>>,
 >(
-    queue: Queue<T, TEvents>,
+    queue: Queue<RowRecord<T>, TInnerEvents>,
     store: RowStore<T>,
     options: RowPersistOptions = {},
-): QueueWithRowPersist<T, RowQueueEvents<T, TEvents>> => {
+): QueueWithRowPersist<T, RowQueueEvents<T, QueueEvents<T>>> => {
     assertBareQueueForPersist(queue, 'withRowPersist')
 
     const nextId = options.createId ?? createId
-    const inner = queue.expand<RowPersistEvents<T>>()
+    const inner = queue
+    const emitter = buildEventEmitter<RowQueueEvents<T, QueueEvents<T>>>()
     const emitPersist = createTypedEmit<RowPersistEvents<T>>(
-        inner.emit as (eventName: string, data: unknown) => void,
+        emitter.emit as (eventName: string, data: unknown) => void,
     )
     const gate = createHydrateGate()
     const writes = createWriteChain()
-    const rowIdsList = createRowIdList()
     /** Suppress store scheduling while rebuilding after a failed insert. */
     let localSuppress = false
+
+    const mapRowPayload = (payload: {
+        item: RowRecord<T>
+        size: number
+    }): { item: T; size: number } => ({
+        item: payload.item.item,
+        size: payload.size,
+    })
+
+    inner.on('queue:enqueued', (payload) => {
+        emitter.emit('queue:enqueued', mapRowPayload(payload))
+    })
+    inner.on('queue:dequeued', (payload) => {
+        emitter.emit('queue:dequeued', mapRowPayload(payload))
+    })
+    inner.on('queue:emptied', () => {
+        emitter.emit('queue:emptied', undefined)
+    })
+    inner.on('queue:cleared', (payload) => {
+        emitter.emit('queue:cleared', payload)
+    })
 
     const isSuppressing = (): boolean =>
         gate.isSuppressing() || localSuppress
@@ -121,18 +142,12 @@ export const withRowPersist = <
      * (avoids false drain/refill for listeners during insert rollback).
      */
     const rollbackLocalById = (id: string): void => {
-        const liveIds = rowIdsList.live()
-        const liveIndex = liveIds.indexOf(id)
-        if (liveIndex < 0) return
-
-        const remainingItems = inner.toArray()
-        remainingItems.splice(liveIndex, 1)
-        liveIds.splice(liveIndex, 1)
+        const remaining = inner.toArray().filter((row) => row.id !== id)
+        if (remaining.length === inner.size()) return
 
         localSuppress = true
         try {
-            rowIdsList.reset(liveIds)
-            inner.replaceAll(remainingItems)
+            inner.replaceAll(remaining)
         } finally {
             localSuppress = false
         }
@@ -149,7 +164,7 @@ export const withRowPersist = <
         assertNotHydrating(gate)
 
         const id = nextId()
-        rowIdsList.push(id)
+        const record = { id, item }
 
         // Schedule insert *before* the in-memory enqueue so stacked workers
         // (which dequeue on `queue:enqueued`) cannot put remove ahead of insert
@@ -157,7 +172,7 @@ export const withRowPersist = <
         if (!isSuppressing()) {
             scheduleStore(async () => {
                 try {
-                    await store.insert({ id, item })
+                    await store.insert(record)
                     emitPersist('persist:inserted', { id, item })
                 } catch (error) {
                     rollbackLocalById(id)
@@ -166,17 +181,16 @@ export const withRowPersist = <
             })
         }
 
-        inner.enqueue(item)
+        inner.enqueue(record)
     }
 
     const dequeue = (): T | undefined => {
         assertNotHydrating(gate)
 
-        const item = inner.dequeue()
-        if (item === undefined) return undefined
+        const record = inner.dequeue()
+        if (record === undefined) return undefined
 
-        const id = rowIdsList.shift()
-        if (id === undefined) return item
+        const { id, item } = record
 
         if (isSuppressing()) return item
 
@@ -195,10 +209,9 @@ export const withRowPersist = <
     const clear = (): void => {
         assertNotHydrating(gate)
 
-        const removed = rowIdsList.liveCount()
+        const removed = inner.size()
         if (removed === 0 && inner.isEmpty()) return
 
-        rowIdsList.reset([])
         inner.clear()
 
         if (isSuppressing()) return
@@ -213,16 +226,36 @@ export const withRowPersist = <
         })
     }
 
-    /**
-     * Not supported on durable row queues: a full in-memory replace would
-     * desync ids/store rows. Use {@link QueueWithRowPersist.hydrate} or
-     * enqueue / dequeue / clear. Hydrate/rollback use the inner queue only.
-     */
-    const replaceAll = (_items: readonly T[]): void => {
-        throw new Error(
-            'replaceAll is not supported on row-persisted queues; ' +
-                'use hydrate() to restore from the store, or enqueue/dequeue/clear',
-        )
+    const replaceAll = (items: readonly T[]): void => {
+        assertNotHydrating(gate)
+
+        const removed = inner.size()
+        const records: RowRecord<T>[] = items.map((item) => ({
+            id: nextId(),
+            item,
+        }))
+
+        inner.replaceAll(records)
+
+        if (isSuppressing()) return
+
+        scheduleStore(async () => {
+            try {
+                await store.clear()
+                if (removed > 0) {
+                    emitPersist('persist:cleared', { removed })
+                }
+                for (const record of records) {
+                    await store.insert(record)
+                    emitPersist('persist:inserted', {
+                        id: record.id,
+                        item: record.item,
+                    })
+                }
+            } catch (error) {
+                trackError('clear', error)
+            }
+        })
     }
 
     const hydrate = async (): Promise<void> => {
@@ -234,8 +267,7 @@ export const withRowPersist = <
 
                 // Silent rebuild: no queue:enqueued during gate (workers must
                 // not dequeue while store removes are suppressed).
-                rowIdsList.reset(rows.map((row) => row.id))
-                inner.replaceAll(rows.map((row) => row.item))
+                inner.replaceAll(rows)
 
                 emitPersist('persist:loaded', { size: inner.size() })
             } catch (error) {
@@ -247,30 +279,32 @@ export const withRowPersist = <
         // Gate is open: kick workers so they dequeue with store removes enabled.
         notifyQueueRestored({
             size: inner.size,
-            peek: inner.peek,
-            emit: inner.emit as (eventName: string, data: unknown) => void,
+            peek: () => inner.peek()?.item,
+            emit: emitter.emit as (eventName: string, data: unknown) => void,
         })
     }
 
-    // `expand` must return this wrapper so stacked decorators keep overrides.
-    const api: QueueWithRowPersist<T, RowQueueEvents<T, TEvents>> =
-        markQueueLayer(
-            forwardQueue(inner, {
-                enqueue,
-                dequeue,
-                clear,
-                replaceAll,
-                expand: <TExtra extends EventMap>() =>
-                    api as QueueWithRowPersist<
-                        T,
-                        MergeEventMaps<RowQueueEvents<T, TEvents>, TExtra>
-                    >,
-                hydrate,
-                rowIds: () => rowIdsList.live(),
-                flush: writes.flush,
-            }),
-            PERSIST_LAYER,
-        )
+    const api = markQueueLayer(
+        decorateQueue(inner, {
+            enqueue,
+            dequeue,
+            peek: () => inner.peek()?.item,
+            toArray: () => inner.toArray().map((row) => row.item),
+            clear,
+            replaceAll,
+            on: emitter.on,
+            once: emitter.once,
+            off: emitter.off,
+            emit: emitter.emit,
+            hydrate,
+            rowIds: () => inner.toArray().map((row) => row.id),
+            flush: writes.flush,
+        }),
+        PERSIST_LAYER,
+    )
 
-    return api
+    return api as unknown as QueueWithRowPersist<
+        T,
+        RowQueueEvents<T, QueueEvents<T>>
+    >
 }

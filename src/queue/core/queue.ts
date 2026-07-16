@@ -2,7 +2,6 @@ import {
     buildEventEmitter,
     type EventEmitter,
     type EventMap,
-    type MergeEventMaps,
 } from '../../events'
 
 export type QueueEvents<T> = {
@@ -40,13 +39,7 @@ export type Queue<T, TEvents extends EventMap = QueueEvents<T>> = {
     on: EventEmitter<TEvents>['on']
     once: EventEmitter<TEvents>['once']
     off: EventEmitter<TEvents>['off']
-    /** Emit an event (built-in or added via expand). */
     emit: EventEmitter<TEvents>['emit']
-    /**
-     * Widen the queue event map with additional event types.
-     * Same queue instance; existing listeners are preserved.
-     */
-    expand: <TExtra extends EventMap>() => Queue<T, MergeEventMaps<TEvents, TExtra>>
 }
 
 export type BuildQueueOptions = {
@@ -68,9 +61,6 @@ export class QueueFullError extends Error {
     }
 }
 
-/** Compact dead head slots after this many dequeues without a full rebuild. */
-const COMPACT_HEAD_THRESHOLD = 64
-
 export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     const maxSize = options.maxSize
     if (
@@ -80,18 +70,16 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         throw new Error('maxSize must be a finite number >= 1')
     }
 
-    // Ring-style buffer: O(1) dequeue via head index; compact when head grows.
-    const items: T[] = []
-    let head = 0
+    // Two-stack FIFO: O(1) amortized enqueue/dequeue without splice shifting.
+    let inbox: T[] = []
+    let outbox: T[] = []
     const emitter = buildEventEmitter<QueueEvents<T>>()
 
-    const liveSize = (): number => items.length - head
+    const liveSize = (): number => inbox.length + outbox.length
 
-    const compactIfNeeded = (): void => {
-        if (head === 0) return
-        if (head < COMPACT_HEAD_THRESHOLD && head * 2 < items.length) return
-        items.splice(0, head)
-        head = 0
+    const flipInboxToOutbox = (): void => {
+        outbox = inbox.reverse()
+        inbox = []
     }
 
     const assertCapacity = (nextSize: number): void => {
@@ -102,17 +90,18 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
 
     const enqueue = (item: T): void => {
         assertCapacity(liveSize() + 1)
-        items.push(item)
+        inbox.push(item)
         emitter.emit('queue:enqueued', { item, size: liveSize() })
     }
 
     const dequeue = (): T | undefined => {
-        if (head >= items.length) return undefined
+        if (liveSize() === 0) return undefined
 
-        const item = items[head] as T
-        head += 1
-        compactIfNeeded()
+        if (outbox.length === 0) {
+            flipInboxToOutbox()
+        }
 
+        const item = outbox.pop() as T
         const size = liveSize()
         emitter.emit('queue:dequeued', { item, size })
 
@@ -124,33 +113,36 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     }
 
     const peek = (): T | undefined => {
-        if (head >= items.length) return undefined
-        return items[head]
+        if (liveSize() === 0) return undefined
+        if (outbox.length > 0) {
+            return outbox[outbox.length - 1]
+        }
+        return inbox[0]
     }
 
     const size = (): number => liveSize()
 
-    const isEmpty = (): boolean => head >= items.length
+    const isEmpty = (): boolean => liveSize() === 0
 
     const clear = (): void => {
         const removed = liveSize()
         if (removed === 0) return
 
-        items.length = 0
-        head = 0
+        inbox = []
+        outbox = []
         emitter.emit('queue:cleared', { removed })
     }
 
     const replaceAll = (next: readonly T[]): void => {
         assertCapacity(next.length)
-        items.length = 0
-        head = 0
-        for (const item of next) {
-            items.push(item)
-        }
+        inbox = [...next]
+        outbox = []
     }
 
-    const toArray = (): T[] => items.slice(head)
+    const toArray = (): T[] => {
+        if (outbox.length === 0) return [...inbox]
+        return [...outbox.slice().reverse(), ...inbox]
+    }
 
     const api: Queue<T> = {
         enqueue,
@@ -165,8 +157,6 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         once: emitter.once,
         off: emitter.off,
         emit: emitter.emit,
-        expand: <TExtra extends EventMap>() =>
-            api as unknown as Queue<T, MergeEventMaps<QueueEvents<T>, TExtra>>,
     }
 
     return api

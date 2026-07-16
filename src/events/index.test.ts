@@ -127,57 +127,6 @@ describe('buildEventEmitter', () => {
         expect(emitter.eventNames()).toEqual(expect.arrayContaining(['job', 'drained']))
     })
 
-    it('expand() widens the event map on the same instance', () => {
-        type Extra = {
-            progress: { percent: number }
-            cancelled: void
-        }
-
-        const base = buildEventEmitter<TestEvents>()
-        const jobHandler = vi.fn()
-        const progressHandler = vi.fn()
-
-        base.on('job', jobHandler)
-
-        const expanded = base.expand<Extra>()
-
-        // Same runtime instance — existing listeners stay attached.
-        expect(expanded).toBe(base)
-        expect(expanded.listenerCount('job')).toBe(1)
-
-        expanded.on('progress', progressHandler)
-        expanded.emit('job', { id: '1' })
-        expanded.emit('progress', { percent: 50 })
-
-        expect(jobHandler).toHaveBeenCalledWith({ id: '1' })
-        expect(progressHandler).toHaveBeenCalledWith({ percent: 50 })
-        expect(expanded.eventNames()).toEqual(
-            expect.arrayContaining(['job', 'progress']),
-        )
-    })
-
-    it('expand() can be chained', () => {
-        const emitter = buildEventEmitter<{ a: number }>()
-            .expand<{ b: string }>()
-            .expand<{ c: boolean }>()
-
-        const a = vi.fn()
-        const b = vi.fn()
-        const c = vi.fn()
-
-        emitter.on('a', a)
-        emitter.on('b', b)
-        emitter.on('c', c)
-
-        emitter.emit('a', 1)
-        emitter.emit('b', 'x')
-        emitter.emit('c', true)
-
-        expect(a).toHaveBeenCalledWith(1)
-        expect(b).toHaveBeenCalledWith('x')
-        expect(c).toHaveBeenCalledWith(true)
-    })
-
     it('createTypedEmit bridges loose emit to a typed event map', () => {
         const raw = vi.fn()
         const emit = createTypedEmit<TestEvents>(raw)

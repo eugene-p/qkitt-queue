@@ -31,7 +31,7 @@ describe('withRowPersist', () => {
             { id: '1', item: 'a' },
             { id: '2', item: 'b' },
         ])
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => 'should-not-run',
         })
 
@@ -53,7 +53,7 @@ describe('withRowPersist', () => {
     it('inserts a row on enqueue', async () => {
         let n = 0
         const store = memoryRows<string>()
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
         const inserted = vi.fn()
@@ -70,7 +70,7 @@ describe('withRowPersist', () => {
     it('removes the head row on dequeue', async () => {
         let n = 0
         const store = memoryRows<string>()
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
         const removed = vi.fn()
@@ -92,7 +92,7 @@ describe('withRowPersist', () => {
     it('clears all rows', async () => {
         let n = 0
         const store = memoryRows<number>()
-        const queue = withRowPersist(buildQueue<number>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<number>>(), store, {
             createId: () => `id-${++n}`,
         })
         const cleared = vi.fn()
@@ -120,7 +120,7 @@ describe('withRowPersist', () => {
             remove: async () => {},
             clear: async () => {},
         }
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => 'fixed',
         })
         const onError = vi.fn()
@@ -149,7 +149,7 @@ describe('withRowPersist', () => {
             remove: async () => {},
             clear: async () => {},
         }
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
 
@@ -175,7 +175,7 @@ describe('withRowPersist', () => {
             remove: async () => {},
             clear: async () => {},
         }
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => 'id-1',
         })
         const inserted = vi.fn()
@@ -208,7 +208,7 @@ describe('withRowPersist', () => {
             clear: async () => {},
         }
         let n = 0
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
 
@@ -224,7 +224,7 @@ describe('withRowPersist', () => {
     it('survives restart via hydrate after row ops', async () => {
         let n = 0
         const store = memoryRows<string>()
-        const first = withRowPersist(buildQueue<string>(), store, {
+        const first = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
 
@@ -234,7 +234,7 @@ describe('withRowPersist', () => {
         first.dequeue()
         await first.flush()
 
-        const second = withRowPersist(buildQueue<string>(), store)
+        const second = withRowPersist(buildQueue<RowRecord<string>>(), store)
         await second.hydrate()
 
         expect(second.toArray()).toEqual(['drop'])
@@ -245,7 +245,7 @@ describe('withRowPersist', () => {
         const { withWorker } = await import('../worker/with-worker')
         let n = 0
         const store = memoryRows<string>()
-        const base = withRowPersist(buildQueue<string>(), store, {
+        const base = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
         const queue = withWorker(base, async (item) => item.toUpperCase())
@@ -270,7 +270,7 @@ describe('withRowPersist', () => {
             { id: '1', item: 'a' },
             { id: '2', item: 'b' },
         ])
-        const base = withRowPersist(buildQueue<string>(), store)
+        const base = withRowPersist(buildQueue<RowRecord<string>>(), store)
         const queue = withWorker(base, async (item) => item)
 
         const idle = new Promise<void>((resolve) => {
@@ -285,7 +285,7 @@ describe('withRowPersist', () => {
 
         // Second hydrate must not reprocess completed work.
         const again = withWorker(
-            withRowPersist(buildQueue<string>(), store),
+            withRowPersist(buildQueue<RowRecord<string>>(), store),
             async (item) => item,
         )
         const started = vi.fn()
@@ -310,7 +310,7 @@ describe('withRowPersist', () => {
             remove: async () => {},
             clear: async () => {},
         }
-        const queue = withRowPersist(buildQueue<string>(), store)
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store)
         const pending = queue.hydrate()
 
         await Promise.resolve()
@@ -326,9 +326,9 @@ describe('withRowPersist', () => {
     it('throws when persist is stacked outside a worker', async () => {
         const { withWorker } = await import('../worker/with-worker')
         const workerQueue = withWorker(buildQueue<string>(), async (s) => s)
-        expect(() => withRowPersist(workerQueue, memoryRows())).toThrow(
-            /before withWorker/,
-        )
+        expect(() =>
+            withRowPersist(workerQueue as never, memoryRows()),
+        ).toThrow(/before withWorker/)
     })
 
     it('throws when persist is stacked on an already-persisted queue', async () => {
@@ -338,14 +338,39 @@ describe('withRowPersist', () => {
             buildQueue<string>(),
             createMemorySnapshotStore(),
         )
-        expect(() => withRowPersist(snap, memoryRows())).toThrow(
+        expect(() => withRowPersist(snap as never, memoryRows())).toThrow(
             /already-persisted/,
         )
     })
 
-    it('rejects public replaceAll to avoid store desync', () => {
-        const queue = withRowPersist(buildQueue<string>(), memoryRows())
-        expect(() => queue.replaceAll(['x'])).toThrow(/not supported/)
+    it('replaceAll clears store and inserts new rows with fresh ids', async () => {
+        let n = 0
+        const store = memoryRows<string>()
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
+            createId: () => `new-${++n}`,
+        })
+        const cleared = vi.fn()
+        const inserted = vi.fn()
+        queue.on('persist:cleared', cleared)
+        queue.on('persist:inserted', inserted)
+
+        queue.enqueue('a')
+        queue.enqueue('b')
+        await queue.flush()
+        cleared.mockClear()
+        inserted.mockClear()
+
+        queue.replaceAll(['x', 'y'])
+        await queue.flush()
+
+        expect(queue.toArray()).toEqual(['x', 'y'])
+        expect(queue.rowIds()).toEqual(['new-3', 'new-4'])
+        expect(store.rows).toEqual([
+            { id: 'new-3', item: 'x' },
+            { id: 'new-4', item: 'y' },
+        ])
+        expect(cleared).toHaveBeenCalledWith({ removed: 2 })
+        expect(inserted).toHaveBeenCalledTimes(2)
     })
 
     it('insert rollback does not emit clear/enqueue events', async () => {
@@ -357,7 +382,7 @@ describe('withRowPersist', () => {
             remove: async () => {},
             clear: async () => {},
         }
-        const queue = withRowPersist(buildQueue<string>(), store, {
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => 'fixed',
         })
         const cleared = vi.fn()

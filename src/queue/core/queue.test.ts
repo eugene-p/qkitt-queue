@@ -127,27 +127,6 @@ describe('buildQueue', () => {
         expect(offHandler).toHaveBeenCalledOnce()
     })
 
-    it('expand widens events on the same queue instance', () => {
-        type Extra = { stalled: { reason: string } }
-
-        const queue = buildQueue<number>()
-        const enqueued = vi.fn()
-        const stalled = vi.fn()
-
-        queue.on('queue:enqueued', enqueued)
-
-        const expanded = queue.expand<Extra>()
-        expect(expanded).toBe(queue)
-
-        expanded.on('stalled', stalled)
-        expanded.enqueue(1)
-        expanded.emit('stalled', { reason: 'timeout' })
-
-        expect(enqueued).toHaveBeenCalledWith({ item: 1, size: 1 })
-        expect(stalled).toHaveBeenCalledWith({ reason: 'timeout' })
-        expect(expanded.size()).toBe(1)
-    })
-
     it('replaceAll sets items without emitting queue events', () => {
         const queue = buildQueue<number>()
         const enqueued = vi.fn()
@@ -183,7 +162,7 @@ describe('buildQueue', () => {
         expect(() => buildQueue({ maxSize: NaN })).toThrow(/maxSize/)
     })
 
-    it('compacts after many dequeues while preserving order', () => {
+    it('preserves order after many dequeues', () => {
         const queue = buildQueue<number>()
         for (let i = 0; i < 100; i += 1) {
             queue.enqueue(i)

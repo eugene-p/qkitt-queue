@@ -324,7 +324,7 @@ router: {
 }
 ```
 
-The sink is not a match — `publish` still returns `0`.
+The sink is not a match — `publish` still returns `0`. If a matched binding's `enqueue` throws, `publish` still counts that binding as matched and does not deliver to `unmatchedTarget` (see `router:error`).
 
 | Event | Payload |
 | --- | --- |
@@ -341,14 +341,16 @@ Two strategies:
 1. **Snapshot** — rewrite the whole queue on change
 2. **Row** — insert/remove per item
 
-Worker must be outer so `dequeue` goes through persist:
+Worker must be outer so `dequeue` goes through persist. Row persist wraps a bare queue whose items are `{ id, item }` records (`RowRecord<T>`); the public API still enqueues plain `T` values.
 
 ```ts
+import { buildQueue, withRowPersist, withWorker, type RowRecord } from '@qkitt/queue'
+
 // correct
-withWorker(withRowPersist(buildQueue(), store), worker)
+withWorker(withRowPersist(buildQueue<RowRecord<T>>(), store), worker)
 
 // throws — worker already attached
-withRowPersist(withWorker(buildQueue(), worker), store)
+withRowPersist(withWorker(buildQueue<T>(), worker), store)
 ```
 
 ### Snapshot
@@ -376,10 +378,11 @@ import {
   buildQueue,
   withRowPersist,
   createMemoryRowStore,
+  type RowRecord,
 } from '@qkitt/queue'
 
 const store = createMemoryRowStore<string>()
-const queue = withRowPersist(buildQueue<string>(), store)
+const queue = withRowPersist(buildQueue<RowRecord<string>>(), store)
 // optional: { createId: () => crypto.randomUUID() }
 
 await queue.hydrate()
@@ -388,11 +391,14 @@ await queue.flush()
 queue.rowIds()
 queue.dequeue()
 await queue.flush()
+queue.replaceAll(['x', 'y']) // clears store and reinserts with fresh ids
+await queue.flush()
 ```
 
 | | Snapshot | Row |
 | --- | --- | --- |
 | Writes | Full list rewrite | Insert/remove per op |
+| `replaceAll` | Replaces in-memory list + snapshot | Replaces in-memory rows + store clear/reinsert |
 | Failed write | `persist:error`; memory unchanged | Failed insert rolls back that row; failed remove/clear error only (hydrate to resync) |
 | Wait | `flush()` or `persist()` | `flush()` |
 
@@ -407,6 +413,7 @@ import {
   withRowPersist,
   createLocalStorageSnapshotStore,
   createLocalStorageRowStore,
+  type RowRecord,
 } from '@qkitt/queue'
 
 const snapQueue = withSnapshotPersist(
@@ -416,7 +423,7 @@ const snapQueue = withSnapshotPersist(
 await snapQueue.hydrate()
 
 const rowQueue = withRowPersist(
-  buildQueue<{ id: string }>(),
+  buildQueue<RowRecord<{ id: string }>>(),
   createLocalStorageRowStore('my-app:jobs'),
 )
 await rowQueue.hydrate()
@@ -509,7 +516,7 @@ await system.flushAll()
 
 Build order: stores → queue → persist → worker → router → hydrate.
 
-Rules: persist wraps the bare queue; worker is outer; one persist layer per queue.
+Rules: persist wraps the bare queue; worker is outer; one persist layer per queue; each named store may back at most one queue (shared store definitions are rejected at validation).
 
 ### JSON
 
@@ -591,6 +598,7 @@ import {
   buildRouter,
   createMemoryRowStore,
   type RouteMessage,
+  type RowRecord,
 } from '@qkitt/queue'
 
 type EmailJob = { to: string; body: string }
@@ -598,7 +606,10 @@ type EmailJob = { to: string; body: string }
 const router = buildRouter()
 const store = createMemoryRowStore<RouteMessage<EmailJob>>()
 
-const base = withRowPersist(buildQueue<RouteMessage<EmailJob>>(), store)
+const base = withRowPersist(
+  buildQueue<RowRecord<RouteMessage<EmailJob>>>(),
+  store,
+)
 await base.hydrate()
 
 const worker = withRetry(
