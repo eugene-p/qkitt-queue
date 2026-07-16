@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-07-15
+
+### Changed
+
+- GitHub Actions CI and publish workflows use `actions/checkout@v5` and `actions/setup-node@v5` (Node 24 action runtime; project tests/build on Node 22)
+
+### Added
+
+- npm publish workflow triggered by `v*` tags (trusted publisher / OIDC)
+
 ## [0.3.0] — 2026-07-15
 
 ### Changed
@@ -80,6 +90,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.3.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.3.1
 [0.3.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.3.0
 [0.2.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.2.0
 [0.1.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.1.1
