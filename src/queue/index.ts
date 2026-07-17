@@ -15,6 +15,7 @@ export {
 } from './worker/with-worker'
 
 export { createId } from './persist/create-id.util'
+export { QueueHydratingError } from './persist/hydrate-gate.util'
 export type { RowRecord, RowStore, SnapshotStore } from './persist/persist.types'
 export {
     withRowPersist,

@@ -160,6 +160,9 @@ describe('buildQueue', () => {
     it('rejects invalid maxSize', () => {
         expect(() => buildQueue({ maxSize: 0 })).toThrow(/maxSize/)
         expect(() => buildQueue({ maxSize: NaN })).toThrow(/maxSize/)
+        expect(() => buildQueue({ maxSize: Infinity })).toThrow(/maxSize/)
+        expect(() => buildQueue({ maxSize: -1 })).toThrow(/maxSize/)
+        expect(() => buildQueue({ maxSize: 1.5 })).toThrow(/maxSize/)
     })
 
     it('preserves order after many dequeues', () => {

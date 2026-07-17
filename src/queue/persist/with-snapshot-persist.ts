@@ -6,13 +6,10 @@ import {
 import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
-import {
-    assertNotHydrating,
-    createHydrateGate,
-} from './hydrate-gate.util'
-import { assertBareQueueForPersist, notifyQueueRestored } from './persist.support'
+import { assertNotHydrating } from './hydrate-gate.util'
+import { createPersistenceLifecycle } from './persistence-lifecycle.util'
+import { assertBareQueueForPersist } from './persist.support'
 import type { SnapshotStore } from './persist.types'
-import { createWriteChain } from './write-chain.util'
 
 export type { SnapshotStore } from './persist.types'
 
@@ -59,7 +56,8 @@ export type QueueWithSnapshotPersist<
  *
  * Uses silent hydrate rebuild + a post-gate `queue:enqueued` kick so stacked
  * workers process restored items only after auto-save is allowed again.
- * Concurrent mutations during `hydrate` throw.
+ * Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
+ * A second concurrent `hydrate()` rejects with “hydrate already in progress”.
  */
 export const withSnapshotPersist = <
     T,
@@ -76,8 +74,25 @@ export const withSnapshotPersist = <
     const emitPersist = createTypedEmit<SnapshotPersistEvents>(
         inner.emit as (eventName: string, data: unknown) => void,
     )
-    const gate = createHydrateGate()
-    const writes = createWriteChain()
+
+    const lifecycle = createPersistenceLifecycle({
+        loadAndReplace: async () => {
+            const items = await store.load()
+            // Silent rebuild — no queue events / auto-save during gate.
+            inner.replaceAll(items)
+            emitPersist('persist:loaded', { size: inner.size() })
+        },
+        onLoadError: (error) => {
+            emitPersist('persist:error', { operation: 'load', error })
+        },
+        notify: {
+            size: inner.size,
+            peek: inner.peek,
+            emit: inner.emit as (eventName: string, data: unknown) => void,
+        },
+    })
+
+    const { gate, writes, hydrate, flush } = lifecycle
 
     const persist = (): Promise<void> =>
         writes.push(async () => {
@@ -126,29 +141,6 @@ export const withSnapshotPersist = <
         scheduleSave()
     }
 
-    const hydrate = async (): Promise<void> => {
-        await gate.run(async () => {
-            try {
-                // Finish pending auto-saves before replacing memory from store.
-                await writes.flush()
-                const items = await store.load()
-                // Silent rebuild — no queue events / auto-save during gate.
-                inner.replaceAll(items)
-                emitPersist('persist:loaded', { size: inner.size() })
-            } catch (error) {
-                emitPersist('persist:error', { operation: 'load', error })
-                throw error
-            }
-        })
-
-        // Kick stacked workers after the gate so dequeues schedule saves.
-        notifyQueueRestored({
-            size: inner.size,
-            peek: inner.peek,
-            emit: inner.emit as (eventName: string, data: unknown) => void,
-        })
-    }
-
     const api = markQueueLayer(
         decorateQueue(inner, {
             enqueue,
@@ -157,7 +149,7 @@ export const withSnapshotPersist = <
             replaceAll,
             hydrate,
             persist,
-            flush: writes.flush,
+            flush,
         }),
         PERSIST_LAYER,
     )

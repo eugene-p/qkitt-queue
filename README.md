@@ -111,7 +111,7 @@ queue.toArray()   // [2]
 queue.isEmpty()   // false
 queue.clear()
 
-const bounded = buildQueue<number>({ maxSize: 100 })
+const bounded = buildQueue<number>({ maxSize: 100 }) // maxSize: safe integer ≥ 1
 try {
   bounded.enqueue(1)
 } catch (error) {
@@ -139,7 +139,7 @@ unsubscribe()
 
 ## Queue with worker
 
-`withWorker` dequeues items and runs your async function. Defaults: auto-start, concurrency 1.
+`withWorker` dequeues items and runs your async function. Defaults: auto-start, concurrency 1 (safe integer ≥ 1).
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue'
@@ -154,6 +154,7 @@ queue.on('worker:started', ({ item }) => console.log('start', item))
 queue.on('worker:completed', ({ item, result }) => console.log(item, '→', result))
 queue.on('worker:failed', ({ item, error }) => console.error(item, error))
 queue.on('worker:idle', () => console.log('idle'))
+queue.on('worker:pump-error', ({ error }) => console.error('pump', error))
 
 queue.enqueue('a')
 queue.enqueue('b')
@@ -164,6 +165,8 @@ queue.isRunning()
 queue.isProcessing()
 queue.activeCount()
 ```
+
+While a stacked persist layer is hydrating, `dequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate restore kick. Any other unexpected `dequeue` failure emits `worker:pump-error` and stops the worker (call `start()` after fixing the cause).
 
 Manual start:
 
@@ -182,6 +185,7 @@ queue.start()
 | `worker:completed` | `{ item, result }` | Resolved |
 | `worker:failed` | `{ item, error }` | Rejected |
 | `worker:idle` | `undefined` | Empty and nothing in flight |
+| `worker:pump-error` | `{ error }` | Unexpected `dequeue` failure (worker stops) |
 
 Failed items are not re-queued. Use `withRetry` or handle `worker:failed`.
 
@@ -197,8 +201,8 @@ const worker = withRetry(
     return res.json()
   },
   {
-    retries: 3, // attempts = retries + 1
-    delay: (attempt) => 100 * 2 ** (attempt - 1),
+    retries: 3, // safe integer ≥ 0; attempts = retries + 1
+    delay: (attempt) => 100 * 2 ** (attempt - 1), // finite ms ≥ 0
     shouldRetry: (error) => !(error instanceof TypeError),
   },
 )
@@ -264,6 +268,8 @@ const worker = withRetry(
 | `orders.*` | One segment (`orders.created`, not `orders.a.b`) |
 | `orders.#` | Zero or more trailing segments |
 | `#` | Everything |
+
+Wildcards `*` and `#` are only valid as a whole segment. Patterns like `orders*` or `ord#` are rejected.
 
 ```ts
 import {
@@ -402,7 +408,7 @@ await queue.flush()
 | Failed write | `persist:error`; memory unchanged | Failed insert rolls back that row; failed remove/clear error only (hydrate to resync) |
 | Wait | `flush()` or `persist()` | `flush()` |
 
-`enqueue` / `dequeue` / `clear` stay sync; store I/O runs on a serialized write chain. Concurrent mutations during `hydrate` throw.
+`enqueue` / `dequeue` / `clear` stay sync; store I/O runs on a serialized write chain. Concurrent mutations during `hydrate` throw `QueueHydratingError`. A second concurrent `hydrate()` rejects with “hydrate already in progress”. Row ids from `createId` / `loadAll` must be unique non-empty strings (not whitespace-only; duplicates throw before memory or store mutation).
 
 ### Browser storage
 
@@ -556,10 +562,10 @@ const system = await buildFromJson(jsonText, { storage: myWebStorage })
 | `stores.<name>.key` | Required for web adapters |
 | `stores.<name>.impl` | JS only — your store instance |
 | `queues.<name>` | `{}` = plain in-memory |
-| `queues.<name>.maxSize` | Capacity; throws `QueueFullError` when full |
+| `queues.<name>.maxSize` | Capacity (safe integer ≥ 1); throws `QueueFullError` when full |
 | `queues.<name>.persist.store` | Name of a store |
 | `queues.<name>.persist.autoSave` | Snapshot only; default `true` |
-| `queues.<name>.worker` | JS only — function or `{ run, concurrency?, autoStart? }` |
+| `queues.<name>.worker` | JS only — function or `{ run, concurrency? (safe integer ≥ 1), autoStart? }` |
 | `router.bindings` | `{ pattern, queue }` |
 | `hydrate` | Load after build (default `true` if any persist) |
 

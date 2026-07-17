@@ -59,5 +59,10 @@ describe('isValidTopic / isValidPattern', () => {
         expect(isValidPattern('a.#.b')).toBe(false)
         expect(isValidPattern('a..b')).toBe(false)
         expect(isValidPattern('')).toBe(false)
+        // Wildcard chars only valid as whole segments.
+        expect(isValidPattern('orders*')).toBe(false)
+        expect(isValidPattern('orders#')).toBe(false)
+        expect(isValidPattern('ord*.x')).toBe(false)
+        expect(isValidPattern('x.ord#')).toBe(false)
     })
 })

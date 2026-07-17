@@ -96,7 +96,7 @@ describe('withRetry', () => {
         vi.useRealTimers()
     })
 
-    it('supports function delay and clamps negative delay to 0', async () => {
+    it('supports function delay', async () => {
         vi.useFakeTimers()
         const seen: Array<{ attempt: number; error: unknown }> = []
         const inner = vi
@@ -108,11 +108,14 @@ describe('withRetry', () => {
             retries: 1,
             delay: (attempt, error) => {
                 seen.push({ attempt, error })
-                return -25
+                return 10
             },
         })
         const pending = worker('job')
 
+        await Promise.resolve()
+        expect(inner).toHaveBeenCalledTimes(1)
+        await vi.advanceTimersByTimeAsync(10)
         await expect(pending).resolves.toBe('ok')
         expect(inner).toHaveBeenCalledTimes(2)
         expect(seen).toHaveLength(1)
@@ -120,5 +123,55 @@ describe('withRetry', () => {
         expect(seen[0]!.error).toBeInstanceOf(Error)
 
         vi.useRealTimers()
+    })
+
+    it('rejects invalid retries at wrap time', () => {
+        const inner = vi.fn(async (n: number) => n)
+        expect(() => withRetry(inner, NaN)).toThrow(/retries/)
+        expect(() => withRetry(inner, -1)).toThrow(/retries/)
+        expect(() => withRetry(inner, 1.5)).toThrow(/retries/)
+        expect(() => withRetry(inner, { retries: Infinity })).toThrow(/retries/)
+    })
+
+    it('rejects invalid static delay at wrap time', () => {
+        const inner = vi.fn(async (n: number) => n)
+        expect(() => withRetry(inner, { retries: 1, delay: -1 })).toThrow(
+            /delay/,
+        )
+        expect(() => withRetry(inner, { retries: 1, delay: NaN })).toThrow(
+            /delay/,
+        )
+        expect(() =>
+            withRetry(inner, { retries: 1, delay: Infinity }),
+        ).toThrow(/delay/)
+    })
+
+    it('throws when delay callback returns an invalid duration', async () => {
+        const cause = new Error('fail')
+        const inner = vi.fn(async () => {
+            throw cause
+        })
+        const worker = withRetry(inner, {
+            retries: 2,
+            delay: () => -1,
+        })
+
+        await expect(worker(1)).rejects.toThrow(/delay/)
+        // Delay validation runs after the first failure, before retry 2.
+        expect(inner).toHaveBeenCalledTimes(1)
+    })
+
+    it('retains RetryExhaustedError cause for exhausted failures', async () => {
+        const cause = new Error('always')
+        const inner = vi.fn(async () => {
+            throw cause
+        })
+        const worker = withRetry(inner, { retries: 0 })
+
+        await expect(worker(1)).rejects.toMatchObject({
+            name: 'RetryExhaustedError',
+            attempts: 1,
+            cause,
+        })
     })
 })

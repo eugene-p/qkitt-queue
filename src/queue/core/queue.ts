@@ -3,6 +3,7 @@ import {
     type EventEmitter,
     type EventMap,
 } from '../../events'
+import { isIntegerInRange } from '../../util/number.util'
 
 export type QueueEvents<T> = {
     /** Fired after an item is added to the tail. */
@@ -45,6 +46,7 @@ export type Queue<T, TEvents extends EventMap = QueueEvents<T>> = {
 export type BuildQueueOptions = {
     /**
      * Maximum items allowed in the queue.
+     * Must be a safe integer ≥ 1.
      * `enqueue` / `replaceAll` throw {@link QueueFullError} when exceeded.
      */
     maxSize?: number
@@ -63,11 +65,8 @@ export class QueueFullError extends Error {
 
 export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     const maxSize = options.maxSize
-    if (
-        maxSize !== undefined &&
-        (!Number.isFinite(maxSize) || maxSize < 1)
-    ) {
-        throw new Error('maxSize must be a finite number >= 1')
+    if (maxSize !== undefined && !isIntegerInRange(maxSize, 1)) {
+        throw new Error('maxSize must be a safe integer >= 1')
     }
 
     // Two-stack FIFO: O(1) amortized enqueue/dequeue without splice shifting.

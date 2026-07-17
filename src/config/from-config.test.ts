@@ -641,6 +641,21 @@ describe('buildFromConfig integration', () => {
                 },
             }),
         ).toThrow(/concurrency/)
+
+        for (const concurrency of [NaN, Infinity, -1, 1.5]) {
+            expect(() =>
+                defineConfig({
+                    queues: {
+                        jobs: {
+                            worker: {
+                                run: async () => {},
+                                concurrency,
+                            },
+                        },
+                    },
+                }),
+            ).toThrow(/concurrency/)
+        }
     })
 
     it('applies queue maxSize from config', async () => {
@@ -661,6 +676,14 @@ describe('buildFromConfig integration', () => {
                 queues: { jobs: { maxSize: 0 } },
             }),
         ).toThrow(/maxSize/)
+
+        for (const maxSize of [NaN, Infinity, -1, 1.5]) {
+            expect(() =>
+                validateSystemConfig({
+                    queues: { jobs: { maxSize } },
+                }),
+            ).toThrow(/maxSize/)
+        }
     })
 })
 

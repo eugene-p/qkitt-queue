@@ -323,6 +323,154 @@ describe('withRowPersist', () => {
         expect(queue.toArray()).toEqual(['a'])
     })
 
+    it('rejects a second concurrent hydrate without opening the mutation gate early', async () => {
+        let releaseLoad!: () => void
+        const loadGate = new Promise<void>((resolve) => {
+            releaseLoad = resolve
+        })
+        let loadCount = 0
+        const store: RowStore<string> = {
+            loadAll: async () => {
+                loadCount += 1
+                await loadGate
+                return [{ id: '1', item: 'from-store' }]
+            },
+            insert: async () => {},
+            remove: async () => {},
+            clear: async () => {},
+        }
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store)
+        const first = queue.hydrate()
+
+        await Promise.resolve()
+        await expect(queue.hydrate()).rejects.toThrow(
+            /hydrate already in progress/,
+        )
+        // Gate still owned by first hydrate — mutations remain blocked.
+        expect(() => queue.enqueue('x')).toThrow(/hydrate/)
+        expect(loadCount).toBe(1)
+
+        releaseLoad()
+        await first
+        expect(queue.toArray()).toEqual(['from-store'])
+        // Second hydrate can run after the first finishes.
+        await queue.hydrate()
+        expect(loadCount).toBe(2)
+    })
+
+    it('rejects duplicate generated ids on enqueue before store ops', async () => {
+        const insert = vi.fn(async () => {})
+        const store: RowStore<string> = {
+            loadAll: async () => [],
+            insert,
+            remove: async () => {},
+            clear: async () => {},
+        }
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
+            createId: () => 'same',
+        })
+
+        queue.enqueue('a')
+        await queue.flush()
+        expect(insert).toHaveBeenCalledTimes(1)
+
+        expect(() => queue.enqueue('b')).toThrow(/duplicate row id/)
+        expect(queue.toArray()).toEqual(['a'])
+        await queue.flush()
+        expect(insert).toHaveBeenCalledTimes(1)
+    })
+
+    it('rejects empty or whitespace-only generated ids on enqueue before store ops', async () => {
+        const insert = vi.fn(async () => {})
+        const store: RowStore<string> = {
+            loadAll: async () => [],
+            insert,
+            remove: async () => {},
+            clear: async () => {},
+        }
+
+        for (const badId of ['', '   ', '\t\n']) {
+            insert.mockClear()
+            const queue = withRowPersist(
+                buildQueue<RowRecord<string>>(),
+                store,
+                { createId: () => badId },
+            )
+            expect(() => queue.enqueue('a')).toThrow(/non-empty/)
+            expect(queue.isEmpty()).toBe(true)
+            await queue.flush()
+            expect(insert).not.toHaveBeenCalled()
+        }
+    })
+
+    it('rejects duplicate ids from loadAll before replaceAll', async () => {
+        const store: RowStore<string> = {
+            loadAll: async () => [
+                { id: '1', item: 'a' },
+                { id: '1', item: 'b' },
+            ],
+            insert: async () => {},
+            remove: async () => {},
+            clear: async () => {},
+        }
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store)
+        queue.enqueue('keep')
+        await queue.flush()
+
+        const onError = vi.fn()
+        queue.on('persist:error', onError)
+
+        await expect(queue.hydrate()).rejects.toThrow(/duplicate row id/)
+        expect(onError).toHaveBeenCalledWith(
+            expect.objectContaining({ operation: 'load' }),
+        )
+        // Prevalidation failed — memory unchanged.
+        expect(queue.toArray()).toEqual(['keep'])
+    })
+
+    it('rejects empty or whitespace-only ids from loadAll', async () => {
+        for (const badId of ['', '  ']) {
+            const store: RowStore<string> = {
+                loadAll: async () => [{ id: badId, item: 'a' }],
+                insert: async () => {},
+                remove: async () => {},
+                clear: async () => {},
+            }
+            const queue = withRowPersist(
+                buildQueue<RowRecord<string>>(),
+                store,
+            )
+
+            await expect(queue.hydrate()).rejects.toThrow(/non-empty/)
+            expect(queue.isEmpty()).toBe(true)
+        }
+    })
+
+    it('rejects replaceAll when generated ids collide before store ops', async () => {
+        let n = 0
+        const insert = vi.fn(async () => {})
+        const clear = vi.fn(async () => {})
+        const store: RowStore<string> = {
+            loadAll: async () => [],
+            insert,
+            remove: async () => {},
+            clear,
+        }
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
+            createId: () => {
+                n += 1
+                // First id unique, second collides with first.
+                return n === 1 ? 'a' : 'a'
+            },
+        })
+
+        expect(() => queue.replaceAll(['x', 'y'])).toThrow(/duplicate row id/)
+        expect(queue.isEmpty()).toBe(true)
+        await queue.flush()
+        expect(clear).not.toHaveBeenCalled()
+        expect(insert).not.toHaveBeenCalled()
+    })
+
     it('throws when persist is stacked outside a worker', async () => {
         const { withWorker } = await import('../worker/with-worker')
         const workerQueue = withWorker(buildQueue<string>(), async (s) => s)

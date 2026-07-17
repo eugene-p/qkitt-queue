@@ -1,4 +1,8 @@
-/** One durable row, stable id + payload, ordered head → tail when loaded. */
+/**
+ * One durable row, stable id + payload, ordered head → tail when loaded.
+ * `id` must be a non-empty string (not whitespace-only) and unique among rows
+ * in the same store/queue.
+ */
 export type RowRecord<T> = {
     id: string
     item: T
@@ -6,7 +10,9 @@ export type RowRecord<T> = {
 
 /**
  * Row-level backend (SQL table, KV with per-job keys, etc.).
- * `loadAll` must return rows in FIFO order (head first).
+ * `loadAll` must return rows in FIFO order (head first) with unique, non-empty
+ * (not whitespace-only) ids. `withRowPersist.hydrate` rejects empty,
+ * whitespace-only, or duplicate ids before applying the snapshot to memory.
  */
 export type RowStore<T> = {
     loadAll: () => readonly RowRecord<T>[] | Promise<readonly RowRecord<T>[]>

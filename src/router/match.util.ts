@@ -22,7 +22,10 @@ export const isValidTopic = (topic: string): boolean => {
 }
 
 /**
- * Validate a bind pattern (`*`, `#` allowed; `#` only as last segment).
+ * Validate a bind pattern.
+ * Wildcards `*` and `#` are only valid as an entire segment (`*` any one
+ * segment; `#` only as the final segment). Mixed tokens like `orders*` or
+ * `ord#` are rejected so they cannot form dead bindings.
  */
 export const isValidPattern = (pattern: string): boolean => {
     if (pattern.length === 0) return false
@@ -34,7 +37,16 @@ export const isValidPattern = (pattern: string): boolean => {
         if (segment === MULTI_WILDCARD) {
             return i === segments.length - 1
         }
-        // `*` is a full segment; mixed tokens like `ord*` are not wildcards.
+        if (segment === SINGLE_WILDCARD) {
+            continue
+        }
+        // Literal segments must not embed wildcard characters.
+        if (
+            segment.includes(SINGLE_WILDCARD) ||
+            segment.includes(MULTI_WILDCARD)
+        ) {
+            return false
+        }
     }
 
     return true

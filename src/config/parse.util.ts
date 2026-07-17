@@ -1,3 +1,4 @@
+import { isIntegerInRange } from '../util/number.util'
 import type { BuiltinStoreAdapter } from './types'
 
 export const BUILTIN_ADAPTERS = new Set<BuiltinStoreAdapter>([
@@ -25,13 +26,19 @@ export const expectBoolean = (value: unknown, path: string): boolean => {
     return value
 }
 
-/** Finite number ≥ 1 (queue maxSize, worker concurrency, …). */
-export const expectPositiveFinite = (value: unknown, path: string): number => {
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 1) {
-        throw new Error(`${path} must be a finite number >= 1`)
+/** Safe integer ≥ 1 (queue maxSize, worker concurrency, …). */
+export const expectPositiveInteger = (value: unknown, path: string): number => {
+    if (!isIntegerInRange(value, 1)) {
+        throw new Error(`${path} must be a safe integer >= 1`)
     }
     return value
 }
+
+/**
+ * @deprecated Prefer {@link expectPositiveInteger}. Alias kept for call sites
+ * that previously accepted finite floats.
+ */
+export const expectPositiveFinite = expectPositiveInteger
 
 export const parseAdapter = (
     value: unknown,

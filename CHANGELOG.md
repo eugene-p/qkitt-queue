@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-16
+
+### Breaking
+
+These tighten previously loose input handling and worker error swallowing. Call sites that relied on the old leniency need to pass valid values (or handle the new events/errors). Treat as a **minor** break under 0.x unless you prefer a 1.0 major cut.
+
+- `maxSize`, `concurrency`, and `retries` must be safe integers in range; fractional values (e.g. `1.5`) and non-integers no longer coerce via `Math.floor` / `Math.max`
+- Invalid retry `delay` values (negative, `NaN`, non-finite) throw instead of being clamped to `0`
+- Unexpected `dequeue` failures in `withWorker` emit `worker:pump-error` and **stop** the worker; only `QueueHydratingError` is swallowed so hydrate can resume
+- Concurrent second `hydrate()` rejects with “hydrate already in progress” (gate is exclusive)
+- Row ids that are empty or whitespace-only, or that collide with an existing id, throw before memory/store mutation
+- Router bind patterns reject segments that embed `*`/`#` without being the whole segment (e.g. `orders*` is invalid)
+
+### Fixed
+
+- Hydrate gate no longer clears suppression while another hydrate is still in flight
+- Row persist enforces unique, non-empty (non-whitespace) ids from `createId`, `replaceAll`, and `loadAll`
+
+### Changed
+
+- Config validation for `maxSize` / `concurrency` requires safe integers ≥ 1 (aligned with direct APIs)
+
+### Added
+
+- Public `QueueHydratingError` for mutate/dequeue during hydrate
+- `worker:pump-error` event
+
 ## [0.3.1] — 2026-07-15
 
 ### Changed
@@ -90,6 +117,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.4.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.4.0
 [0.3.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.3.1
 [0.3.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.3.0
 [0.2.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.2.0

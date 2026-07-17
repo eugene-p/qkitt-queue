@@ -4,10 +4,12 @@ import {
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
+import { isIntegerInRange } from '../../util/number.util'
 import type { WorkerFn } from '../../worker/types'
 import { decorateQueue, type PreserveQueueExtras } from '../core/forward.util'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
+import { QueueHydratingError } from '../persist/hydrate-gate.util'
 
 export type WorkerEvents<T, R = unknown> = {
     /** Fired just before the worker runs an item. */
@@ -18,10 +20,15 @@ export type WorkerEvents<T, R = unknown> = {
     'worker:failed': { item: T; error: unknown }
     /** Fired when nothing is in-flight and the queue is empty. */
     'worker:idle': undefined
+    /**
+     * Fired when `dequeue` throws an unexpected error (not hydrate).
+     * The worker stops taking new items; call `start()` after fixing the cause.
+     */
+    'worker:pump-error': { error: unknown }
 }
 
 export type WithWorkerOptions = {
-    /** Max items processed at the same time. Defaults to 1. Must be a finite number ≥ 1. */
+    /** Max items processed at the same time. Defaults to 1. Must be a safe integer ≥ 1. */
     concurrency?: number
     /** Start pumping immediately. Defaults to true. */
     autoStart?: boolean
@@ -53,10 +60,10 @@ export type QueueWithWorker<
 
 const resolveConcurrency = (value: number | undefined): number => {
     const concurrency = value ?? 1
-    if (!Number.isFinite(concurrency) || concurrency < 1) {
-        throw new Error('concurrency must be a finite number >= 1')
+    if (!isIntegerInRange(concurrency, 1)) {
+        throw new Error('concurrency must be a safe integer >= 1')
     }
-    return Math.floor(concurrency)
+    return concurrency
 }
 
 /**
@@ -69,6 +76,11 @@ const resolveConcurrency = (value: number | undefined): number => {
  *
  * Inner decorator extras (e.g. `flush` from row/snapshot persist) are preserved
  * at runtime and in the return type via {@link PreserveQueueExtras}.
+ *
+ * While a stacked persist layer is hydrating, `dequeue` throws
+ * {@link QueueHydratingError}; the pump waits for the post-hydrate
+ * `queue:enqueued` kick. Any other dequeue failure emits `worker:pump-error`
+ * and stops the worker.
  */
 export const withWorker = <
     T,
@@ -115,23 +127,6 @@ export const withWorker = <
         }
     }
 
-    const pump = (): void => {
-        // Dequeue can throw while a stacked persist layer is hydrating.
-        // Swallow and stop this pump; post-hydrate `queue:enqueued` kick resumes.
-        try {
-            while (running && active < concurrency) {
-                const item = inner.dequeue()
-                if (item === undefined) break
-
-                active += 1
-                void processItem(item)
-            }
-        } catch {
-            // Intentionally empty — hydrate / capacity errors must not reject
-            // the worker's fire-and-forget processItem finally path.
-        }
-    }
-
     let unsubscribeEnqueued: (() => void) | undefined
 
     const subscribeEnqueued = (): void => {
@@ -145,6 +140,26 @@ export const withWorker = <
         running = false
         unsubscribeEnqueued?.()
         unsubscribeEnqueued = undefined
+    }
+
+    const pump = (): void => {
+        try {
+            while (running && active < concurrency) {
+                const item = inner.dequeue()
+                if (item === undefined) break
+
+                active += 1
+                void processItem(item)
+            }
+        } catch (error) {
+            // Persist hydrate: wait for post-hydrate restore kick.
+            if (error instanceof QueueHydratingError) {
+                return
+            }
+            // Unexpected dequeue failure: surface and stop so it is not silent.
+            emitWorker('worker:pump-error', { error })
+            stop()
+        }
     }
 
     const start = (): void => {

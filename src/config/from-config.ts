@@ -96,6 +96,85 @@ const buildQueueFromConfig = <T>(
     return queue
 }
 
+const buildQueues = <TConfig extends SystemConfig, T>(
+    validated: SystemConfig,
+    resolvedStores: Record<string, ResolvedStore<T>>,
+): ConfiguredSystem<TConfig, T>['queues'] => {
+    const queues = {} as ConfiguredSystem<TConfig, T>['queues']
+
+    for (const [name, queueConfig] of Object.entries(validated.queues)) {
+        ;(queues as Record<string, ConfiguredQueue<T>>)[name] =
+            buildQueueFromConfig(
+                name,
+                queueConfig,
+                validated.stores,
+                resolvedStores,
+            )
+    }
+
+    return queues
+}
+
+const buildConfiguredRouter = <T>(
+    routerConfig: NonNullable<SystemConfig['router']>,
+    queues: Record<string, ConfiguredQueue<T>>,
+): Router => {
+    let unmatchedTarget: RouteTarget | undefined
+
+    if (routerConfig.unmatchedQueue !== undefined) {
+        const sink = queues[routerConfig.unmatchedQueue]
+        if (!sink) {
+            throw new Error(
+                `router unmatchedQueue "${routerConfig.unmatchedQueue}" is not defined`,
+            )
+        }
+        unmatchedTarget = sink as unknown as RouteTarget
+    }
+
+    const built = buildRouter(
+        unmatchedTarget !== undefined ? { unmatchedTarget } : {},
+    )
+    for (const binding of routerConfig.bindings ?? []) {
+        const target = queues[binding.queue]
+        if (!target) {
+            throw new Error(
+                `router binding queue "${binding.queue}" is not defined`,
+            )
+        }
+        built.bind(binding.pattern, target as unknown as RouteTarget)
+    }
+    return built
+}
+
+const createSystemLifecycle = <T>(
+    queues: Record<string, ConfiguredQueue<T>>,
+): {
+    hydrateAll: () => Promise<void>
+    flushAll: () => Promise<void>
+} => {
+    const hydrateAll = async (): Promise<void> => {
+        const tasks: Promise<void>[] = []
+        for (const queue of Object.values(queues)) {
+            if (typeof queue.hydrate === 'function') {
+                tasks.push(queue.hydrate())
+            }
+        }
+        await Promise.all(tasks)
+    }
+
+    const flushAll = async (): Promise<void> => {
+        const tasks: Promise<void>[] = []
+        for (const queue of Object.values(queues)) {
+            if (typeof queue.flush === 'function') {
+                tasks.push(queue.flush())
+            }
+        }
+        await Promise.all(tasks)
+    }
+
+    return { hydrateAll, flushAll }
+}
+
 /**
  * Build named stores, queues, optional workers, and an optional topic router
  * from a single {@link SystemConfig}.
@@ -130,73 +209,14 @@ export const buildFromConfig = async <
     const validated = validateJsConfig(config)
 
     const resolvedStores = resolveAllStores<T>(validated.stores, options)
+    const queues = buildQueues<TConfig, T>(validated, resolvedStores)
 
-    const queues = {} as ConfiguredSystem<TConfig, T>['queues']
+    const queueMap = queues as Record<string, ConfiguredQueue<T>>
+    const router = validated.router
+        ? buildConfiguredRouter(validated.router, queueMap)
+        : undefined
 
-    for (const [name, queueConfig] of Object.entries(validated.queues)) {
-        ;(queues as Record<string, ConfiguredQueue<T>>)[name] =
-            buildQueueFromConfig(
-                name,
-                queueConfig,
-                validated.stores,
-                resolvedStores,
-            )
-    }
-
-    let router: Router | undefined
-
-    if (validated.router) {
-        const queueMap = queues as Record<string, ConfiguredQueue<T>>
-        let unmatchedTarget: RouteTarget | undefined
-
-        if (validated.router.unmatchedQueue !== undefined) {
-            const sink = queueMap[validated.router.unmatchedQueue]
-            if (!sink) {
-                throw new Error(
-                    `router unmatchedQueue "${validated.router.unmatchedQueue}" is not defined`,
-                )
-            }
-            unmatchedTarget = sink as unknown as RouteTarget
-        }
-
-        const built = buildRouter(
-            unmatchedTarget !== undefined ? { unmatchedTarget } : {},
-        )
-        for (const binding of validated.router.bindings ?? []) {
-            const target = queueMap[binding.queue]
-            if (!target) {
-                throw new Error(
-                    `router binding queue "${binding.queue}" is not defined`,
-                )
-            }
-            built.bind(binding.pattern, target as unknown as RouteTarget)
-        }
-        router = built
-    }
-
-    const hydrateAll = async (): Promise<void> => {
-        const tasks: Promise<void>[] = []
-        for (const queue of Object.values(
-            queues as Record<string, ConfiguredQueue<T>>,
-        )) {
-            if (typeof queue.hydrate === 'function') {
-                tasks.push(queue.hydrate())
-            }
-        }
-        await Promise.all(tasks)
-    }
-
-    const flushAll = async (): Promise<void> => {
-        const tasks: Promise<void>[] = []
-        for (const queue of Object.values(
-            queues as Record<string, ConfiguredQueue<T>>,
-        )) {
-            if (typeof queue.flush === 'function') {
-                tasks.push(queue.flush())
-            }
-        }
-        await Promise.all(tasks)
-    }
+    const { hydrateAll, flushAll } = createSystemLifecycle(queueMap)
 
     const shouldHydrate =
         validated.hydrate ??

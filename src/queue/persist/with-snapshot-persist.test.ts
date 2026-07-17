@@ -178,4 +178,37 @@ describe('withSnapshotPersist', () => {
         await pending
         expect(queue.toArray()).toEqual(['a'])
     })
+
+    it('rejects a second concurrent hydrate without opening the mutation gate early', async () => {
+        let releaseLoad!: () => void
+        const loadGate = new Promise<void>((resolve) => {
+            releaseLoad = resolve
+        })
+        let loadCount = 0
+        const store: SnapshotStore<string> = {
+            load: async () => {
+                loadCount += 1
+                await loadGate
+                return ['from-store']
+            },
+            save: async () => {},
+        }
+        const queue = withSnapshotPersist(buildQueue<string>(), store, {
+            autoSave: false,
+        })
+        const first = queue.hydrate()
+
+        await Promise.resolve()
+        await expect(queue.hydrate()).rejects.toThrow(
+            /hydrate already in progress/,
+        )
+        expect(() => queue.enqueue('x')).toThrow(/hydrate/)
+        expect(loadCount).toBe(1)
+
+        releaseLoad()
+        await first
+        expect(queue.toArray()).toEqual(['from-store'])
+        await queue.hydrate()
+        expect(loadCount).toBe(2)
+    })
 })

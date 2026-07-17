@@ -8,13 +8,11 @@ import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 import { createId } from './create-id.util'
-import {
-    assertNotHydrating,
-    createHydrateGate,
-} from './hydrate-gate.util'
-import { assertBareQueueForPersist, notifyQueueRestored } from './persist.support'
+import { assertNotHydrating } from './hydrate-gate.util'
+import { createPersistenceLifecycle } from './persistence-lifecycle.util'
+import { assertBareQueueForPersist } from './persist.support'
 import type { RowRecord, RowStore } from './persist.types'
-import { createWriteChain } from './write-chain.util'
+import { assertUniqueRowId, assertUniqueRowIds } from './row-id.util'
 
 export { createId } from './create-id.util'
 export type { RowRecord, RowStore } from './persist.types'
@@ -33,9 +31,10 @@ export type RowPersistEvents<T> = {
 
 export type RowPersistOptions = {
     /**
-     * Custom id factory for new rows (enqueue).
+     * Custom id factory for new rows (enqueue / replaceAll).
      * Defaults to {@link createId} (nanoid-style URL-safe alphabet).
-     * Must return unique ids under concurrent enqueue.
+     * Must return unique, non-empty ids (not whitespace-only); collisions throw
+     * before memory or store mutation.
      *
      * @example
      * withRowPersist(queue, store, { createId: () => crypto.randomUUID() })
@@ -81,7 +80,9 @@ export type QueueWithRowPersist<
  *   call `hydrate` to resync if needed).
  * - `hydrate` uses a silent rebuild (no mid-hydrate worker drain of the store),
  *   then emits one `queue:enqueued` so stacked workers pump after the gate opens.
- * - Concurrent mutations during `hydrate` throw.
+ * - Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
+ * - A second concurrent `hydrate()` rejects with “hydrate already in progress”.
+ * - Row ids from `createId` / `loadAll` must be unique and non-empty (not whitespace-only).
  * - Call {@link QueueWithRowPersist.flush} to await pending writes.
  */
 export const withRowPersist = <
@@ -100,8 +101,6 @@ export const withRowPersist = <
     const emitPersist = createTypedEmit<RowPersistEvents<T>>(
         emitter.emit as (eventName: string, data: unknown) => void,
     )
-    const gate = createHydrateGate()
-    const writes = createWriteChain()
     /** Suppress store scheduling while rebuilding after a failed insert. */
     let localSuppress = false
 
@@ -126,9 +125,6 @@ export const withRowPersist = <
         emitter.emit('queue:cleared', payload)
     })
 
-    const isSuppressing = (): boolean =>
-        gate.isSuppressing() || localSuppress
-
     const trackError = (
         operation: RowPersistEvents<T>['persist:error']['operation'],
         error: unknown,
@@ -136,6 +132,30 @@ export const withRowPersist = <
     ): void => {
         emitPersist('persist:error', { operation, error, id })
     }
+
+    const lifecycle = createPersistenceLifecycle({
+        loadAndReplace: async () => {
+            const rows = await store.loadAll()
+            assertUniqueRowIds(rows)
+            // Silent rebuild: no queue:enqueued during gate (workers must
+            // not dequeue while store removes are suppressed).
+            inner.replaceAll(rows)
+            emitPersist('persist:loaded', { size: inner.size() })
+        },
+        onLoadError: (error) => {
+            trackError('load', error)
+        },
+        notify: {
+            size: inner.size,
+            peek: () => inner.peek()?.item,
+            emit: emitter.emit as (eventName: string, data: unknown) => void,
+        },
+    })
+
+    const { gate, writes, hydrate, flush } = lifecycle
+
+    const isSuppressing = (): boolean =>
+        gate.isSuppressing() || localSuppress
 
     /**
      * Remove one optimistic row from memory without store ops or queue events
@@ -160,10 +180,13 @@ export const withRowPersist = <
         })
     }
 
+    const currentIds = (): Set<string> =>
+        new Set(inner.toArray().map((row) => row.id))
+
     const enqueue = (item: T): void => {
         assertNotHydrating(gate)
 
-        const id = nextId()
+        const id = assertUniqueRowId(nextId(), currentIds())
         const record = { id, item }
 
         // Schedule insert *before* the in-memory enqueue so stacked workers
@@ -230,10 +253,12 @@ export const withRowPersist = <
         assertNotHydrating(gate)
 
         const removed = inner.size()
-        const records: RowRecord<T>[] = items.map((item) => ({
-            id: nextId(),
-            item,
-        }))
+        const seen = new Set<string>()
+        const records: RowRecord<T>[] = items.map((item) => {
+            const id = assertUniqueRowId(nextId(), seen)
+            seen.add(id)
+            return { id, item }
+        })
 
         inner.replaceAll(records)
 
@@ -258,32 +283,6 @@ export const withRowPersist = <
         })
     }
 
-    const hydrate = async (): Promise<void> => {
-        await gate.run(async () => {
-            try {
-                // Finish in-flight writes before replacing memory from store.
-                await writes.flush()
-                const rows = await store.loadAll()
-
-                // Silent rebuild: no queue:enqueued during gate (workers must
-                // not dequeue while store removes are suppressed).
-                inner.replaceAll(rows)
-
-                emitPersist('persist:loaded', { size: inner.size() })
-            } catch (error) {
-                trackError('load', error)
-                throw error
-            }
-        })
-
-        // Gate is open: kick workers so they dequeue with store removes enabled.
-        notifyQueueRestored({
-            size: inner.size,
-            peek: () => inner.peek()?.item,
-            emit: emitter.emit as (eventName: string, data: unknown) => void,
-        })
-    }
-
     const api = markQueueLayer(
         decorateQueue(inner, {
             enqueue,
@@ -298,7 +297,7 @@ export const withRowPersist = <
             emit: emitter.emit,
             hydrate,
             rowIds: () => inner.toArray().map((row) => row.id),
-            flush: writes.flush,
+            flush,
         }),
         PERSIST_LAYER,
     )

@@ -51,6 +51,7 @@ export {
     buildQueue,
     createId,
     QueueFullError,
+    QueueHydratingError,
     withRowPersist,
     withSnapshotPersist,
     withWorker,
