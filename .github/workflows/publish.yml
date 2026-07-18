@@ -1,0 +1,88 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish changed packages to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Plan publishes (skip versions already on npm)
+        id: plan
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PLAN_FILE="${RUNNER_TEMP}/publish-packages.txt"
+          : > "$PLAN_FILE"
+          tag_matched=0
+
+          for pkg_json in packages/*/package.json; do
+            private="$(node -p "require('./${pkg_json}').private === true ? '1' : '0'")"
+            if [ "$private" = "1" ]; then
+              echo "skip private: ${pkg_json}"
+              continue
+            fi
+
+            name="$(node -p "require('./${pkg_json}').name")"
+            version="$(node -p "require('./${pkg_json}').version")"
+
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "already on npm: ${name}@${version}"
+              continue
+            fi
+
+            echo "${name}" >> "$PLAN_FILE"
+            echo "will publish: ${name}@${version}"
+            if [ "$version" = "$TAG" ]; then
+              tag_matched=1
+            fi
+          done
+
+          if [ ! -s "$PLAN_FILE" ]; then
+            echo "Nothing to publish: every non-private package version is already on npm."
+            exit 1
+          fi
+
+          if [ "$tag_matched" -ne 1 ]; then
+            echo "Tag v${TAG} must match the version of at least one package being published."
+            echo "Bump that package's package.json version to ${TAG}, or retag."
+            exit 1
+          fi
+
+          echo "plan<<EOF" >> "$GITHUB_OUTPUT"
+          cat "$PLAN_FILE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "plan_file=${PLAN_FILE}" >> "$GITHUB_OUTPUT"
+
+      - name: Release check
+        run: npm run release:check
+
+      - name: Publish planned packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r name; do
+            [ -n "$name" ] || continue
+            echo "Publishing ${name}…"
+            npm publish -w "${name}" --access public
+          done < "${{ steps.plan.outputs.plan_file }}"

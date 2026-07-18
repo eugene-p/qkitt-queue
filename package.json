@@ -1,0 +1,27 @@
+{
+  "name": "qkitt-queue-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build:queue": "npm run build -w @qkitt/queue",
+    "build": "npm run build -w @qkitt/queue && npm run build -w @qkitt/queue-config",
+    "test": "npm run test -w @qkitt/queue && npm run build -w @qkitt/queue && npm run test -w @qkitt/queue-config",
+    "typecheck": "npm run typecheck -w @qkitt/queue && npm run build -w @qkitt/queue && npm run typecheck -w @qkitt/queue-config",
+    "bench": "npm run build:queue && npm run bench -w @qkitt/queue-bench",
+    "bench:fifo": "npm run build:queue && npm run bench:fifo -w @qkitt/queue-bench",
+    "bench:worker": "npm run build:queue && npm run bench:worker -w @qkitt/queue-bench",
+    "pack:check": "npm run pack:check -w @qkitt/queue && npm run pack:check -w @qkitt/queue-config",
+    "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.10",
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

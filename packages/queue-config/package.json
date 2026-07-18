@@ -1,0 +1,61 @@
+{
+  "name": "@qkitt/queue-config",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Declarative system config builder for @qkitt/queue",
+  "license": "ISC",
+  "author": "eugene-p",
+  "keywords": [
+    "queue",
+    "config",
+    "qkitt",
+    "typescript",
+    "esm"
+  ],
+  "homepage": "https://github.com/eugene-p/qkitt-queue/tree/main/packages/queue-config#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eugene-p/qkitt-queue.git",
+    "directory": "packages/queue-config"
+  },
+  "bugs": {
+    "url": "https://github.com/eugene-p/qkitt-queue/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@qkitt/queue": "^0.5.0"
+  },
+  "devDependencies": {
+    "@qkitt/queue": "file:../queue"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "pack:check": "npm pack --dry-run",
+    "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check"
+  }
+}

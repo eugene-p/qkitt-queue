@@ -1,0 +1,32 @@
+{
+  "name": "@qkitt/queue-bench",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Non-publishable benchmarks for @qkitt/queue vs in-process peers",
+  "license": "ISC",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "bench": "tsx --expose-gc src/index.ts",
+    "bench:fifo": "tsx --expose-gc src/index.ts fifo",
+    "bench:worker": "tsx --expose-gc src/index.ts worker",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@qkitt/queue": "file:../queue",
+    "async": "^3.2.6",
+    "denque": "^2.1.0",
+    "fastq": "^1.19.1",
+    "p-queue": "^8.1.0",
+    "tinybench": "^4.0.1",
+    "yocto-queue": "^1.2.1"
+  },
+  "devDependencies": {
+    "@types/async": "^3.2.24",
+    "@types/node": "^22.15.30",
+    "tsx": "^4.20.3",
+    "typescript": "^7.0.2"
+  }
+}
