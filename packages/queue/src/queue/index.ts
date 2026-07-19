@@ -4,6 +4,7 @@ export {
     type BuildQueueOptions,
     type Queue,
     type QueueEvents,
+    type QueueSlot,
 } from './core/queue'
 
 export {

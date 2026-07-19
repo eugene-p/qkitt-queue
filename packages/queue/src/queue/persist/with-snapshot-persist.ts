@@ -5,7 +5,7 @@ import {
 } from '../../events'
 import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
-import type { Queue, QueueEvents } from '../core/queue'
+import type { Queue, QueueEvents, QueueSlot } from '../core/queue'
 import { assertNotHydrating } from './hydrate-gate.util'
 import { createPersistenceLifecycle } from './persistence-lifecycle.util'
 import { assertBareQueueForPersist } from './persist.support'
@@ -39,7 +39,11 @@ export type QueueWithSnapshotPersist<
     T,
     TEvents extends EventMap = SnapshotQueueEvents<T, QueueEvents<T>>,
 > = Queue<T, TEvents> & {
-    /** Replace in-memory queue contents from the store. */
+    /**
+     * Replace in-memory queue contents from the store.
+     * If the store backend may hang, wrap in `Promise.race` with a timeout;
+     * the hydrate gate has no built-in deadline.
+     */
     hydrate: () => Promise<void>
     /** Write the current queue (head → tail) to the store. */
     persist: () => Promise<void>
@@ -58,6 +62,8 @@ export type QueueWithSnapshotPersist<
  * workers process restored items only after auto-save is allowed again.
  * Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
  * A second concurrent `hydrate()` rejects with “hydrate already in progress”.
+ * The hydrate gate has no built-in deadline: if the store may hang, wrap
+ * `hydrate()` in `Promise.race` with a timeout.
  */
 export const withSnapshotPersist = <
     T,
@@ -120,13 +126,18 @@ export const withSnapshotPersist = <
         scheduleSave()
     }
 
-    const dequeue = (): T | undefined => {
+    const tryDequeue = (): QueueSlot<T> | undefined => {
         assertNotHydrating(gate)
-        const item = inner.dequeue()
-        if (item !== undefined) {
+        const slot = inner.tryDequeue()
+        if (slot !== undefined) {
             scheduleSave()
         }
-        return item
+        return slot
+    }
+
+    const dequeue = (): T | undefined => {
+        const slot = tryDequeue()
+        return slot === undefined ? undefined : slot.value
     }
 
     const clear = (): void => {
@@ -146,6 +157,7 @@ export const withSnapshotPersist = <
         decorateQueue(inner, {
             enqueue,
             dequeue,
+            tryDequeue,
             clear,
             replaceAll,
             hydrate,

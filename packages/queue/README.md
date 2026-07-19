@@ -1,10 +1,17 @@
 # @qkitt/queue
 
+[![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@qkitt/queue.svg)](https://www.npmjs.com/package/@qkitt/queue)
+[![License: ISC](https://img.shields.io/npm/l/@qkitt/queue.svg)](https://github.com/eugene-p/qkitt-queue/blob/main/LICENSE)
+[![Node.js](https://img.shields.io/node/v/@qkitt/queue.svg)](https://nodejs.org)
+
 Fast, composable in-process queues for TypeScript.
 
 Layers you can stack: bare queue, concurrent worker, optional persistence, topic routing. Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. Zero runtime dependencies. ESM only. Node.js 18+.
 
 Bare queue is FIFO (enqueue at the tail, dequeue from the head).
+
+**[API reference](#api-reference)** · [Composition](#composition) · [Benchmarks](#benchmarks-summary)
 
 ## Install
 
@@ -27,6 +34,8 @@ import {
 ```
 
 Or by area: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/events`.
+
+Runnable scenarios (worker, retry, persist, router): [`examples/`](../../examples) in the monorepo.
 
 ## Composition
 
@@ -422,21 +431,21 @@ Worker drain measures concurrent jobs and retained memory under a backlog. Bare 
 
 | Library | c=1 | c=4 | heap Δ (c=1) |
 | --- | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **601** | **624** | **238 KiB** |
-| fastq | 110 | 101 | 6.80 MiB |
-| async.queue | 173 | 219 | 4.95 MiB |
-| p-queue | 79 | 75 | 10.88 MiB |
+| **@qkitt/queue** `withWorker` | **457** | **451** | **239 KiB** |
+| fastq | 90 | 86 | 6.81 MiB |
+| async.queue | 133 | 180 | 4.96 MiB |
+| p-queue | 57 | 57 | 11.04 MiB |
 
 **Bare queue** — 50 000 enqueue + dequeue (ops/s median · retained heap)
 
 | Library | ops/s | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 1 414 | 1.19 MiB |
-| denque | 1 729 | 1.45 MiB |
-| yocto-queue | 2 237 | 1.92 MiB |
-| native `Array` push/shift | 7 | 1.18 MiB |
+| **@qkitt/queue** `buildQueue` | 1,016 | 1.19 MiB |
+| denque | 1,307 | 1.43 MiB |
+| yocto-queue | 1,657 | 1.92 MiB |
+| native `Array` push/shift | 6 | 1.18 MiB |
 
-Relative numbers (Node 22, Windows laptop, 2026-07-18). Re-run before drawing absolute conclusions.
+Relative numbers (Node 22, Windows laptop, 2026-07-19). Re-run before drawing absolute conclusions.
 
 ---
 
@@ -457,8 +466,10 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | Method | Returns | Description |
 | --- | --- | --- |
 | `enqueue(item)` | `void` | Add to tail |
-| `dequeue()` | `T \| undefined` | Remove head |
-| `peek()` | `T \| undefined` | Head without removing |
+| `dequeue()` | `T \| undefined` | Remove head (`undefined` if empty; ambiguous when `T` may be `undefined`) |
+| `peek()` | `T \| undefined` | Head without removing (same ambiguity as `dequeue`) |
+| `tryDequeue()` | `QueueSlot<T> \| undefined` | Remove head as `{ value }` or `undefined` if empty (nullish payloads OK) |
+| `tryPeek()` | `QueueSlot<T> \| undefined` | Peek as `{ value }` or `undefined` if empty |
 | `size()` | `number` | Item count |
 | `isEmpty()` | `boolean` | |
 | `clear()` | `void` | Remove all; emits `queue:cleared` |
@@ -466,6 +477,8 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `toArray()` | `T[]` | Snapshot head → tail |
 | `on` / `once` | `() => void` | Subscribe; return unsubscribe |
 | `emit` | | Internal / advanced |
+
+`null` / `undefined` are valid payloads. Prefer `tryDequeue` / `tryPeek` when `T` may be nullish so emptiness is structural (`undefined` return) rather than inferred from the value.
 
 **Errors:** `QueueFullError` (`maxSize`).
 
@@ -515,9 +528,9 @@ Inner extras (`flush`, `hydrate`, …) are preserved when the queue is already d
 | `worker:completed` | `{ item, result }` | Resolved |
 | `worker:failed` | `{ item, error }` | Rejected |
 | `worker:idle` | `undefined` | Empty and nothing in flight |
-| `worker:pump-error` | `{ error }` | Unexpected `dequeue` failure (worker stops) |
+| `worker:pump-error` | `{ error }` | Unexpected `tryDequeue` failure (worker stops) |
 
-While a stacked persist layer is hydrating, `dequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate kick. Other unexpected dequeue failures emit `worker:pump-error` and stop the worker — call `start()` after fixing the cause.
+The pump uses `tryDequeue` so nullish payloads are processed. While a stacked persist layer is hydrating, `tryDequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate kick. Other unexpected dequeue failures emit `worker:pump-error` and stop the worker — call `start()` after fixing the cause.
 
 ---
 

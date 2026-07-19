@@ -3,6 +3,8 @@ import {
     isValidPattern,
     isValidTopic,
     matchTopic,
+    matchTopicParts,
+    TOPIC_SEPARATOR,
 } from './match.util'
 
 describe('matchTopic', () => {
@@ -37,6 +39,28 @@ describe('matchTopic', () => {
         expect(matchTopic('orders.*', 'orders.*.x')).toBe(false)
         expect(matchTopic('', 'a')).toBe(false)
         expect(matchTopic('a', '')).toBe(false)
+    })
+})
+
+describe('matchTopicParts', () => {
+    it('matches pre-split parts the same as matchTopic', () => {
+        const cases: Array<[string, string, boolean]> = [
+            ['orders.created', 'orders.created', true],
+            ['orders.*', 'orders.created', true],
+            ['orders.*', 'orders.created.eu', false],
+            ['orders.#', 'orders.created.eu', true],
+            ['#', 'anything.at.all', true],
+            ['a.b.#', 'a.c', false],
+        ]
+        for (const [pattern, topic, expected] of cases) {
+            expect(
+                matchTopicParts(
+                    pattern.split(TOPIC_SEPARATOR),
+                    topic.split(TOPIC_SEPARATOR),
+                ),
+            ).toBe(expected)
+            expect(matchTopic(pattern, topic)).toBe(expected)
+        }
     })
 })
 

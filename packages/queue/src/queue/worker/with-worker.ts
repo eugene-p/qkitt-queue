@@ -77,10 +77,11 @@ const resolveConcurrency = (value: number | undefined): number => {
  * Inner decorator extras (e.g. `flush` from row/snapshot persist) are preserved
  * at runtime and in the return type via {@link PreserveQueueExtras}.
  *
- * While a stacked persist layer is hydrating, `dequeue` throws
+ * While a stacked persist layer is hydrating, `tryDequeue` throws
  * {@link QueueHydratingError}; the pump waits for the post-hydrate
  * `queue:enqueued` kick. Any other dequeue failure emits `worker:pump-error`
- * and stops the worker.
+ * and stops the worker. Nullish payloads are valid — the pump uses
+ * {@link Queue.tryDequeue} so emptiness is structural, not value-based.
  */
 export const withWorker = <
     T,
@@ -145,11 +146,12 @@ export const withWorker = <
     const pump = (): void => {
         try {
             while (running && active < concurrency) {
-                const item = inner.dequeue()
-                if (item === undefined) break
+                // Slot presence = non-empty; payload may be null/undefined.
+                const slot = inner.tryDequeue()
+                if (slot === undefined) break
 
                 active += 1
-                void processItem(item)
+                void processItem(slot.value)
             }
         } catch (error) {
             // Persist hydrate: wait for post-hydrate restore kick.

@@ -55,11 +55,14 @@ export const createPersistenceLifecycle = (
 
         // Post-gate worker kick only — emit after the exclusive hydrate so
         // storage side effects are enabled again before stacked workers pump.
+        // Gate on size (structural emptiness). Do not branch on the peeked
+        // payload: null/undefined are valid heads and must still wake workers.
         const size = options.notify.size()
         if (size === 0) return
-        const item = options.notify.peek()
-        if (item === undefined) return
-        options.notify.emit('queue:enqueued', { item, size })
+        options.notify.emit('queue:enqueued', {
+            item: options.notify.peek(),
+            size,
+        })
     }
 
     return {

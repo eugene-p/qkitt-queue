@@ -53,19 +53,14 @@ export const isValidPattern = (pattern: string): boolean => {
 }
 
 /**
- * MQTT / AMQP-style topic match.
- *
- * - `orders.created` matches only that topic
- * - `orders.*` matches `orders.created`, not `orders.a.b`
- * - `orders.#` matches `orders`, `orders.created`, `orders.a.b`
- * - `#` matches everything
+ * Core matcher over pre-split segments. No validation — caller must supply
+ * valid parts (e.g. after {@link isValidPattern} / {@link isValidTopic}).
+ * Used by {@link matchTopic} and by the router hot path to avoid re-splitting.
  */
-export const matchTopic = (pattern: string, topic: string): boolean => {
-    if (!isValidPattern(pattern) || !isValidTopic(topic)) return false
-
-    const patternParts = pattern.split(TOPIC_SEPARATOR)
-    const topicParts = topic.split(TOPIC_SEPARATOR)
-
+export const matchTopicParts = (
+    patternParts: readonly string[],
+    topicParts: readonly string[],
+): boolean => {
     let pi = 0
     let ti = 0
 
@@ -91,4 +86,20 @@ export const matchTopic = (pattern: string, topic: string): boolean => {
     }
 
     return pi === patternParts.length && ti === topicParts.length
+}
+
+/**
+ * MQTT / AMQP-style topic match.
+ *
+ * - `orders.created` matches only that topic
+ * - `orders.*` matches `orders.created`, not `orders.a.b`
+ * - `orders.#` matches `orders`, `orders.created`, `orders.a.b`
+ * - `#` matches everything
+ */
+export const matchTopic = (pattern: string, topic: string): boolean => {
+    if (!isValidPattern(pattern) || !isValidTopic(topic)) return false
+    return matchTopicParts(
+        pattern.split(TOPIC_SEPARATOR),
+        topic.split(TOPIC_SEPARATOR),
+    )
 }

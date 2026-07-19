@@ -6,7 +6,7 @@ import {
 } from '../../events'
 import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
-import type { Queue, QueueEvents } from '../core/queue'
+import type { Queue, QueueEvents, QueueSlot } from '../core/queue'
 import { createId } from './create-id.util'
 import { assertNotHydrating } from './hydrate-gate.util'
 import { createPersistenceLifecycle } from './persistence-lifecycle.util'
@@ -51,7 +51,11 @@ export type QueueWithRowPersist<
     T,
     TEvents extends EventMap = RowQueueEvents<T, QueueEvents<T>>,
 > = Queue<T, TEvents> & {
-    /** Replace in-memory queue from store rows (head → tail). */
+    /**
+     * Replace in-memory queue from store rows (head → tail).
+     * If the store backend may hang, wrap in `Promise.race` with a timeout;
+     * the hydrate gate has no built-in deadline.
+     */
     hydrate: () => Promise<void>
     /** Ids currently in the queue, head → tail (aligned with `toArray()`). */
     rowIds: () => string[]
@@ -82,6 +86,8 @@ export type QueueWithRowPersist<
  *   then emits one `queue:enqueued` so stacked workers pump after the gate opens.
  * - Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
  * - A second concurrent `hydrate()` rejects with “hydrate already in progress”.
+ * - The hydrate gate has no built-in deadline: if the store may hang, wrap
+ *   `hydrate()` in `Promise.race` with a timeout.
  * - Row ids from `createId` / `loadAll` must be unique and non-empty (not whitespace-only).
  * - Call {@link QueueWithRowPersist.flush} to await pending writes.
  */
@@ -194,13 +200,14 @@ export const withRowPersist = <
         inner.enqueue(record)
     }
 
-    const dequeue = (): T | undefined => {
+    const tryDequeue = (): QueueSlot<T> | undefined => {
         assertNotHydrating(gate)
 
-        const record = inner.dequeue()
-        if (record === undefined) return undefined
+        // Inner holds RowRecord wrappers; empty = no slot, not nullish payload.
+        const held = inner.tryDequeue()
+        if (held === undefined) return undefined
 
-        const { id, item } = record
+        const { id, item } = held.value
 
         scheduleStore(async () => {
             try {
@@ -211,14 +218,30 @@ export const withRowPersist = <
             }
         })
 
-        return item
+        return { value: item }
+    }
+
+    const dequeue = (): T | undefined => {
+        const slot = tryDequeue()
+        return slot === undefined ? undefined : slot.value
+    }
+
+    const tryPeek = (): QueueSlot<T> | undefined => {
+        const held = inner.tryPeek()
+        if (held === undefined) return undefined
+        return { value: held.value.item }
+    }
+
+    const peek = (): T | undefined => {
+        const slot = tryPeek()
+        return slot === undefined ? undefined : slot.value
     }
 
     const clear = (): void => {
         assertNotHydrating(gate)
 
         const removed = inner.size()
-        if (removed === 0 && inner.isEmpty()) return
+        if (removed === 0) return
 
         inner.clear()
 
@@ -248,18 +271,24 @@ export const withRowPersist = <
         scheduleStore(async () => {
             try {
                 await store.clear()
-                if (removed > 0) {
-                    emitPersist('persist:cleared', { removed })
-                }
-                for (const record of records) {
+            } catch (error) {
+                trackError('clear', error)
+                return
+            }
+            if (removed > 0) {
+                emitPersist('persist:cleared', { removed })
+            }
+            for (const record of records) {
+                try {
                     await store.insert(record)
                     emitPersist('persist:inserted', {
                         id: record.id,
                         item: record.item,
                     })
+                } catch (error) {
+                    trackError('insert', error, record.id)
+                    return
                 }
-            } catch (error) {
-                trackError('clear', error)
             }
         })
     }
@@ -268,7 +297,9 @@ export const withRowPersist = <
         decorateQueue(inner, {
             enqueue,
             dequeue,
-            peek: () => inner.peek()?.item,
+            tryDequeue,
+            peek,
+            tryPeek,
             toArray: () => inner.toArray().map((row) => row.item),
             clear,
             replaceAll,

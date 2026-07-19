@@ -1,5 +1,11 @@
 # qkitt-queue
 
+[![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
+[![npm @qkitt/queue](https://img.shields.io/npm/v/@qkitt/queue.svg?label=%40qkitt%2Fqueue)](https://www.npmjs.com/package/@qkitt/queue)
+[![npm @qkitt/queue-config](https://img.shields.io/npm/v/@qkitt/queue-config.svg?label=%40qkitt%2Fqueue-config)](https://www.npmjs.com/package/@qkitt/queue-config)
+[![License: ISC](https://img.shields.io/badge/license-ISC-blue.svg)](./LICENSE)
+[![Node.js](https://img.shields.io/node/v/@qkitt/queue.svg)](https://nodejs.org)
+
 Fast, composable in-process queues for TypeScript — zero runtime dependencies.
 
 | Package | What it is |
@@ -89,11 +95,29 @@ const system = await buildFromConfig(
 )
 ```
 
+## Examples
+
+| Example | Use case |
+| --- | --- |
+| [`worker-drain`](./examples/worker-drain/main.ts) | Concurrent backlog drain |
+| [`retry-pipeline`](./examples/retry-pipeline/main.ts) | Multi-step jobs with retries |
+| [`persist-restart`](./examples/persist-restart/main.ts) | Survive restart via snapshot persist |
+| [`router-topics`](./examples/router-topics/main.ts) | Route topics into worker queues |
+| [`with-config`](./examples/with-config/main.ts) | Declarative multi-queue setup |
+
+```bash
+npm run build
+npx tsx examples/worker-drain/main.ts
+# or all: npm run examples
+```
+
 ## Docs
 
-- [`packages/queue/README.md`](./packages/queue/README.md) — composition guide, API reference, benchmark summary (also on npm)
-- [`packages/queue-config/README.md`](./packages/queue-config/README.md) — config schema and API
+- [`packages/queue/README.md`](./packages/queue/README.md) — composition guide, benchmark summary (also on npm)
+- [API reference](./packages/queue/README.md#api-reference) — `buildQueue`, `withWorker`, persist, router, helpers
+- [`packages/queue-config/README.md`](./packages/queue-config/README.md) — config schema and [API](./packages/queue-config/README.md#api-reference)
 - [`packages/bench/README.md`](./packages/bench/README.md) — how to re-run benchmarks
+- [`examples/`](./examples) — runnable use cases
 
 ## Develop
 
@@ -106,77 +130,30 @@ npm run bench
 
 ## Benchmarks
 
-Compare `@qkitt/queue` against in-process peers. Private harness: [`packages/bench`](./packages/bench). A shorter summary ships on the package README for npm: [packages/queue § Benchmarks](./packages/queue/README.md#benchmarks-summary).
+Private harness: [`packages/bench`](./packages/bench) · re-run: `npm run bench` · shorter summary on npm: [packages/queue § Benchmarks](./packages/queue/README.md#benchmarks-summary)
 
-```bash
-npm run bench
-npm run bench:fifo
-npm run bench:worker
-```
+> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 22.19.0 · `tinybench` via `tsx --expose-gc` · 2026-07-19
+> Relative numbers — re-run on your hardware before drawing absolute conclusions.
 
-### Environment
+### Bare queue — 50k enqueue + dequeue
 
-| | |
-| --- | --- |
-| **Date** | 2026-07-18 |
-| **Machine** | ASUS ROG Zephyrus G14 (GA401IU) |
-| **CPU** | AMD Ryzen 7 4800HS (8 cores / 16 threads) |
-| **RAM** | 16 GB |
-| **OS** | Windows 11 Pro 24H2 (build 26200), x64 |
-| **Runtime** | Node.js v22.19.0, npm 10.8.2 |
-| **Harness** | `tinybench` via `tsx --expose-gc` (`@qkitt/queue-bench`) |
-
-Relative numbers only — re-run on your machine before drawing absolute conclusions.
-
-### Method (short)
-
-- **Bare queue**: enqueue then dequeue **50 000** items (structure only). Memory = retained `heapUsed` with all items still held.
-- **Worker**: drain **N** async no-op jobs at concurrency **C**. Completion = **N jobs finished** (job counter / `Promise.all` / task callbacks — not `worker:idle`). Memory = retained heap with N jobs **pending** (pump paused / `autoStart: false`).
-- Throughput below is **median ops/s** (higher is better). Full suite details: [packages/bench/README.md](./packages/bench/README.md).
-
-### Why different peer libraries per suite?
-
-`@qkitt/queue` is two layers: a bare queue (`buildQueue`) and an optional concurrent drain (`withWorker`). Each suite compares libraries that do **the same job**:
-
-| Suite | What is measured | Peers | Why these |
-| --- | --- | --- | --- |
-| Bare queue | enqueue / dequeue only | `denque`, `yocto-queue`, native `Array` | Pure in-process queues — no worker, no task scheduling |
-| Worker drain | enqueue + concurrent async jobs | `fastq`, `p-queue`, `async.queue` | In-process job runners with concurrency — closest to `withWorker` |
-
-The sets differ on purpose. Bare-queue peers have no concurrent worker API. Worker peers always carry task / promise machinery, so stuffing them into a bare push/shift microbench would measure that overhead, not the queue structure. Redis-backed systems (BullMQ, …) are out of scope — different cost model.
-
-### Bare queue (50 000 enqueue + dequeue)
-
-| Library | Throughput (ops/s, med) | Retained heap Δ |
+| Library | ops/s (med) | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 1 414 | 1.19 MiB |
-| denque | 1 729 | 1.45 MiB |
-| yocto-queue | 2 237 | 1.92 MiB |
-| native `Array` push/shift | 7 | 1.18 MiB |
+| **@qkitt/queue** `buildQueue` | 1,016 | 1.19 MiB |
+| denque | 1,307 | 1.43 MiB |
+| yocto-queue | 1,657 | 1.92 MiB |
+| native `Array` push/shift | 6 | 1.18 MiB |
 
-`buildQueue` is comparable to dedicated queue structures and much faster than naive `Array#shift`. Events cost nothing when nobody is subscribed.
+### Worker drain — N async no-op jobs, concurrency C
 
-### Worker drain
+| Library | 1k c=1 | 1k c=4 | 10k c=1 | 10k c=4 | heap Δ (10k c=1) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| **@qkitt/queue** `withWorker` | **4,558** | **4,627** | **457** | **451** | **239 KiB** |
+| fastq | 3,004 | 2,714 | 90 | 86 | 6.81 MiB |
+| async.queue | 1,647 | 2,204 | 133 | 180 | 4.96 MiB |
+| p-queue | 760 | 620 | 57 | 57 | 11.04 MiB |
 
-**1 000 jobs**
-
-| Library | c=1 ops/s | c=1 heap Δ | c=4 ops/s | c=4 heap Δ |
-| --- | ---: | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **6 812** | **39 KiB** | **5 724** | **34 KiB** |
-| fastq | 3 834 | 704 KiB | 3 724 | 700 KiB |
-| async.queue | 2 523 | 523 KiB | 2 991 | 533 KiB |
-| p-queue | 1 223 | 1.15 MiB | 1 198 | 1.14 MiB |
-
-**10 000 jobs**
-
-| Library | c=1 ops/s | c=1 heap Δ | c=4 ops/s | c=4 heap Δ |
-| --- | ---: | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **601** | **238 KiB** | **624** | **238 KiB** |
-| fastq | 110 | 6.80 MiB | 101 | 6.81 MiB |
-| async.queue | 173 | 4.95 MiB | 219 | 4.92 MiB |
-| p-queue | 79 | 10.88 MiB | 75 | 10.44 MiB |
-
-On the worker path, `@qkitt/queue` has higher throughput and lower retained memory in this suite. Pending work is the job payload in the queue; the pump dequeues and runs your function up to `concurrency`. Peers that allocate per-task promises or queue nodes use more memory under a large backlog.
+All values are median ops/s (higher is better). **Method:** bare queue enqueues then dequeues 50k items (structure only); heap = retained with all items held. Worker drains N jobs at concurrency C; completion = N jobs finished; heap = retained with N jobs pending (`autoStart: false`). Peers differ by suite on purpose: bare-queue libs have no concurrent worker API; worker libs carry per-task promise machinery. Redis-backed systems are out of scope. Full details: [packages/bench](./packages/bench).
 
 ## License
 

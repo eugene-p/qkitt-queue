@@ -178,6 +178,33 @@ describe('withWorker', () => {
         expect(items).toEqual([])
     })
 
+    it('hydrate kick drains when restored head is undefined', async () => {
+        const { withSnapshotPersist } = await import('../persist/with-snapshot-persist')
+        const items: Array<string | undefined> = [undefined, 'tail']
+        const store = {
+            load: async () => [...items],
+            save: async (next: readonly (string | undefined)[]) => {
+                items.length = 0
+                items.push(...next)
+            },
+        }
+        const processed: Array<string | undefined> = []
+        const queue = withWorker(
+            withSnapshotPersist(buildQueue<string | undefined>(), store),
+            async (item) => {
+                processed.push(item)
+            },
+        )
+
+        const idle = waitForIdle(queue)
+        await queue.hydrate()
+        await idle
+        await queue.flush()
+
+        expect(processed).toEqual([undefined, 'tail'])
+        expect(queue.isEmpty()).toBe(true)
+    })
+
     it('stop prevents taking new items while in-flight work finishes', async () => {
         let release!: () => void
         const gate = new Promise<void>((resolve) => {
@@ -295,13 +322,13 @@ describe('withWorker', () => {
     it('waits on QueueHydratingError without stopping or emitting pump-error', async () => {
         const { QueueHydratingError } = await import('../persist/hydrate-gate.util')
         const queue = buildQueue<number>()
-        const originalDequeue = queue.dequeue.bind(queue)
+        const originalTryDequeue = queue.tryDequeue.bind(queue)
         let failNext = false
-        queue.dequeue = () => {
+        queue.tryDequeue = () => {
             if (failNext) {
                 throw new QueueHydratingError()
             }
-            return originalDequeue()
+            return originalTryDequeue()
         }
 
         let release!: () => void
@@ -342,14 +369,14 @@ describe('withWorker', () => {
 
     it('emits worker:pump-error and stops on unexpected dequeue failures', async () => {
         const queue = buildQueue<number>()
-        const originalDequeue = queue.dequeue.bind(queue)
+        const originalTryDequeue = queue.tryDequeue.bind(queue)
         let failNext = false
         const boom = new Error('custom dequeue failure')
-        queue.dequeue = () => {
+        queue.tryDequeue = () => {
             if (failNext) {
                 throw boom
             }
-            return originalDequeue()
+            return originalTryDequeue()
         }
 
         let release!: () => void
@@ -392,5 +419,25 @@ describe('withWorker', () => {
         workerQueue.start()
         await idle
         expect(workerQueue.isEmpty()).toBe(true)
+    })
+
+    it('processes undefined and null payloads (not treated as empty)', async () => {
+        const seen: Array<string | null | undefined> = []
+        const queue = withWorker(
+            buildQueue<string | null | undefined>(),
+            async (item) => {
+                seen.push(item)
+                return item
+            },
+        )
+
+        const idle = waitForIdle(queue)
+        queue.enqueue(undefined)
+        queue.enqueue(null)
+        queue.enqueue('done')
+        await idle
+
+        expect(seen).toEqual([undefined, null, 'done'])
+        expect(queue.isEmpty()).toBe(true)
     })
 })

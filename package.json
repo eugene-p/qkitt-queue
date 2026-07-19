@@ -13,7 +13,8 @@
     "bench:fifo": "npm run build:queue && npm run bench:fifo -w @qkitt/queue-bench",
     "bench:worker": "npm run build:queue && npm run bench:worker -w @qkitt/queue-bench",
     "pack:check": "npm run pack:check -w @qkitt/queue && npm run pack:check -w @qkitt/queue-config",
-    "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check"
+    "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check",
+    "examples": "tsx examples/worker-drain/main.ts && tsx examples/retry-pipeline/main.ts && tsx examples/persist-restart/main.ts && tsx examples/router-topics/main.ts && tsx examples/with-config/main.ts"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.10",

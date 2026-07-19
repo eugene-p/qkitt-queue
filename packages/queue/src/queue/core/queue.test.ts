@@ -44,6 +44,16 @@ describe('buildQueue', () => {
         expect(queue.toArray()).toEqual([1, 2])
     })
 
+    it('toArray preserves order after mixed enqueue/dequeue (outbox+inbox)', () => {
+        const queue = buildQueue<number>()
+        queue.enqueue(1)
+        queue.enqueue(2)
+        queue.enqueue(3)
+        expect(queue.dequeue()).toBe(1)
+        queue.enqueue(4)
+        expect(queue.toArray()).toEqual([2, 3, 4])
+    })
+
     it('emits queue:enqueued with item and size', () => {
         const queue = buildQueue<string>()
         const handler = vi.fn()
@@ -177,5 +187,34 @@ describe('buildQueue', () => {
             Array.from({ length: 20 }, (_, i) => i + 80),
         )
         expect(queue.size()).toBe(20)
+    })
+
+    it('tryDequeue/tryPeek treat nullish payloads as occupied slots', () => {
+        const queue = buildQueue<string | null | undefined>()
+
+        expect(queue.tryDequeue()).toBeUndefined()
+        expect(queue.tryPeek()).toBeUndefined()
+
+        queue.enqueue(undefined)
+        expect(queue.size()).toBe(1)
+        expect(queue.tryPeek()).toEqual({ value: undefined })
+        expect(queue.peek()).toBeUndefined()
+        expect(queue.tryDequeue()).toEqual({ value: undefined })
+        expect(queue.isEmpty()).toBe(true)
+
+        queue.enqueue(null)
+        queue.enqueue('x')
+        expect(queue.tryDequeue()).toEqual({ value: null })
+        expect(queue.tryDequeue()).toEqual({ value: 'x' })
+        expect(queue.tryDequeue()).toBeUndefined()
+    })
+
+    it('public dequeue still returns undefined for both empty and undefined payload', () => {
+        const queue = buildQueue<string | undefined>()
+        queue.enqueue(undefined)
+        // Ambiguous by design — use tryDequeue when T may be undefined.
+        expect(queue.dequeue()).toBeUndefined()
+        expect(queue.isEmpty()).toBe(true)
+        expect(queue.dequeue()).toBeUndefined()
     })
 })

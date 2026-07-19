@@ -4,7 +4,12 @@ import {
     type EventEmitter,
     type EventMap,
 } from '../events'
-import { isValidPattern, isValidTopic, matchTopic } from './match.util'
+import {
+    isValidPattern,
+    isValidTopic,
+    matchTopicParts,
+    TOPIC_SEPARATOR,
+} from './match.util'
 
 /**
  * Envelope enqueued into bound queues.
@@ -121,7 +126,12 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         events.emit as (eventName: string, data: unknown) => void,
     )
 
-    const routes: Binding[] = []
+    /** Internal binding: public shape + pre-split pattern for publish. */
+    type InternalBinding = Binding & {
+        readonly patternParts: readonly string[]
+    }
+
+    const routes: InternalBinding[] = []
     let unmatchedTarget: RouteTarget | undefined = options.unmatchedTarget
     let unmatchedTotal = 0
     let lastUnmatchedRecord: UnmatchedRecord | undefined
@@ -136,8 +146,9 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
             throw error
         }
 
-        const binding: Binding = {
+        const binding: InternalBinding = {
             pattern,
+            patternParts: pattern.split(TOPIC_SEPARATOR),
             target: target as RouteTarget,
         }
         routes.push(binding)
@@ -191,11 +202,13 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         }
 
         const message: RouteMessage<T> = { topic, data }
+        const topicParts = topic.split(TOPIC_SEPARATOR)
         let matched = 0
 
         // Snapshot so bind/unbind during publish is safe.
+        // Topic already validated; patterns pre-split at bind — no re-validation.
         for (const route of [...routes]) {
-            if (!matchTopic(route.pattern, topic)) continue
+            if (!matchTopicParts(route.patternParts, topicParts)) continue
             matched += 1
             try {
                 route.target.enqueue(message as RouteMessage)

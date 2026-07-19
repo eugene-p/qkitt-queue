@@ -1,10 +1,19 @@
 # @qkitt/queue-config
 
+[![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@qkitt/queue-config.svg)](https://www.npmjs.com/package/@qkitt/queue-config)
+[![License: ISC](https://img.shields.io/npm/l/@qkitt/queue-config.svg)](https://github.com/eugene-p/qkitt-queue/blob/main/LICENSE)
+[![Node.js](https://img.shields.io/node/v/@qkitt/queue-config.svg)](https://nodejs.org)
+
 Declarative setup for [`@qkitt/queue`](../queue): named stores, queues, workers, and optional topic-router bindings in one object.
 
 Builds the same stack as hand-written composition (`queue → persist → worker → router`) from a config object. Optional; most apps only need `@qkitt/queue`.
 
 **Peer dependency:** `@qkitt/queue` `^0.5.0`.
+
+Runnable demo: [`examples/with-config`](../../examples/with-config) in the monorepo.
+
+**[API reference](#api-reference)** · [Config reference](#config-reference) · [JSON mode](#json-mode)
 
 ## Install
 

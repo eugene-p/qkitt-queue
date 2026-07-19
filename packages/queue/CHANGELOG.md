@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-07-19
+
+### Added
+
+- `QueueSlot<T>`, `tryDequeue()`, and `tryPeek()` so emptiness is structural: `undefined` means empty; `{ value }` holds any payload including `null` / `undefined`
+- Exported `matchTopicParts` for pre-split topic matching (used by the router hot path)
+
+### Fixed
+
+- Worker pump no longer drops or skips items when the payload is `undefined` (or other nullish values)
+- Snapshot auto-save runs after dequeuing an `undefined` payload
+- Post-hydrate worker kick no longer skips when the restored head is `undefined`
+- Row `replaceAll` reports insert failures as `operation: 'insert'` with `id` (not mislabeled as `clear`)
+
+### Changed
+
+- Router `publish` validates the topic once, splits it once, and matches against pattern parts cached at `bind` (no per-binding re-validation / re-split)
+- `toArray` uses a single reverse-fill allocation when both stacks hold items
+- Public `dequeue` / `peek` stay allocation-light (inlined); `tryDequeue` / `tryPeek` are the unambiguous path for nullish `T`
+- Listener subscription counters kept on the bare-queue hot path (avoids per-op factory cost from `emitLazy` on the 50k FIFO bench)
+- Docs: refreshed root and package benchmark numbers; hydrate docs note the gate has no built-in deadline
+
 ## [0.5.2] — 2026-07-18
 
 ### Added
@@ -168,6 +190,8 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.5.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.3
+[0.5.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.2
 [0.5.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.1
 [0.5.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.0
 [0.4.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.4.1

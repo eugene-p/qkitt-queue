@@ -67,6 +67,24 @@ describe('withSnapshotPersist', () => {
         expect(store.data).toEqual([])
     })
 
+    it('auto-saves after dequeuing an undefined payload', async () => {
+        const store = memorySnapshot<string | undefined>()
+        const queue = withSnapshotPersist(
+            buildQueue<string | undefined>(),
+            store,
+        )
+
+        queue.enqueue(undefined)
+        queue.enqueue('keep')
+        await queue.flush()
+        expect(store.data).toEqual([undefined, 'keep'])
+
+        expect(queue.tryDequeue()).toEqual({ value: undefined })
+        await queue.flush()
+        expect(store.data).toEqual(['keep'])
+        expect(queue.toArray()).toEqual(['keep'])
+    })
+
     it('does not auto-save while hydrating', async () => {
         const save = vi.fn(async (items: readonly string[]) => {
             void items

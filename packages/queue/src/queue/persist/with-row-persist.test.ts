@@ -89,6 +89,27 @@ describe('withRowPersist', () => {
         expect(removed).toHaveBeenCalledWith({ id: 'id-1', item: 'a' })
     })
 
+    it('tryDequeue/tryPeek preserve undefined payloads and still remove rows', async () => {
+        let n = 0
+        const store = memoryRows<string | undefined>()
+        const queue = withRowPersist(
+            buildQueue<RowRecord<string | undefined>>(),
+            store,
+            { createId: () => `id-${++n}` },
+        )
+
+        queue.enqueue(undefined)
+        queue.enqueue('tail')
+        await queue.flush()
+
+        expect(queue.tryPeek()).toEqual({ value: undefined })
+        expect(queue.tryDequeue()).toEqual({ value: undefined })
+        await queue.flush()
+
+        expect(store.rows).toEqual([{ id: 'id-2', item: 'tail' }])
+        expect(queue.toArray()).toEqual(['tail'])
+    })
+
     it('clears all rows', async () => {
         let n = 0
         const store = memoryRows<number>()
@@ -519,6 +540,40 @@ describe('withRowPersist', () => {
         ])
         expect(cleared).toHaveBeenCalledWith({ removed: 2 })
         expect(inserted).toHaveBeenCalledTimes(2)
+    })
+
+    it('replaceAll labels insert failures as insert with id, not clear', async () => {
+        let n = 0
+        const insert = vi.fn(async (record: RowRecord<string>) => {
+            if (record.item === 'y') {
+                throw new Error('insert failed')
+            }
+        })
+        const store: RowStore<string> = {
+            loadAll: async () => [],
+            insert,
+            remove: async () => {},
+            clear: async () => {},
+        }
+        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
+            createId: () => `id-${++n}`,
+        })
+        const onError = vi.fn()
+        queue.on('persist:error', onError)
+
+        queue.replaceAll(['x', 'y', 'z'])
+        await queue.flush()
+
+        expect(onError).toHaveBeenCalledWith(
+            expect.objectContaining({
+                operation: 'insert',
+                id: 'id-2',
+                error: expect.objectContaining({ message: 'insert failed' }),
+            }),
+        )
+        // First insert succeeded; third never attempted after failure.
+        expect(insert).toHaveBeenCalledTimes(2)
+        expect(insert.mock.calls.map((c) => c[0].item)).toEqual(['x', 'y'])
     })
 
     it('insert rollback does not emit clear/enqueue events', async () => {
