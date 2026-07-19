@@ -1,4 +1,5 @@
 import type { BuiltinStoreAdapter } from './types'
+import { configError } from './errors'
 import { isIntegerInRange } from './number.util'
 
 export const BUILTIN_ADAPTERS = new Set<BuiltinStoreAdapter>([
@@ -7,21 +8,55 @@ export const BUILTIN_ADAPTERS = new Set<BuiltinStoreAdapter>([
     'sessionStorage',
 ])
 
+/**
+ * True for plain data objects (`{}` / `Object.create(null)`).
+ * Rejects arrays, boxed primitives, and built-ins (`Date`, `Map`, `Set`, …).
+ */
 export const isPlainObject = (
     value: unknown,
-): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value)
+): value is Record<string, unknown> => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return false
+    }
+    const proto = Object.getPrototypeOf(value)
+    return proto === Object.prototype || proto === null
+}
+
+/** Method-shape check shared by parse-time and resolve-time guards. */
+export const hasSnapshotStoreShape = (value: object): boolean =>
+    typeof (value as { load?: unknown }).load === 'function' &&
+    typeof (value as { save?: unknown }).save === 'function'
+
+/** Method-shape check shared by parse-time and resolve-time guards. */
+export const hasRowStoreShape = (value: object): boolean => {
+    const store = value as {
+        loadAll?: unknown
+        insert?: unknown
+        remove?: unknown
+        clear?: unknown
+    }
+    return (
+        typeof store.loadAll === 'function' &&
+        typeof store.insert === 'function' &&
+        typeof store.remove === 'function' &&
+        typeof store.clear === 'function'
+    )
+}
 
 export const expectString = (value: unknown, path: string): string => {
     if (typeof value !== 'string' || value.length === 0) {
-        throw new Error(`${path} must be a non-empty string`)
+        return configError(
+            'INVALID_TYPE',
+            `${path} must be a non-empty string`,
+            path,
+        )
     }
     return value
 }
 
 export const expectBoolean = (value: unknown, path: string): boolean => {
     if (typeof value !== 'boolean') {
-        throw new Error(`${path} must be a boolean`)
+        return configError('INVALID_TYPE', `${path} must be a boolean`, path)
     }
     return value
 }
@@ -29,16 +64,14 @@ export const expectBoolean = (value: unknown, path: string): boolean => {
 /** Safe integer ≥ 1 (queue maxSize, worker concurrency, …). */
 export const expectPositiveInteger = (value: unknown, path: string): number => {
     if (!isIntegerInRange(value, 1)) {
-        throw new Error(`${path} must be a safe integer >= 1`)
+        return configError(
+            'INVALID_TYPE',
+            `${path} must be a safe integer >= 1`,
+            path,
+        )
     }
     return value
 }
-
-/**
- * @deprecated Prefer {@link expectPositiveInteger}. Alias kept for call sites
- * that previously accepted finite floats.
- */
-export const expectPositiveFinite = expectPositiveInteger
 
 export const parseAdapter = (
     value: unknown,
@@ -48,31 +81,52 @@ export const parseAdapter = (
         typeof value !== 'string' ||
         !BUILTIN_ADAPTERS.has(value as BuiltinStoreAdapter)
     ) {
-        throw new Error(
+        return configError(
+            'INVALID_ADAPTER',
             `${path} must be one of: memory, localStorage, sessionStorage`,
+            path,
         )
     }
     return value as BuiltinStoreAdapter
 }
 
+/** Parse-time duck check: plain object with snapshot methods. */
 export const isSnapshotStoreLike = (value: unknown): boolean =>
-    isPlainObject(value) &&
-    typeof value.load === 'function' &&
-    typeof value.save === 'function'
+    isPlainObject(value) && hasSnapshotStoreShape(value)
 
+/** Parse-time duck check: plain object with row methods. */
 export const isRowStoreLike = (value: unknown): boolean =>
-    isPlainObject(value) &&
-    typeof value.loadAll === 'function' &&
-    typeof value.insert === 'function' &&
-    typeof value.remove === 'function' &&
-    typeof value.clear === 'function'
+    isPlainObject(value) && hasRowStoreShape(value)
 
 export const parseStrategy = (
     value: unknown,
     path: string,
 ): 'snapshot' | 'row' => {
     if (value !== 'snapshot' && value !== 'row') {
-        throw new Error(`${path} must be "snapshot" or "row"`)
+        return configError(
+            'INVALID_STRATEGY',
+            `${path} must be "snapshot" or "row"`,
+            path,
+        )
     }
     return value
+}
+
+/**
+ * Web adapters require a non-empty storage key.
+ * Shared by validate-time and resolve-time checks.
+ */
+export const assertWebStorageKey = (
+    adapter: string,
+    key: string | undefined,
+    path: string,
+): string => {
+    if (key === undefined || key.length === 0) {
+        return configError(
+            'KEY_REQUIRED',
+            `${path} is required when adapter is "${adapter}"`,
+            path,
+        )
+    }
+    return key
 }

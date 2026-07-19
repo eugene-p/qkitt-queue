@@ -11,6 +11,7 @@ import {
     type WorkerFn,
 } from '@qkitt/queue'
 import { freezeConfig } from './config-freeze.util'
+import { configError } from './errors'
 import {
     isRowStore,
     isSnapshotStore,
@@ -44,6 +45,16 @@ const resolveWorker = (
     }
 }
 
+/**
+ * Bridge a configured queue into the router's minimal {@link RouteTarget}
+ * surface. `ConfiguredQueue.enqueue` is typed as `(item: T) => void` while
+ * `RouteTarget` expects `RouteMessage`; at runtime router publishes always
+ * enqueue envelopes. Kept as an explicit helper so the variance is documented
+ * rather than silenced with ad-hoc double casts at call sites.
+ */
+const asRouteTarget = <T>(queue: ConfiguredQueue<T>): RouteTarget =>
+    queue as unknown as RouteTarget
+
 const buildQueueFromConfig = <T>(
     queueName: string,
     queueConfig: QueueConfig,
@@ -63,15 +74,19 @@ const buildQueueFromConfig = <T>(
         const store = resolvedStores[storeName]
 
         if (!definition || !store) {
-            throw new Error(
+            return configError(
+                'STORE_NOT_FOUND',
                 `config.queues.${queueName}.persist.store "${storeName}" is not defined in config.stores`,
+                `config.queues.${queueName}.persist.store`,
             )
         }
 
         if (definition.strategy === 'snapshot') {
             if (!isSnapshotStore(store)) {
-                throw new Error(
+                return configError(
+                    'INVALID_IMPL',
                     `config.stores.${storeName} is not a SnapshotStore`,
+                    `config.stores.${storeName}`,
                 )
             }
             queue = withSnapshotPersist(queue, store, {
@@ -79,8 +94,10 @@ const buildQueueFromConfig = <T>(
             })
         } else {
             if (!isRowStore(store)) {
-                throw new Error(
+                return configError(
+                    'INVALID_IMPL',
                     `config.stores.${storeName} is not a RowStore`,
+                    `config.stores.${storeName}`,
                 )
             }
             queue = withRowPersist(
@@ -126,11 +143,13 @@ const buildConfiguredRouter = <T>(
     if (routerConfig.unmatchedQueue !== undefined) {
         const sink = queues[routerConfig.unmatchedQueue]
         if (!sink) {
-            throw new Error(
+            return configError(
+                'UNKNOWN_QUEUE',
                 `router unmatchedQueue "${routerConfig.unmatchedQueue}" is not defined`,
+                'config.router.unmatchedQueue',
             )
         }
-        unmatchedTarget = sink as unknown as RouteTarget
+        unmatchedTarget = asRouteTarget(sink)
     }
 
     const built = buildRouter(
@@ -139,13 +158,32 @@ const buildConfiguredRouter = <T>(
     for (const binding of routerConfig.bindings ?? []) {
         const target = queues[binding.queue]
         if (!target) {
-            throw new Error(
+            return configError(
+                'UNKNOWN_QUEUE',
                 `router binding queue "${binding.queue}" is not defined`,
+                'config.router.bindings',
             )
         }
-        built.bind(binding.pattern, target as unknown as RouteTarget)
+        built.bind(binding.pattern, asRouteTarget(target))
     }
     return built
+}
+
+type QueueLifecycleMethod = 'hydrate' | 'flush'
+
+/** Run a lifecycle method on every queue that exposes it. */
+const runOnQueues = async <T>(
+    queues: Record<string, ConfiguredQueue<T>>,
+    method: QueueLifecycleMethod,
+): Promise<void> => {
+    const tasks: Promise<void>[] = []
+    for (const queue of Object.values(queues)) {
+        const fn = queue[method]
+        if (typeof fn === 'function') {
+            tasks.push(fn.call(queue))
+        }
+    }
+    await Promise.all(tasks)
 }
 
 const createSystemLifecycle = <T>(
@@ -153,29 +191,10 @@ const createSystemLifecycle = <T>(
 ): {
     hydrateAll: () => Promise<void>
     flushAll: () => Promise<void>
-} => {
-    const hydrateAll = async (): Promise<void> => {
-        const tasks: Promise<void>[] = []
-        for (const queue of Object.values(queues)) {
-            if (typeof queue.hydrate === 'function') {
-                tasks.push(queue.hydrate())
-            }
-        }
-        await Promise.all(tasks)
-    }
-
-    const flushAll = async (): Promise<void> => {
-        const tasks: Promise<void>[] = []
-        for (const queue of Object.values(queues)) {
-            if (typeof queue.flush === 'function') {
-                tasks.push(queue.flush())
-            }
-        }
-        await Promise.all(tasks)
-    }
-
-    return { hydrateAll, flushAll }
-}
+} => ({
+    hydrateAll: () => runOnQueues(queues, 'hydrate'),
+    flushAll: () => runOnQueues(queues, 'flush'),
+})
 
 /**
  * Build named stores, queues, optional workers, and an optional topic router
@@ -234,7 +253,7 @@ export const buildFromConfig = async <
         router: router as ConfiguredSystem<TConfig, T>['router'],
         hydrateAll,
         flushAll,
-        config: freezeConfig(validated as TConfig),
+        config: freezeConfig(validated),
     } satisfies ConfiguredSystem<TConfig, T>
 }
 
@@ -247,6 +266,6 @@ export const buildFromJson = async <T = unknown>(
     json: string,
     options: BuildFromConfigOptions = {},
 ): Promise<ConfiguredSystem<SystemConfig, T>> => {
-    const config = parseSystemConfig(json)
-    return buildFromConfig(config, options)
+    const parsed = parseSystemConfig(json)
+    return buildFromConfig(parsed, options)
 }

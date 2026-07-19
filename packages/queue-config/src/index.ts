@@ -10,6 +10,11 @@ export {
     validateSystemConfig,
 } from './validate'
 
+export {
+    ConfigValidationError,
+    type ConfigErrorCode,
+} from './errors'
+
 export type {
     BindingConfig,
     BuildFromConfigOptions,
@@ -21,6 +26,7 @@ export type {
     ResolvedStore,
     RouterConfig,
     StoreDefinition,
+    /** @deprecated Use {@link BuiltinStoreAdapter}. */
     StoreKind,
     SystemConfig,
     WorkerConfig,

@@ -7,9 +7,11 @@ import type {
     SystemConfig,
     WorkerConfig,
 } from './types'
+import { configError } from './errors'
 import {
+    assertWebStorageKey,
     expectBoolean,
-    expectPositiveFinite,
+    expectPositiveInteger,
     expectString,
     isPlainObject,
     isRowStoreLike,
@@ -17,6 +19,16 @@ import {
     parseAdapter,
     parseStrategy,
 } from './parse.util'
+
+const expectPlainObject = (
+    value: unknown,
+    path: string,
+): Record<string, unknown> => {
+    if (!isPlainObject(value)) {
+        return configError('INVALID_TYPE', `${path} must be an object`, path)
+    }
+    return value
+}
 
 /**
  * Parse one `config.stores.<name>` entry.
@@ -27,70 +39,72 @@ const parseStoreDefinition = (
     path: string,
     { allowJs }: { allowJs: boolean },
 ): StoreDefinition => {
-    if (!isPlainObject(value)) {
-        throw new Error(`${path} must be an object`)
-    }
+    const obj = expectPlainObject(value, path)
+    const strategy = parseStrategy(obj.strategy, `${path}.strategy`)
 
-    const strategy = parseStrategy(value.strategy, `${path}.strategy`)
-
-    if (value.impl !== undefined) {
+    if (obj.impl !== undefined) {
         if (!allowJs) {
-            throw new Error(
+            return configError(
+                'JS_ONLY_FIELD',
                 `${path}.impl is only valid in JS config (not JSON); implement SnapshotStore/RowStore and pass the instance from a module`,
+                `${path}.impl`,
             )
         }
-        if (value.adapter !== undefined) {
-            throw new Error(
+        if (obj.adapter !== undefined) {
+            return configError(
+                'CONFLICTING_FIELDS',
                 `${path} cannot set both "adapter" and "impl"`,
+                path,
             )
         }
         if (strategy === 'snapshot') {
-            if (!isSnapshotStoreLike(value.impl)) {
-                throw new Error(
+            if (!isSnapshotStoreLike(obj.impl)) {
+                return configError(
+                    'INVALID_IMPL',
                     `${path}.impl must be a SnapshotStore (load + save)`,
+                    `${path}.impl`,
                 )
             }
             return {
                 strategy: 'snapshot',
-                impl: value.impl as Extract<
+                impl: obj.impl as Extract<
                     StoreDefinition,
                     { strategy: 'snapshot'; impl: unknown }
                 >['impl'],
             }
         }
-        if (!isRowStoreLike(value.impl)) {
-            throw new Error(
+        if (!isRowStoreLike(obj.impl)) {
+            return configError(
+                'INVALID_IMPL',
                 `${path}.impl must be a RowStore (loadAll + insert + remove + clear)`,
+                `${path}.impl`,
             )
         }
         return {
             strategy: 'row',
-            impl: value.impl as Extract<
+            impl: obj.impl as Extract<
                 StoreDefinition,
                 { strategy: 'row'; impl: unknown }
             >['impl'],
         }
     }
 
-    if (value.adapter === undefined) {
-        throw new Error(
+    if (obj.adapter === undefined) {
+        return configError(
+            'MISSING_FIELD',
             `${path} must define "adapter" (built-in) or "impl" (custom store)`,
+            path,
         )
     }
 
-    const adapter = parseAdapter(value.adapter, `${path}.adapter`)
+    const adapter = parseAdapter(obj.adapter, `${path}.adapter`)
     const key =
-        value.key === undefined
+        obj.key === undefined
             ? undefined
-            : expectString(value.key, `${path}.key`)
+            : expectString(obj.key, `${path}.key`)
 
-    if (
-        (adapter === 'localStorage' || adapter === 'sessionStorage') &&
-        (key === undefined || key.length === 0)
-    ) {
-        throw new Error(
-            `${path}.key is required when adapter is "${adapter}"`,
-        )
+    if (adapter === 'localStorage' || adapter === 'sessionStorage') {
+        assertWebStorageKey(adapter, key, `${path}.key`)
     }
 
     if (strategy === 'snapshot') {
@@ -113,21 +127,20 @@ const parsePersistConfig = (
     path: string,
     storeNames: ReadonlySet<string>,
 ): PersistConfig => {
-    if (!isPlainObject(value)) {
-        throw new Error(`${path} must be an object`)
-    }
-
-    const store = expectString(value.store, `${path}.store`)
+    const obj = expectPlainObject(value, path)
+    const store = expectString(obj.store, `${path}.store`)
     if (!storeNames.has(store)) {
-        throw new Error(
+        return configError(
+            'STORE_NOT_FOUND',
             `${path}.store "${store}" is not defined in config.stores`,
+            `${path}.store`,
         )
     }
 
     const autoSave =
-        value.autoSave === undefined
+        obj.autoSave === undefined
             ? undefined
-            : expectBoolean(value.autoSave, `${path}.autoSave`)
+            : expectBoolean(obj.autoSave, `${path}.autoSave`)
 
     return {
         store,
@@ -141,19 +154,25 @@ const parseWorkerConfig = (value: unknown, path: string): WorkerConfig => {
     }
 
     if (!isPlainObject(value)) {
-        throw new Error(
+        return configError(
+            'INVALID_TYPE',
             `${path} must be a function or { run, concurrency?, autoStart? }`,
+            path,
         )
     }
 
     if (typeof value.run !== 'function') {
-        throw new Error(`${path}.run must be a function`)
+        return configError(
+            'INVALID_TYPE',
+            `${path}.run must be a function`,
+            `${path}.run`,
+        )
     }
 
     const concurrency =
         value.concurrency === undefined
             ? undefined
-            : expectPositiveFinite(value.concurrency, `${path}.concurrency`)
+            : expectPositiveInteger(value.concurrency, `${path}.concurrency`)
 
     const autoStart =
         value.autoStart === undefined
@@ -173,66 +192,63 @@ const parseQueueConfig = (
     storeNames: ReadonlySet<string>,
     { allowJs }: { allowJs: boolean },
 ): QueueConfig => {
-    if (!isPlainObject(value)) {
-        throw new Error(`${path} must be an object`)
-    }
-
+    const obj = expectPlainObject(value, path)
     const queue: QueueConfig = {}
 
-    if (value.maxSize !== undefined) {
-        queue.maxSize = expectPositiveFinite(value.maxSize, `${path}.maxSize`)
+    if (obj.maxSize !== undefined) {
+        queue.maxSize = expectPositiveInteger(obj.maxSize, `${path}.maxSize`)
     }
 
-    if (value.persist !== undefined) {
+    if (obj.persist !== undefined) {
         queue.persist = parsePersistConfig(
-            value.persist,
+            obj.persist,
             `${path}.persist`,
             storeNames,
         )
     }
 
-    if (value.worker !== undefined) {
+    if (obj.worker !== undefined) {
         if (!allowJs) {
-            throw new Error(
+            return configError(
+                'JS_ONLY_FIELD',
                 `${path}.worker is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.worker`,
             )
         }
-        queue.worker = parseWorkerConfig(value.worker, `${path}.worker`)
+        queue.worker = parseWorkerConfig(obj.worker, `${path}.worker`)
     }
 
     return queue
 }
 
 const parseBindingConfig = (value: unknown, path: string): BindingConfig => {
-    if (!isPlainObject(value)) {
-        throw new Error(`${path} must be an object`)
-    }
-
+    const obj = expectPlainObject(value, path)
     return {
-        pattern: expectString(value.pattern, `${path}.pattern`),
-        queue: expectString(value.queue, `${path}.queue`),
+        pattern: expectString(obj.pattern, `${path}.pattern`),
+        queue: expectString(obj.queue, `${path}.queue`),
     }
 }
 
 const parseRouterConfig = (value: unknown, path: string): RouterConfig => {
-    if (!isPlainObject(value)) {
-        throw new Error(`${path} must be an object`)
-    }
-
+    const obj = expectPlainObject(value, path)
     const router: RouterConfig = {}
 
-    if (value.bindings !== undefined) {
-        if (!Array.isArray(value.bindings)) {
-            throw new Error(`${path}.bindings must be an array`)
+    if (obj.bindings !== undefined) {
+        if (!Array.isArray(obj.bindings)) {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.bindings must be an array`,
+                `${path}.bindings`,
+            )
         }
-        router.bindings = value.bindings.map((binding, index) =>
+        router.bindings = obj.bindings.map((binding, index) =>
             parseBindingConfig(binding, `${path}.bindings[${index}]`),
         )
     }
 
-    if (value.unmatchedQueue !== undefined) {
+    if (obj.unmatchedQueue !== undefined) {
         router.unmatchedQueue = expectString(
-            value.unmatchedQueue,
+            obj.unmatchedQueue,
             `${path}.unmatchedQueue`,
         )
     }
@@ -245,34 +261,52 @@ type ParseOptions = {
     allowJs: boolean
 }
 
+/**
+ * Validate and rebuild a clean {@link SystemConfig} (data-only or JS).
+ * Used by JSON paths where stripping unknown fields is desirable.
+ */
 const parseSystemConfigValue = (
     value: unknown,
     options: ParseOptions,
 ): SystemConfig => {
-    if (!isPlainObject(value)) {
-        throw new Error('config must be an object')
+    const root = expectPlainObject(value, 'config')
+
+    if (!isPlainObject(root.queues)) {
+        return configError(
+            'INVALID_TYPE',
+            'config.queues must be an object',
+            'config.queues',
+        )
     }
 
-    if (!isPlainObject(value.queues)) {
-        throw new Error('config.queues must be an object')
-    }
-
-    const queueNames = Object.keys(value.queues)
+    const queueNames = Object.keys(root.queues)
     if (queueNames.length === 0) {
-        throw new Error('config.queues must define at least one queue')
+        return configError(
+            'EMPTY_QUEUES',
+            'config.queues must define at least one queue',
+            'config.queues',
+        )
     }
 
     const stores: Record<string, StoreDefinition> = {}
-    if (value.stores !== undefined) {
-        if (!isPlainObject(value.stores)) {
-            throw new Error('config.stores must be an object')
+    if (root.stores !== undefined) {
+        if (!isPlainObject(root.stores)) {
+            return configError(
+                'INVALID_TYPE',
+                'config.stores must be an object',
+                'config.stores',
+            )
         }
-        for (const name of Object.keys(value.stores)) {
+        for (const name of Object.keys(root.stores)) {
             if (name.length === 0) {
-                throw new Error('config.stores keys must be non-empty strings')
+                return configError(
+                    'EMPTY_KEY',
+                    'config.stores keys must be non-empty strings',
+                    'config.stores',
+                )
             }
             stores[name] = parseStoreDefinition(
-                value.stores[name],
+                root.stores[name],
                 `config.stores.${name}`,
                 { allowJs: options.allowJs },
             )
@@ -284,10 +318,14 @@ const parseSystemConfigValue = (
     const queues: Record<string, QueueConfig> = {}
     for (const name of queueNames) {
         if (name.length === 0) {
-            throw new Error('config.queues keys must be non-empty strings')
+            return configError(
+                'EMPTY_KEY',
+                'config.queues keys must be non-empty strings',
+                'config.queues',
+            )
         }
         queues[name] = parseQueueConfig(
-            value.queues[name],
+            root.queues[name],
             `config.queues.${name}`,
             storeNames,
             { allowJs: options.allowJs },
@@ -301,9 +339,11 @@ const parseSystemConfigValue = (
 
         const existingQueue = storeUsage.get(storeName)
         if (existingQueue !== undefined) {
-            throw new Error(
+            return configError(
+                'SHARED_STORE',
                 `Store "${storeName}" is shared by queues "${existingQueue}" and "${queueName}". ` +
                     'Each queue must have a unique store instance to prevent data corruption.',
+                `config.queues.${queueName}.persist.store`,
             )
         }
         storeUsage.set(storeName, queueName)
@@ -315,19 +355,21 @@ const parseSystemConfigValue = (
         config.stores = stores
     }
 
-    if (value.router !== undefined) {
-        config.router = parseRouterConfig(value.router, 'config.router')
+    if (root.router !== undefined) {
+        config.router = parseRouterConfig(root.router, 'config.router')
     }
 
-    if (value.hydrate !== undefined) {
-        config.hydrate = expectBoolean(value.hydrate, 'config.hydrate')
+    if (root.hydrate !== undefined) {
+        config.hydrate = expectBoolean(root.hydrate, 'config.hydrate')
     }
 
     if (config.router?.bindings) {
         for (const [index, binding] of config.router.bindings.entries()) {
             if (!(binding.queue in queues)) {
-                throw new Error(
+                return configError(
+                    'UNKNOWN_QUEUE',
                     `config.router.bindings[${index}].queue "${binding.queue}" is not defined in config.queues`,
+                    `config.router.bindings[${index}].queue`,
                 )
             }
         }
@@ -335,8 +377,10 @@ const parseSystemConfigValue = (
 
     if (config.router?.unmatchedQueue !== undefined) {
         if (!(config.router.unmatchedQueue in queues)) {
-            throw new Error(
+            return configError(
+                'UNKNOWN_QUEUE',
                 `config.router.unmatchedQueue "${config.router.unmatchedQueue}" is not defined in config.queues`,
+                'config.router.unmatchedQueue',
             )
         }
     }
@@ -347,17 +391,24 @@ const parseSystemConfigValue = (
 /**
  * Validate an unknown value as **data-only** config (JSON-safe).
  * Rejects `worker` and custom store `impl` (JS-only fields).
+ * Returns a cleaned {@link SystemConfig} (unknown fields stripped).
  */
 export const validateSystemConfig = (value: unknown): SystemConfig =>
     parseSystemConfigValue(value, { allowJs: false })
 
 /**
- * Validate a JS/TS module config, preserving workers and custom store impls.
+ * Validate a JS/TS module config **in place** and return the same reference.
+ * Preserves workers, custom store impls, and any extra properties on `TConfig`.
  * Prefer {@link defineConfig} at the export site for typed inference.
  */
 export const validateJsConfig = <TConfig extends SystemConfig>(
     value: TConfig,
-): TConfig => parseSystemConfigValue(value, { allowJs: true }) as TConfig
+): TConfig => {
+    // Side-effect validation; discard the reconstructed SystemConfig so
+    // callers keep their original object identity and type parameters.
+    parseSystemConfigValue(value, { allowJs: true })
+    return value
+}
 
 /**
  * Identity helper for typed JS config modules.
@@ -392,7 +443,10 @@ export const parseSystemConfig = (json: string): SystemConfig => {
     } catch (error) {
         const message =
             error instanceof Error ? error.message : 'invalid JSON'
-        throw new Error(`config JSON is invalid: ${message}`)
+        return configError(
+            'INVALID_JSON',
+            `config JSON is invalid: ${message}`,
+        )
     }
     return validateSystemConfig(parsed)
 }

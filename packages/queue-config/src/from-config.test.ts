@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
     createMemoryRowStore,
     createMemorySnapshotStore,
@@ -6,10 +6,13 @@ import {
     type RouteMessage,
     type WebStorageLike,
 } from '@qkitt/queue'
+import { ConfigValidationError } from './errors'
 import { buildFromConfig, buildFromJson } from './from-config'
+import { isPlainObject } from './parse.util'
 import {
     defineConfig,
     parseSystemConfig,
+    validateJsConfig,
     validateSystemConfig,
 } from './validate'
 import type { SystemConfig } from './types'
@@ -27,12 +30,53 @@ const createMemoryWebStorage = (): WebStorageLike => {
     }
 }
 
+const expectConfigError = (
+    fn: () => unknown,
+    code: ConfigValidationError['code'],
+    message?: RegExp,
+): void => {
+    try {
+        fn()
+        expect.fail('expected ConfigValidationError')
+    } catch (error) {
+        expect(error).toBeInstanceOf(ConfigValidationError)
+        expect((error as ConfigValidationError).code).toBe(code)
+        if (message) {
+            expect((error as ConfigValidationError).message).toMatch(message)
+        }
+    }
+}
+
+describe('isPlainObject', () => {
+    it('accepts plain objects and null-prototype objects', () => {
+        expect(isPlainObject({})).toBe(true)
+        expect(isPlainObject(Object.create(null))).toBe(true)
+    })
+
+    it('rejects arrays, null, and built-in objects', () => {
+        expect(isPlainObject([])).toBe(false)
+        expect(isPlainObject(null)).toBe(false)
+        expect(isPlainObject(new Date())).toBe(false)
+        expect(isPlainObject(new Map())).toBe(false)
+        expect(isPlainObject(new Set())).toBe(false)
+        expect(isPlainObject(/re/)).toBe(false)
+    })
+})
+
 describe('validateSystemConfig / parseSystemConfig', () => {
     it('accepts a minimal queues-only config', () => {
         const config = validateSystemConfig({
             queues: { jobs: {} },
         })
         expect(config).toEqual({ queues: { jobs: {} } })
+    })
+
+    it('rejects Date where a config object is expected', () => {
+        expectConfigError(
+            () => validateSystemConfig(new Date() as unknown as SystemConfig),
+            'INVALID_TYPE',
+            /config must be an object/,
+        )
     })
 
     it('parses JSON with store registry + queue refs + router', () => {
@@ -79,108 +123,136 @@ describe('validateSystemConfig / parseSystemConfig', () => {
         expect(config.hydrate).toBe(true)
     })
 
-    it('rejects empty queues', () => {
-        expect(() => validateSystemConfig({ queues: {} })).toThrow(
+    it('rejects empty queues with EMPTY_QUEUES code', () => {
+        expectConfigError(
+            () => validateSystemConfig({ queues: {} }),
+            'EMPTY_QUEUES',
             /at least one queue/,
         )
     })
 
-    it('rejects binding to unknown queue', () => {
-        expect(() =>
-            validateSystemConfig({
-                queues: { a: {} },
-                router: { bindings: [{ pattern: 'x', queue: 'missing' }] },
-            }),
-        ).toThrow(/not defined in config.queues/)
+    it('rejects binding to unknown queue with UNKNOWN_QUEUE code', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    queues: { a: {} },
+                    router: { bindings: [{ pattern: 'x', queue: 'missing' }] },
+                }),
+            'UNKNOWN_QUEUE',
+        )
     })
 
     it('rejects unmatchedQueue that is not in queues', () => {
-        expect(() =>
-            validateSystemConfig({
-                queues: { a: {} },
-                router: { unmatchedQueue: 'missing' },
-            }),
-        ).toThrow(/unmatchedQueue.*not defined in config.queues/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    queues: { a: {} },
+                    router: { unmatchedQueue: 'missing' },
+                }),
+            'UNKNOWN_QUEUE',
+            /unmatchedQueue/,
+        )
     })
 
     it('rejects persist.store that is not in stores registry', () => {
-        expect(() =>
-            validateSystemConfig({
-                queues: {
-                    a: { persist: { store: 'missing' } },
-                },
-            }),
-        ).toThrow(/not defined in config.stores/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    queues: {
+                        a: { persist: { store: 'missing' } },
+                    },
+                }),
+            'STORE_NOT_FOUND',
+        )
     })
 
     it('rejects invalid built-in adapter', () => {
-        expect(() =>
-            validateSystemConfig({
-                stores: {
-                    s: { adapter: 'redis', strategy: 'row' },
-                },
-                queues: {
-                    a: { persist: { store: 's' } },
-                },
-            }),
-        ).toThrow(/localStorage/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        s: { adapter: 'redis', strategy: 'row' },
+                    },
+                    queues: {
+                        a: { persist: { store: 's' } },
+                    },
+                }),
+            'INVALID_ADAPTER',
+            /localStorage/,
+        )
     })
 
     it('requires key for web adapters', () => {
-        expect(() =>
-            validateSystemConfig({
-                stores: {
-                    s: { adapter: 'sessionStorage', strategy: 'row' },
-                },
-                queues: { a: { persist: { store: 's' } } },
-            }),
-        ).toThrow(/key is required/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        s: { adapter: 'sessionStorage', strategy: 'row' },
+                    },
+                    queues: { a: { persist: { store: 's' } } },
+                }),
+            'KEY_REQUIRED',
+            /key is required/,
+        )
     })
 
     it('rejects invalid JSON text', () => {
-        expect(() => parseSystemConfig('{')).toThrow(/config JSON is invalid/)
+        expectConfigError(
+            () => parseSystemConfig('{'),
+            'INVALID_JSON',
+            /config JSON is invalid/,
+        )
     })
 
     it('rejects worker in data-only JSON validation', () => {
-        expect(() =>
-            validateSystemConfig({
-                queues: {
-                    jobs: { worker: async () => undefined },
-                },
-            }),
-        ).toThrow(/only valid in JS config/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    queues: {
+                        jobs: { worker: async () => undefined },
+                    },
+                }),
+            'JS_ONLY_FIELD',
+            /only valid in JS config/,
+        )
     })
 
     it('rejects when two queues reference the same persist store', () => {
-        expect(() =>
-            validateSystemConfig({
-                stores: {
-                    db: { adapter: 'memory', strategy: 'snapshot' },
-                },
-                queues: {
-                    q1: { persist: { store: 'db' } },
-                    q2: { persist: { store: 'db' } },
-                },
-            }),
-        ).toThrow(/Each queue must have a unique store instance/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        db: { adapter: 'memory', strategy: 'snapshot' },
+                    },
+                    queues: {
+                        q1: { persist: { store: 'db' } },
+                        q2: { persist: { store: 'db' } },
+                    },
+                }),
+            'SHARED_STORE',
+            /unique store instance/,
+        )
     })
 
     it('rejects store.impl in data-only JSON validation', () => {
-        expect(() =>
-            validateSystemConfig({
-                stores: {
-                    s: {
-                        strategy: 'row',
-                        impl: createMemoryRowStore(),
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        s: {
+                            strategy: 'row',
+                            impl: createMemoryRowStore(),
+                        },
                     },
-                },
-                queues: { a: { persist: { store: 's' } } },
-            }),
-        ).toThrow(/only valid in JS config/)
+                    queues: { a: { persist: { store: 's' } } },
+                }),
+            'JS_ONLY_FIELD',
+            /only valid in JS config/,
+        )
     })
 })
 
-describe('defineConfig', () => {
+describe('defineConfig / validateJsConfig', () => {
     it('accepts store registry + imported workers', () => {
         const handle = async (n: number) => n * 2
         const store = createMemoryRowStore<number>()
@@ -207,21 +279,33 @@ describe('defineConfig', () => {
         })
     })
 
+    it('returns the same object reference (in-place validation)', () => {
+        const input = {
+            queues: { jobs: {} },
+            extra: 1,
+        }
+        const result = validateJsConfig(input as typeof input & SystemConfig)
+        expect(result).toBe(input)
+    })
+
     it('rejects partial RowStore impl missing remove/clear', () => {
-        expect(() =>
-            defineConfig({
-                stores: {
-                    bad: {
-                        strategy: 'row',
-                        impl: {
-                            loadAll: () => [],
-                            insert: () => {},
-                        } as never,
+        expectConfigError(
+            () =>
+                defineConfig({
+                    stores: {
+                        bad: {
+                            strategy: 'row',
+                            impl: {
+                                loadAll: () => [],
+                                insert: () => {},
+                            } as never,
+                        },
                     },
-                },
-                queues: { q: { persist: { store: 'bad' } } },
-            }),
-        ).toThrow(/RowStore/)
+                    queues: { q: { persist: { store: 'bad' } } },
+                }),
+            'INVALID_IMPL',
+            /RowStore/,
+        )
     })
 })
 
@@ -370,6 +454,59 @@ describe('buildFromConfig', () => {
         ])
     })
 
+    it('builds sessionStorage adapter path with injected storage', async () => {
+        const storage = createMemoryWebStorage()
+        storage.setItem('sess:snap', JSON.stringify(['session-item']))
+
+        const system = await buildFromConfig(
+            {
+                stores: {
+                    sess: {
+                        adapter: 'sessionStorage',
+                        strategy: 'snapshot',
+                        key: 'sess:snap',
+                    },
+                },
+                queues: {
+                    jobs: { persist: { store: 'sess' } },
+                },
+            },
+            { storage },
+        )
+
+        expect(system.queues.jobs.toArray()).toEqual(['session-item'])
+        system.queues.jobs.enqueue('more')
+        await system.flushAll()
+        expect(JSON.parse(storage.getItem('sess:snap')!)).toEqual([
+            'session-item',
+            'more',
+        ])
+    })
+
+    it('builds sessionStorage row adapter with injected storage', async () => {
+        const storage = createMemoryWebStorage()
+        const system = await buildFromConfig(
+            {
+                stores: {
+                    sess: {
+                        adapter: 'sessionStorage',
+                        strategy: 'row',
+                        key: 'sess:rows',
+                    },
+                },
+                queues: {
+                    jobs: { persist: { store: 'sess' } },
+                },
+            },
+            { storage },
+        )
+
+        system.queues.jobs.enqueue('row-a')
+        await system.flushAll()
+        expect(storage.getItem('sess:rows:order')).toBeTruthy()
+        expect(system.queues.jobs.size()).toBe(1)
+    })
+
     it('skips auto-hydrate when hydrate is false', async () => {
         const store = createMemorySnapshotStore<string>(['hidden'])
         const system = await buildFromConfig({
@@ -392,7 +529,6 @@ describe('buildFromConfig', () => {
         await expect(
             buildFromConfig({
                 stores: {
-                    // force a mismatched impl past the type checker
                     jobs: {
                         strategy: 'snapshot',
                         impl: rowStore as unknown as ReturnType<
@@ -405,7 +541,10 @@ describe('buildFromConfig', () => {
                 },
                 hydrate: false,
             }),
-        ).rejects.toThrow(/must be a SnapshotStore/)
+        ).rejects.toMatchObject({
+            name: 'ConfigValidationError',
+            code: 'INVALID_IMPL',
+        })
     })
 
     it('buildFromJson end-to-end with store registry', async () => {
@@ -437,14 +576,58 @@ describe('buildFromConfig', () => {
         expect(storage.getItem('mail:order')).toBeTruthy()
     })
 
-    it('exposes a frozen config snapshot', async () => {
+    it('exposes a frozen config snapshot (top-level and nested persist)', async () => {
         const system = await buildFromConfig({
-            queues: { a: {} },
+            stores: {
+                db: { adapter: 'memory', strategy: 'snapshot' },
+            },
+            queues: {
+                jobs: {
+                    persist: { store: 'db', autoSave: true },
+                },
+            },
+            hydrate: false,
         })
-        expect(system.config.queues).toEqual({ a: {} })
+
+        expect(system.config.queues.jobs.persist).toEqual({
+            store: 'db',
+            autoSave: true,
+        })
+
         expect(() => {
             ;(system.config as { hydrate?: boolean }).hydrate = true
         }).toThrow()
+
+        expect(() => {
+            // Nested plain data must be frozen (was a shallow-freeze bug).
+            ;(system.config.queues.jobs.persist as { autoSave: boolean }).autoSave =
+                false
+        }).toThrow()
+
+        expect(() => {
+            ;(system.config.stores!.db as { adapter: string }).adapter = 'localStorage'
+        }).toThrow()
+    })
+
+    it('does not freeze live custom store impl on config snapshot', async () => {
+        const store = createMemorySnapshotStore<string>([])
+        const system = await buildFromConfig({
+            stores: {
+                jobs: { strategy: 'snapshot', impl: store },
+            },
+            queues: {
+                jobs: { persist: { store: 'jobs' } },
+            },
+            hydrate: false,
+        })
+
+        // impl must remain a live mutable store
+        store.save(['ok'])
+        expect(store.data).toEqual(['ok'])
+        expect(system.config.stores!.jobs).toMatchObject({
+            strategy: 'snapshot',
+            impl: store,
+        })
     })
 
     it('propagates invalid route patterns from the router', async () => {
@@ -475,8 +658,9 @@ describe('buildFromConfig', () => {
         system.queues.jobs.enqueue(1)
         system.queues.jobs.enqueue(2)
 
-        await viWaitFor(() => seen.length === 2)
-        expect(seen).toEqual([1, 2])
+        await vi.waitFor(() => {
+            expect(seen).toEqual([1, 2])
+        })
         expect(system.queues.jobs.isEmpty()).toBe(true)
     })
 
@@ -508,24 +692,28 @@ describe('buildFromConfig', () => {
         expect(seen).toEqual([])
 
         system.queues.jobs.start?.()
-        await viWaitFor(() => seen.length === 1)
-        expect(seen).toEqual(['a'])
+        await vi.waitFor(() => {
+            expect(seen).toEqual(['a'])
+        })
         await system.flushAll()
         expect(store.rows).toEqual([])
     })
 
     it('rejects shared store definitions across queues', () => {
-        expect(() =>
-            validateSystemConfig({
-                stores: {
-                    shared: { adapter: 'memory', strategy: 'row' },
-                },
-                queues: {
-                    a: { persist: { store: 'shared' } },
-                    b: { persist: { store: 'shared' } },
-                },
-            }),
-        ).toThrow(/Store "shared" is shared by queues "a" and "b"/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        shared: { adapter: 'memory', strategy: 'row' },
+                    },
+                    queues: {
+                        a: { persist: { store: 'shared' } },
+                        b: { persist: { store: 'shared' } },
+                    },
+                }),
+            'SHARED_STORE',
+            /Store "shared" is shared by queues "a" and "b"/,
+        )
     })
 
     it('preserves worker on config snapshot (no JSON strip)', async () => {
@@ -558,6 +746,21 @@ describe('buildFromConfig integration', () => {
         system.queues.jobs.enqueue('x')
         await system.flushAll()
         expect(system.queues.jobs.toArray()).toEqual(['x'])
+    })
+
+    it('memory row built-in adapter works', async () => {
+        const system = await buildFromConfig({
+            stores: {
+                jobs: { adapter: 'memory', strategy: 'row' },
+            },
+            queues: {
+                jobs: { persist: { store: 'jobs' } },
+            },
+        })
+        system.queues.jobs.enqueue('x')
+        await system.flushAll()
+        expect(system.queues.jobs.toArray()).toEqual(['x'])
+        expect(system.queues.jobs.rowIds?.().length).toBe(1)
     })
 
     it('builds a full JS config (stores + workers + router + unmatched)', async () => {
@@ -622,40 +825,44 @@ describe('buildFromConfig integration', () => {
         expect(matched).toBe(2)
 
         await system.flushAll()
-        await viWaitFor(
-            () =>
-                system.queues.mail.isEmpty() &&
-                !system.queues.mail.isProcessing?.(),
-        )
+        await vi.waitFor(() => {
+            expect(system.queues.mail.isEmpty()).toBe(true)
+            expect(system.queues.mail.isProcessing?.()).toBe(false)
+        })
     })
 
     it('rejects invalid worker concurrency in JS config', () => {
-        expect(() =>
-            defineConfig({
-                queues: {
-                    jobs: {
-                        worker: {
-                            run: async () => {},
-                            concurrency: 0,
-                        },
-                    },
-                },
-            }),
-        ).toThrow(/concurrency/)
-
-        for (const concurrency of [NaN, Infinity, -1, 1.5]) {
-            expect(() =>
+        expectConfigError(
+            () =>
                 defineConfig({
                     queues: {
                         jobs: {
                             worker: {
                                 run: async () => {},
-                                concurrency,
+                                concurrency: 0,
                             },
                         },
                     },
                 }),
-            ).toThrow(/concurrency/)
+            'INVALID_TYPE',
+            /concurrency/,
+        )
+
+        for (const concurrency of [NaN, Infinity, -1, 1.5]) {
+            expectConfigError(
+                () =>
+                    defineConfig({
+                        queues: {
+                            jobs: {
+                                worker: {
+                                    run: async () => {},
+                                    concurrency,
+                                },
+                            },
+                        },
+                    }),
+                'INVALID_TYPE',
+            )
         }
     })
 
@@ -671,42 +878,204 @@ describe('buildFromConfig integration', () => {
     })
 
     it('rejects invalid maxSize in config', () => {
-        expect(() =>
-            validateSystemConfig({
-                queues: { jobs: { maxSize: 0 } },
-            }),
-        ).toThrow(/maxSize/)
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    queues: { jobs: { maxSize: 0 } },
+                }),
+            'INVALID_TYPE',
+            /maxSize/,
+        )
 
         for (const maxSize of [NaN, Infinity, -1, 1.5]) {
-            expect(() =>
-                validateSystemConfig({
-                    queues: { jobs: { maxSize } },
-                }),
-            ).toThrow(/maxSize/)
+            expectConfigError(
+                () =>
+                    validateSystemConfig({
+                        queues: { jobs: { maxSize } },
+                    }),
+                'INVALID_TYPE',
+            )
         }
     })
 })
 
-/** Tiny poll helper — avoids depending on fake timers for worker pumps. */
-const viWaitFor = async (
-    predicate: () => boolean,
-    timeoutMs = 500,
-): Promise<void> => {
-    const start = Date.now()
-    const delay = (ms: number): Promise<void> =>
-        new Promise((resolve) => {
-            const schedule = (
-                globalThis as unknown as {
-                    setTimeout: (fn: () => void, delay: number) => unknown
-                }
-            ).setTimeout
-            schedule(() => resolve(), ms)
+/**
+ * Contract / drift guard: exercise the @qkitt/queue surface that
+ * queue-config wires together. If peer APIs rename or drop methods,
+ * these fail before consumers do.
+ */
+describe('queue peer API contract (integration)', () => {
+    it('exposes core Queue methods on configured queues', async () => {
+        const system = await buildFromConfig({
+            queues: { jobs: { maxSize: 10 } },
+        })
+        const q = system.queues.jobs
+
+        expect(typeof q.enqueue).toBe('function')
+        expect(typeof q.dequeue).toBe('function')
+        expect(typeof q.peek).toBe('function')
+        expect(typeof q.size).toBe('function')
+        expect(typeof q.isEmpty).toBe('function')
+        expect(typeof q.toArray).toBe('function')
+        expect(typeof q.clear).toBe('function')
+
+        q.enqueue('a')
+        q.enqueue('b')
+        expect(q.size()).toBe(2)
+        expect(q.peek()).toBe('a')
+        expect(q.toArray()).toEqual(['a', 'b'])
+        expect(q.dequeue()).toBe('a')
+        q.clear()
+        expect(q.isEmpty()).toBe(true)
+    })
+
+    it('exposes snapshot persist helpers from withSnapshotPersist', async () => {
+        const system = await buildFromConfig({
+            stores: {
+                snap: { adapter: 'memory', strategy: 'snapshot' },
+            },
+            queues: {
+                jobs: { persist: { store: 'snap', autoSave: false } },
+            },
+            hydrate: false,
+        })
+        const q = system.queues.jobs
+
+        expect(typeof q.hydrate).toBe('function')
+        expect(typeof q.persist).toBe('function')
+        expect(typeof q.flush).toBe('function')
+
+        q.enqueue('x')
+        await q.persist!()
+        const again = await buildFromConfig({
+            stores: {
+                snap: { adapter: 'memory', strategy: 'snapshot' },
+            },
+            queues: {
+                jobs: { persist: { store: 'snap' } },
+            },
+            hydrate: false,
+        })
+        // new memory store — empty until hydrate of same store instance;
+        // contract check is method presence + flushAll path
+        await system.flushAll()
+        expect(system.queues.jobs.toArray()).toEqual(['x'])
+        void again
+    })
+
+    it('exposes row persist helpers from withRowPersist', async () => {
+        const system = await buildFromConfig({
+            stores: {
+                rows: { adapter: 'memory', strategy: 'row' },
+            },
+            queues: {
+                jobs: { persist: { store: 'rows' } },
+            },
+        })
+        const q = system.queues.jobs
+
+        expect(typeof q.hydrate).toBe('function')
+        expect(typeof q.flush).toBe('function')
+        expect(typeof q.rowIds).toBe('function')
+
+        q.enqueue('r1')
+        await q.flush!()
+        expect(q.rowIds!().length).toBe(1)
+    })
+
+    it('exposes worker controls from withWorker', async () => {
+        const seen: number[] = []
+        const system = await buildFromConfig({
+            queues: {
+                jobs: {
+                    worker: {
+                        run: async (n: number) => {
+                            seen.push(n)
+                        },
+                        autoStart: false,
+                    },
+                },
+            },
+        })
+        const q = system.queues.jobs
+
+        expect(typeof q.start).toBe('function')
+        expect(typeof q.stop).toBe('function')
+        expect(typeof q.isRunning).toBe('function')
+        expect(typeof q.isProcessing).toBe('function')
+        expect(q.isRunning!()).toBe(false)
+
+        q.enqueue(1)
+        q.start!()
+        expect(q.isRunning!()).toBe(true)
+        await vi.waitFor(() => {
+            expect(seen).toEqual([1])
+        })
+        q.stop!()
+        expect(q.isRunning!()).toBe(false)
+    })
+
+    it('exposes router methods used by config wiring', async () => {
+        const system = await buildFromConfig<
+            SystemConfig,
+            RouteMessage<number>
+        >({
+            queues: { a: {}, sink: {} },
+            router: {
+                bindings: [{ pattern: 't.#', queue: 'a' }],
+                unmatchedQueue: 'sink',
+            },
         })
 
-    while (!predicate()) {
-        if (Date.now() - start > timeoutMs) {
-            throw new Error('timed out waiting for condition')
-        }
-        await delay(5)
-    }
-}
+        const router = system.router!
+        expect(typeof router.publish).toBe('function')
+        expect(typeof router.bind).toBe('function')
+        expect(typeof router.unmatchedCount).toBe('function')
+        expect(typeof router.lastUnmatched).toBe('function')
+
+        expect(router.publish('t.one', 1)).toBe(1)
+        expect(system.queues.a.peek()).toEqual({ topic: 't.one', data: 1 })
+
+        expect(router.publish('other', 2)).toBe(0)
+        expect(router.unmatchedCount()).toBe(1)
+        expect(router.lastUnmatched()).toEqual({ topic: 'other', data: 2 })
+    })
+
+    it('wires all three built-in adapters in one system', async () => {
+        const storage = createMemoryWebStorage()
+        const system = await buildFromConfig(
+            {
+                stores: {
+                    mem: { adapter: 'memory', strategy: 'snapshot' },
+                    local: {
+                        adapter: 'localStorage',
+                        strategy: 'row',
+                        key: 'c:local',
+                    },
+                    sess: {
+                        adapter: 'sessionStorage',
+                        strategy: 'snapshot',
+                        key: 'c:sess',
+                    },
+                },
+                queues: {
+                    qMem: { persist: { store: 'mem' } },
+                    qLocal: { persist: { store: 'local' } },
+                    qSess: { persist: { store: 'sess' } },
+                },
+            },
+            { storage },
+        )
+
+        system.queues.qMem.enqueue('m')
+        system.queues.qLocal.enqueue('l')
+        system.queues.qSess.enqueue('s')
+        await system.flushAll()
+
+        expect(system.queues.qMem.toArray()).toEqual(['m'])
+        expect(system.queues.qLocal.toArray()).toEqual(['l'])
+        expect(system.queues.qSess.toArray()).toEqual(['s'])
+        expect(storage.getItem('c:local:order')).toBeTruthy()
+        expect(storage.getItem('c:sess')).toBeTruthy()
+    })
+})

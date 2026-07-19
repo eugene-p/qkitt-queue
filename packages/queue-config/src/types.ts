@@ -218,7 +218,7 @@ export type ConfiguredSystem<
     /** Flush every queue that exposes `flush`. */
     flushAll: () => Promise<void>
     /**
-     * The config used to build this system (shallow-frozen).
+     * The config used to build this system (nested plain data frozen).
      * Function references (workers, store impls) are preserved.
      */
     config: Readonly<TConfig>

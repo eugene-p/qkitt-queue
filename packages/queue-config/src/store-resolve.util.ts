@@ -10,73 +10,74 @@ import {
     type RowStore,
     type SnapshotStore,
 } from '@qkitt/queue'
+import { configError } from './errors'
+import {
+    assertWebStorageKey,
+    hasRowStoreShape,
+    hasSnapshotStoreShape,
+} from './parse.util'
 import type {
     BuildFromConfigOptions,
+    BuiltinStoreAdapter,
     ResolvedStore,
     StoreDefinition,
 } from './types'
 
 export const isSnapshotStore = <T>(
     value: SnapshotStore<T> | RowStore<T>,
-): value is SnapshotStore<T> =>
-    typeof (value as SnapshotStore<T>).load === 'function' &&
-    typeof (value as SnapshotStore<T>).save === 'function'
+): value is SnapshotStore<T> => hasSnapshotStoreShape(value)
 
 export const isRowStore = <T>(
     value: SnapshotStore<T> | RowStore<T>,
-): value is RowStore<T> => {
-    const store = value as RowStore<T>
-    return (
-        typeof store.loadAll === 'function' &&
-        typeof store.insert === 'function' &&
-        typeof store.remove === 'function' &&
-        typeof store.clear === 'function'
-    )
+): value is RowStore<T> => hasRowStoreShape(value)
+
+type WebAdapter = Exclude<BuiltinStoreAdapter, 'memory'>
+
+type AdapterFactories = {
+    snapshot: (key: string, options: BuildFromConfigOptions) => SnapshotStore<unknown>
+    row: (key: string, options: BuildFromConfigOptions) => RowStore<unknown>
 }
 
-/** Built-in snapshot store for a validated Web Storage key (not memory). */
-const createBuiltinSnapshot = <T>(
-    adapter: 'localStorage' | 'sessionStorage',
-    key: string,
-    options: BuildFromConfigOptions,
-): SnapshotStore<T> => {
-    if (options.storage) {
-        return createWebSnapshotStore<T>({
-            key,
-            storage: options.storage,
-        })
-    }
-
-    if (adapter === 'localStorage') {
-        return createLocalStorageSnapshotStore<T>(key)
-    }
-
-    return createSessionStorageSnapshotStore<T>(key)
+/**
+ * Internal registry of built-in adapters.
+ * Add a new built-in by extending {@link BuiltinStoreAdapter} and this map —
+ * resolution logic stays unchanged.
+ */
+const WEB_ADAPTER_FACTORIES: Record<WebAdapter, AdapterFactories> = {
+    localStorage: {
+        snapshot: (key, options) =>
+            options.storage
+                ? createWebSnapshotStore({ key, storage: options.storage })
+                : createLocalStorageSnapshotStore(key),
+        row: (key, options) =>
+            options.storage
+                ? createWebRowStore({ key, storage: options.storage })
+                : createLocalStorageRowStore(key),
+    },
+    sessionStorage: {
+        snapshot: (key, options) =>
+            options.storage
+                ? createWebSnapshotStore({ key, storage: options.storage })
+                : createSessionStorageSnapshotStore(key),
+        row: (key, options) =>
+            options.storage
+                ? createWebRowStore({ key, storage: options.storage })
+                : createSessionStorageRowStore(key),
+    },
 }
 
-/** Built-in row store for a validated Web Storage key (not memory). */
-const createBuiltinRow = <T>(
-    adapter: 'localStorage' | 'sessionStorage',
-    key: string,
-    options: BuildFromConfigOptions,
-): RowStore<T> => {
-    if (options.storage) {
-        return createWebRowStore<T>({
-            key,
-            storage: options.storage,
-        })
-    }
-
-    if (adapter === 'localStorage') {
-        return createLocalStorageRowStore<T>(key)
-    }
-
-    return createSessionStorageRowStore<T>(key)
-}
+const MEMORY_FACTORIES = {
+    snapshot: <T>() => createMemorySnapshotStore<T>(),
+    row: <T>() => createMemoryRowStore<T>(),
+} as const
 
 /**
  * Materialize one store definition into a live SnapshotStore or RowStore.
  * Custom `impl` is used as-is; built-ins are constructed from `adapter`.
+ *
+ * Resolution is synchronous. If a future adapter needs async init
+ * (IndexedDB, network-backed stores), introduce an async path rather than
+ * blocking here — {@link resolveAllStores} would need a matching redesign.
  */
 export const resolveStore = <T>(
     storeName: string,
@@ -86,13 +87,17 @@ export const resolveStore = <T>(
     if ('impl' in definition) {
         const impl = definition.impl as ResolvedStore<T>
         if (definition.strategy === 'snapshot' && !isSnapshotStore(impl)) {
-            throw new Error(
+            return configError(
+                'INVALID_IMPL',
                 `config.stores.${storeName}.impl must be a SnapshotStore (strategy is "snapshot")`,
+                `config.stores.${storeName}.impl`,
             )
         }
         if (definition.strategy === 'row' && !isRowStore(impl)) {
-            throw new Error(
+            return configError(
+                'INVALID_IMPL',
                 `config.stores.${storeName}.impl must be a RowStore (strategy is "row")`,
+                `config.stores.${storeName}.impl`,
             )
         }
         return impl
@@ -102,22 +107,21 @@ export const resolveStore = <T>(
 
     if (adapter === 'memory') {
         return strategy === 'snapshot'
-            ? createMemorySnapshotStore<T>()
-            : createMemoryRowStore<T>()
+            ? MEMORY_FACTORIES.snapshot<T>()
+            : MEMORY_FACTORIES.row<T>()
     }
 
-    const key = definition.key
-    if (key === undefined || key.length === 0) {
-        throw new Error(
-            `config.stores.${storeName}.key is required when adapter is "${adapter}"`,
-        )
-    }
+    const key = assertWebStorageKey(
+        adapter,
+        definition.key,
+        `config.stores.${storeName}.key`,
+    )
 
+    const factories = WEB_ADAPTER_FACTORIES[adapter]
     if (strategy === 'snapshot') {
-        return createBuiltinSnapshot<T>(adapter, key, options)
+        return factories.snapshot(key, options) as SnapshotStore<T>
     }
-
-    return createBuiltinRow<T>(adapter, key, options)
+    return factories.row(key, options) as RowStore<T>
 }
 
 export const resolveAllStores = <T>(

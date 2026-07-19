@@ -9,7 +9,7 @@ Declarative setup for [`@qkitt/queue`](../queue): named stores, queues, workers,
 
 Builds the same stack as hand-written composition (`queue → persist → worker → router`) from a config object. Optional; most apps only need `@qkitt/queue`.
 
-**Peer dependency:** `@qkitt/queue` `^0.5.0`.
+**Peer dependency:** `@qkitt/queue` `^0.5.0`. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
 
 Runnable demo: [`examples/with-config`](../../examples/with-config) in the monorepo.
 
@@ -51,6 +51,8 @@ export default defineConfig({
 })
 ```
 
+Build order: stores → queue → persist → worker → router → hydrate.
+
 ```ts
 // app.ts
 import { buildFromConfig } from '@qkitt/queue-config'
@@ -62,7 +64,7 @@ system.router!.publish('mail.send', { to: 'a@b.c', body: 'hi' })
 await system.flushAll()
 ```
 
-Build order: stores → queue → persist → worker → router → hydrate.
+Running in Node or tests? Pass a `storage` implementation to `buildFromConfig` for `localStorage` / `sessionStorage` adapters (see [`buildFromConfig`](#buildfromconfig)).
 
 ## Config reference
 
@@ -225,10 +227,10 @@ Parse + validate + build. Workers and custom `impl` are not supported in JSON.
 
 ```ts
 validateSystemConfig(config: unknown): SystemConfig
-validateJsConfig(config: SystemConfig): SystemConfig
+validateJsConfig<T extends SystemConfig>(config: T): T
 ```
 
-Validate without building. `validateJsConfig` allows functions / `impl`; `validateSystemConfig` is the JSON-safe shape.
+Validate without building. `validateJsConfig` allows functions / `impl` and returns the **same object reference**. `validateSystemConfig` is the JSON-safe shape (returns a cleaned reconstruction).
 
 ### `parseSystemConfig`
 
@@ -237,6 +239,28 @@ parseSystemConfig(json: string): SystemConfig
 ```
 
 Parse JSON text and validate.
+
+### `ConfigValidationError`
+
+Thrown for invalid config / resolve / build failures:
+
+```ts
+import { ConfigValidationError } from '@qkitt/queue-config'
+
+try {
+  await buildFromConfig(config)
+} catch (e) {
+  if (e instanceof ConfigValidationError) {
+    console.error(e.code, e.path, e.message)
+  }
+}
+```
+
+| Field | Description |
+| --- | --- |
+| `code` | Stable `ConfigErrorCode` (e.g. `STORE_NOT_FOUND`, `KEY_REQUIRED`) |
+| `path` | Optional config path (`config.stores.jobs.key`) |
+| `message` | Human-readable detail |
 
 ### `ConfiguredSystem`
 
@@ -249,7 +273,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `router` | Present when `router` was set in config |
 | `hydrateAll()` | Hydrate every queue that exposes `hydrate` |
 | `flushAll()` | Flush every queue that exposes `flush` |
-| `config` | Shallow-frozen config used to build (function refs preserved) |
+| `config` | Nested plain data frozen; worker functions and store `impl` refs preserved |
 
 **`ConfiguredQueue`** — base `Queue` plus, when configured:
 
@@ -271,6 +295,8 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `BuildFromConfigOptions` | `{ storage? }` |
 | `BuiltinStoreAdapter` | `'memory' \| 'localStorage' \| 'sessionStorage'` |
 | `ResolvedStore` | `SnapshotStore \| RowStore` after build |
+| `ConfigErrorCode` | Union of validation error codes |
+| `ConfigValidationError` | Typed error class (see above) |
 
 ## Migration (from `@qkitt/queue` ≤ 0.4)
 
