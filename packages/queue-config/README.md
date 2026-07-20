@@ -23,6 +23,26 @@ npm install @qkitt/queue @qkitt/queue-config
 
 ## Quick start
 
+**A. Minimal — single queue + worker**
+
+```ts
+import { defineConfig, buildFromConfig } from '@qkitt/queue-config'
+
+const system = await buildFromConfig(
+  defineConfig({
+    queues: {
+      jobs: { worker: { run: handleJob, concurrency: 2 } },
+    },
+  }),
+)
+
+system.queues.jobs.enqueue({ id: '1' })
+```
+
+**B. Add persist + router**
+
+Add `stores` / `persist` when you need durability; add `router` for topic fan-out.
+
 ```ts
 // queue.config.ts
 import { defineConfig } from '@qkitt/queue-config'
@@ -51,7 +71,7 @@ export default defineConfig({
 })
 ```
 
-Build order: stores → queue → persist → worker → router → hydrate.
+Build order: stores → queue → persist → worker → router → hydrate (same stack rule: persist inside, worker outside).
 
 ```ts
 // app.ts
@@ -147,7 +167,7 @@ Load all persisted queues after build (and after workers attach, so restored ite
 
 ### Build rules
 
-- Persist wraps the bare queue; worker is outer (same as hand composition).
+- Persist wraps the bare queue; worker is outer (**persist inside, worker outside** — same as hand composition).
 - One persist layer per queue.
 - One store → one queue.
 - JSON cannot carry workers or custom `impl`.

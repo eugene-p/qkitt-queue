@@ -69,6 +69,7 @@ export type Queue<T, TEvents extends EventMap = QueueEvents<T>> = {
     /**
      * Replace all items without emitting queue events.
      * Used by persist hydrate/rollback so workers are not mid-stream during rebuild.
+     * Not a substitute for looping `enqueue` — no `queue:enqueued` events fire.
      * Throws {@link QueueFullError} when `items.length` exceeds `maxSize`.
      */
     replaceAll: (items: readonly T[]) => void

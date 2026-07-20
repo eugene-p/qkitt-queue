@@ -15,10 +15,12 @@ npx tsx examples/with-config/main.ts
 npm run examples
 ```
 
-| Example | Use case | Layers / package |
+| Example | Task | Layers / package |
 | --- | --- | --- |
-| [`worker-drain`](./worker-drain/main.ts) | Concurrent backlog drain | `buildQueue` → `withWorker` |
-| [`retry-pipeline`](./retry-pipeline/main.ts) | Multi-step job + flaky retry | `pipelineWorker` + `retryWorker` → `withWorker` |
-| [`persist-restart`](./persist-restart/main.ts) | Crash, hydrate, finish work | `withSnapshotPersist` → `withWorker` |
-| [`router-topics`](./router-topics/main.ts) | Topic publish → queues | `buildRouter` + worker queues |
-| [`with-config`](./with-config/main.ts) | Same idea via config | `@qkitt/queue-config` |
+| [`worker-drain`](./worker-drain/main.ts) | Concurrent jobs + drain wait | `buildQueue` → `withWorker` |
+| [`retry-pipeline`](./retry-pipeline/main.ts) | Retries / multi-step | `pipelineWorker` + `retryWorker` → `withWorker` |
+| [`persist-restart`](./persist-restart/main.ts) | Survive restart (snapshot) | `withSnapshotPersist` → `withWorker` |
+| [`router-topics`](./router-topics/main.ts) | Topic fan-out | `buildRouter` + worker queues |
+| [`with-config`](./with-config/main.ts) | Declarative multi-queue | `@qkitt/queue-config` |
+
+Task index and composition patterns: [Recipes](../packages/queue/README.md#recipes) · [Waiting for drain](../packages/queue/README.md#waiting-for-drain)

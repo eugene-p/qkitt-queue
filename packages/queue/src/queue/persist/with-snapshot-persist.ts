@@ -111,7 +111,8 @@ const cancelTimeout = (handle: TimerHandle): void => {
  *
  * Auto-save coalesces burst mutations (microtask by default, or
  * {@link SnapshotPersistOptions.autoSaveDebounceMs}). Prefer `flush()` before
- * process exit when durability matters.
+ * process exit when durability matters. `flush()` waits for pending auto-saves;
+ * `persist()` writes a full snapshot immediately (never debounced).
  */
 export const withSnapshotPersist = <
     T,

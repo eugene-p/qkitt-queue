@@ -9,7 +9,7 @@ Fast, composable in-process queues for TypeScript — zero runtime dependencies.
 
 Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing. Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 18+ and modern browsers. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
 
-**[API reference](#api-reference)** · [Composition](#composition) · [Topics & routing](#topics--routing) · [Persistence](#persistence) · [Package layout](#package-layout) · [Benchmarks](#benchmark-summary)
+**[API reference](#api-reference)** · [Recipes](#recipes) · [Composition](#composition) · [Topics & routing](#topics--routing) · [Persistence](#persistence) · [Waiting for drain](#waiting-for-drain) · [Package layout](#package-layout) · [Benchmarks](#benchmark-summary)
 
 ## Install
 
@@ -34,6 +34,19 @@ import {
 Subpath exports are available by area: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/events`. See [Package layout](#package-layout) for what each subpath exports.
 
 Runnable scenarios (worker, retry, persist, router): [`examples/`](../../examples) in the monorepo.
+
+## Recipes
+
+| Task | Jump to |
+| --- | --- |
+| Concurrent jobs | [`buildQueue` + `withWorker`](#2-add-a-worker), [Waiting for drain](#waiting-for-drain) |
+| Retries / multi-step | [`retryWorker` + `pipelineWorker`](#4-worker-helpers) |
+| Survive restart (snapshot) | [§3 Add persistence](#3-add-persistence), [Persist lifecycle](#persist-lifecycle) |
+| DB-style row persist | [Row](#row) |
+| Topic fan-out | [Topics & routing](#topics--routing) |
+| Declarative multi-queue | [`@qkitt/queue-config`](../queue-config) |
+
+When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](../queue-config) over deep nesting.
 
 ## Composition
 
@@ -91,7 +104,7 @@ queue.stop()  // no new items; in-flight finish
 queue.start()
 ```
 
-Failed items are not re-queued. Use `retryWorker` (below) or handle `worker:failed`.
+**Failed items are not re-queued.** Use [`retryWorker`](#4-worker-helpers) for in-call retries, or handle `worker:failed` and re-enqueue yourself if you need a dead-letter path.
 
 ### 3. Add persistence
 
@@ -106,6 +119,7 @@ import {
 } from '@qkitt/queue'
 
 const store = createMemorySnapshotStore<Job>()
+// Stack: bare → persist → worker (persist inside, worker outside)
 const queue = withWorker(
   withSnapshotPersist(buildQueue<Job>(), store),
   async (job) => handle(job),
@@ -114,8 +128,15 @@ const queue = withWorker(
 
 await queue.hydrate() // load from store before accepting work
 queue.enqueue({ id: '1', url: '…' })
-await queue.flush()   // wait for pending saves
+await queue.flush()   // wait for pending saves before exit
 ```
+
+#### Persist lifecycle
+
+1. Build stack: bare → persist → worker (**persist inside, worker outside**).
+2. `await queue.hydrate()` before enqueue / before expecting workers to process restored items.
+3. Mutate as usual — `enqueue` / `dequeue` stay sync.
+4. `await queue.flush()` before process exit. Snapshot auto-save may debounce; `flush` promotes pending writes.
 
 Row-style persist (insert/remove per item) uses the same stack rule — wrap a `RowRecord` queue, then the worker:
 
@@ -136,6 +157,8 @@ const queue = withWorker(
 
 await queue.hydrate()
 ```
+
+The inner queue stores `RowRecord<T>` (`{ id, item }`) so the store can key by id. The public surface is still `T` — you enqueue plain jobs, never a `RowRecord` yourself.
 
 ### 4. Worker helpers
 
@@ -163,6 +186,14 @@ const run = retryWorker(
 const run2 = retryWorker(async (n: number) => callApi(n), 2)
 ```
 
+`retries` = retries **after** the first failure. Total attempts = `retries + 1`.
+
+| `retries` | Total attempts |
+| --- | ---: |
+| `0` | 1 |
+| `1` | 2 |
+| `3` | 4 |
+
 After all attempts fail: `RetryExhaustedError` with `attempts` and `cause`.
 
 **Pipeline**
@@ -183,7 +214,16 @@ const run = pipelineWorker([
 ])
 ```
 
-Empty step lists throw at construction. Step failures throw `PipelineStepError`. Heterogeneous step lists cannot infer end-to-end types — use `pipelineWorker<In, Out>([...])` when you need a precise result type.
+Empty step lists throw at construction. Step failures throw `PipelineStepError`.
+
+> Heterogeneous step lists often infer as `unknown`. Use `pipelineWorker<In, Out>([…])` when you need a precise result type on `worker:completed`.
+
+```ts
+const run = pipelineWorker<string, number>([
+  async (id) => fetchUser(id),   // string → User
+  async (user) => user.age,      // User → number
+])
+```
 
 **Compose helpers**
 
@@ -300,7 +340,9 @@ const unbind = router.bind('jobs.*', buildQueue())
 unbind()
 ```
 
-**Unmatched** publishes can go to a sink queue. The sink is not a match — `publish` still returns `0`.
+**Unmatched** publishes can go to a sink queue. `publish` returns the number of **bindings** that matched — the unmatched sink is not a binding, so the return value stays `0` even when the sink enqueues. Use `router:unmatched` (`delivered`) or the sink queue's `size()` for sink metrics.
+
+Workers on router-bound queues receive `{ topic, data }` (a `RouteMessage`), not the bare payload.
 
 ```ts
 const unrouted = buildQueue<RouteMessage>()
@@ -339,6 +381,14 @@ queue.enqueue('a')    // auto-saves by default
 await queue.persist() // manual save
 await queue.flush()
 ```
+
+| Call | When |
+| --- | --- |
+| Auto-save (default) | After mutations; coalesced (microtask or `autoSaveDebounceMs`) |
+| `flush()` | Wait until pending auto-saves / in-flight writes settle — **shutdown path** |
+| `persist()` | Explicit full snapshot write **now**; never debounced |
+
+Row has no `persist()`; use `flush()` to await the insert/remove/clear chain.
 
 ### Row
 
@@ -415,9 +465,38 @@ Every layer is typed. `on` / `once` both return an unsubscribe function. The emi
 
 Events cost nothing when nobody is subscribed.
 
+## Waiting for drain
+
+No built-in idle wait — use `worker:idle` directly:
+
+```ts
+function whenIdle(queue: {
+  on: (event: 'worker:idle', cb: () => void) => () => void
+  isEmpty: () => boolean
+  isProcessing: () => boolean
+}): Promise<void> {
+  return new Promise((resolve) => {
+    const off = queue.on('worker:idle', () => {
+      off()
+      resolve()
+    })
+    if (queue.isEmpty() && !queue.isProcessing()) {
+      off()
+      resolve()
+    }
+  })
+}
+
+// usage
+queue.enqueue(job)
+await whenIdle(queue)
+```
+
+Resolves when the queue is empty and nothing is in flight. A later `enqueue` starts work again. Prefer this over busy-polling `isProcessing`.
+
 ## Notes & pitfalls
 
-**Stack order matters.** Persist wraps the bare queue; worker is outermost.
+**Stack order matters.** Persist wraps the bare queue; worker is outermost. **Persist inside, worker outside.**
 
 ```ts
 // wrong — withRowPersist throws (worker already attached)
@@ -427,7 +506,7 @@ withRowPersist(withWorker(buildQueue<RowRecord<T>>(), run), store)
 withWorker(withRowPersist(buildQueue<RowRecord<T>>(), store), run)
 ```
 
-**Await `hydrate()` before enqueue** when using persist, or mutations throw `QueueHydratingError`.
+**Await `hydrate()` before enqueue** when using persist, or mutations throw `QueueHydratingError`. Call `flush()` before process exit so debounced writes are not lost.
 
 ```ts
 const queue = withSnapshotPersist(buildQueue<T>(), store)
@@ -466,27 +545,31 @@ Worker drain measures concurrent jobs and retained memory under a backlog. Bare 
 
 | Library | c=1 | c=4 | heap Δ (c=1) |
 | --- | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **457** | **451** | **239 KiB** |
-| fastq | 90 | 86 | 6.81 MiB |
-| async.queue | 133 | 180 | 4.96 MiB |
-| p-queue | 57 | 57 | 11.04 MiB |
+| **@qkitt/queue** `withWorker` | **622** | **635** | **243 KiB** |
+| fastq | 109 | 106 | 6.82 MiB |
+| async.queue | 185 | 213 | 5.00 MiB |
+| p-queue | 82 | 78 | 10.84 MiB |
 
 **Bare queue** — 50 000 enqueue + dequeue (ops/s median · retained heap)
 
 | Library | ops/s | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 1,016 | 1.19 MiB |
-| denque | 1,307 | 1.43 MiB |
-| yocto-queue | 1,657 | 1.92 MiB |
-| native `Array` push/shift | 6 | 1.18 MiB |
+| **@qkitt/queue** `buildQueue` | 1,467 | 1.19 MiB |
+| denque | 1,849 | 1.36 MiB |
+| yocto-queue | 2,361 | 1.92 MiB |
+| native `Array` push/shift | 7 | 1.18 MiB |
 
-Relative numbers (Node 22, Windows laptop, 2026-07-19). Re-run before drawing absolute conclusions.
+Relative numbers (Node 22, Windows laptop, 2026-07-19). YMMV.
 
 ---
 
 ## API reference
 
 The sections above show composition patterns; the reference below covers every public signature.
+
+**Primary (most apps):** `buildQueue`, `withWorker`, `retryWorker`, `pipelineWorker`, `withSnapshotPersist`, `withRowPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
+
+Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`, `createId`, topic matchers) is for specialized use — see individual entries below.
 
 ### `buildQueue`
 
@@ -505,15 +588,15 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `enqueue(item)` | `void` | Add to tail |
 | `dequeue()` | `T \| undefined` | Remove head (`undefined` if empty; ambiguous when `T` may be `undefined`) |
 | `peek()` | `T \| undefined` | Head without removing (same ambiguity as `dequeue`) |
-| `tryDequeue()` | `QueueSlot<T> \| undefined` | Remove head as `{ value }` or `undefined` if empty (nullish payloads OK) |
-| `tryPeek()` | `QueueSlot<T> \| undefined` | Peek as `{ value }` or `undefined` if empty |
+| `tryDequeue()` | `QueueSlot<T> \| undefined` | Nullish-safe: `{ value }` or `undefined` if empty |
+| `tryPeek()` | `QueueSlot<T> \| undefined` | Nullish-safe peek |
 | `size()` | `number` | Item count |
 | `isEmpty()` | `boolean` | |
 | `clear()` | `void` | Remove all; emits `queue:cleared` |
-| `replaceAll(items)` | `void` | Replace contents without queue events (used by persist hydrate) |
+| `replaceAll(items)` | `void` | Silent replace (no queue events). Used by persist hydrate — not a substitute for looping `enqueue`. |
 | `toArray()` | `T[]` | Snapshot head → tail |
 | `on` / `once` | `() => void` | Subscribe; return unsubscribe |
-| `emit` | | Internal / advanced |
+| `emit` | | Advanced; prefer domain methods so invariants hold |
 
 `null` / `undefined` are valid payloads. Prefer `tryDequeue` / `tryPeek` when `T` may be nullish so emptiness is structural (`undefined` return) rather than inferred from the value.
 
@@ -586,7 +669,7 @@ withSnapshotPersist<T>(
 | `autoSave` | `boolean` | `true` |
 | `autoSaveDebounceMs` | `number` | `0` (microtask coalesce) |
 
-When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules one save per microtask; `> 0` waits that many ms after the last mutation. Call `flush()` before shutdown if durability matters. Explicit `persist()` is never debounced.
+When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules one save per microtask; `> 0` waits that many ms after the last mutation. See [Snapshot: `persist` vs `flush`](#snapshot) for when to call which.
 
 **Added methods:** `hydrate()`, `persist()`, `flush()`.
 
@@ -610,7 +693,7 @@ withRowPersist<T>(
 | --- | --- | --- |
 | `createId` | `() => string` | Library default (nanoid-style) |
 
-Public API still enqueues plain `T`; the inner queue holds `{ id, item }` records.
+Requires `buildQueue<RowRecord<T>>()`. The decorated surface is `QueueWithRowPersist<T>` — you enqueue plain `T`; the inner queue holds `{ id, item }` records.
 
 **Added methods:** `hydrate()`, `flush()`, `rowIds()`.
 
@@ -663,7 +746,7 @@ buildRouter(options?: BuildRouterOptions): Router
 | --- | --- | --- |
 | `unmatchedTarget` | `{ enqueue(msg) }` | Sink for unmatched publishes |
 
-**Methods:** `bind(pattern, target)` → unbind fn, `unbind(pattern, target?)`, `publish(topic, data)` → match count, `unmatchedCount()`, `lastUnmatched()`, `clearUnmatched()`, `setUnmatchedTarget(target?)`, `on` / `once` / `emit`.
+**Methods:** `bind(pattern, target)` → unbind fn, `unbind(pattern, target?)`, `publish(topic, data)` → matched binding count (unmatched sink excluded), `unmatchedCount()`, `lastUnmatched()`, `clearUnmatched()`, `setUnmatchedTarget(target?)`, `on` / `once` / `emit`.
 
 **Helpers:** `matchTopic`, `isValidPattern`, `isValidTopic`, constants `SINGLE_WILDCARD`, `MULTI_WILDCARD`, `TOPIC_SEPARATOR`.
 
@@ -728,18 +811,20 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 
 ## Package layout
 
-| Subpath | Exports |
-| --- | --- |
-| `@qkitt/queue` | Everything |
-| `@qkitt/queue/queue` | `buildQueue`, `withWorker`, persist wrappers, … |
-| `@qkitt/queue/worker` | `pipelineWorker`, `retryWorker`, related errors/types |
-| `@qkitt/queue/router` | `buildRouter`, match helpers |
-| `@qkitt/queue/persist` | Memory + Web Storage stores |
-| `@qkitt/queue/events` | `buildEventEmitter`, … |
+**Default:** import from `@qkitt/queue`. Subpaths are optional for bundle splitting or narrower imports.
+
+| Subpath | Exports | Does *not* contain |
+| --- | --- | --- |
+| `@qkitt/queue` | Everything | — |
+| `@qkitt/queue/queue` | `buildQueue`, `withWorker`, persist wrappers | Store adapters |
+| `@qkitt/queue/worker` | `pipelineWorker`, `retryWorker`, related errors/types | `withWorker` |
+| `@qkitt/queue/router` | `buildRouter`, match helpers | — |
+| `@qkitt/queue/persist` | Memory + Web Storage stores | `withRowPersist` / `withSnapshotPersist` |
+| `@qkitt/queue/events` | `buildEventEmitter`, … | — |
 
 Companion: [`@qkitt/queue-config`](../queue-config) — declarative `defineConfig` / `buildFromConfig`.
 
-`@qkitt/queue/worker` is worker **helpers**. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. Same split for persist: adapters under `/persist`, wrappers under `/queue`.
+`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. Same split for persist: adapters under `/persist`, wrappers under `/queue`.
 
 ## Changelog
 

@@ -72,6 +72,9 @@ export type QueueWithRowPersist<
  * Persist each queue mutation as a row operation.
  * Good for DB-style backends where enqueue/dequeue map to insert/delete.
  *
+ * The inner queue holds `RowRecord<T>` (`{ id, item }`) so the store can key
+ * by id. The decorated public surface is still `T` — you enqueue plain jobs.
+ *
  * **Composition (required):** wrap a bare `RowRecord` queue, then the worker:
  * `withWorker(withRowPersist(buildQueue<RowRecord<T>>(), store), worker)`.
  * Reverse order silently skips store removes — this helper throws if it

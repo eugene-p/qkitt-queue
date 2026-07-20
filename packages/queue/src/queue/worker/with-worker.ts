@@ -70,6 +70,9 @@ const resolveConcurrency = (value: number | undefined): number => {
  * Wrap a queue with a worker that dequeues and processes items FIFO-style.
  * Listens for `queue:enqueued` and pumps work up to `concurrency`.
  *
+ * Failed items are **not** re-queued. Use `retryWorker` for in-call retries,
+ * or handle `worker:failed` and re-enqueue yourself.
+ *
  * **Composition (required when using persist):** worker must be the **outer**
  * decorator so `dequeue` hits the persist override:
  * `withWorker(withRowPersist(buildQueue(), store), worker)` — not the reverse.

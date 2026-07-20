@@ -6,8 +6,9 @@ import type { WorkerFn } from './types'
 
 export type RetryOptions = {
     /**
+     * Total attempts = `retries + 1`.
      * How many times to retry after the first failure.
-     * Total attempts = `retries + 1`. Must be a safe integer ≥ 0.
+     * Must be a safe integer ≥ 0.
      */
     retries: number
     /**

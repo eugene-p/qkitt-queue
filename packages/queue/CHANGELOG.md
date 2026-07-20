@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-07-19
+
+### Docs
+
+- Recipes index, persist lifecycle checklist, waiting-for-drain (`whenIdle`) recipe, and primary vs advanced API grouping
+- Failure model, stack order, retries attempt table, RowRecord callout, router unmatched semantics, package layout “does not contain” table
+- JSDoc: `retries` total attempts, row/snapshot durability, worker failures not re-queued, `replaceAll` is not bulk enqueue
+- Refreshed root and package benchmark numbers
+
 ## [0.5.4] — 2026-07-19
 
 ### Added
@@ -211,6 +220,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.5.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.5
 [0.5.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.4
 [0.5.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.3
 [0.5.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.2

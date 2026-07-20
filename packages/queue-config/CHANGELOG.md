@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-19
+
+### Docs
+
+- Quick start: minimal single-queue worker first, then persist + router
+- Build rules: same stack mnemonic as core (persist inside, worker outside)
+
 ## [0.2.1] — 2026-07-19
 
 ### Added
@@ -60,6 +67,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.2.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.2
 [0.2.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.1
 [0.2.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.0
 
