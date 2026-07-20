@@ -10,15 +10,30 @@ export const MULTI_WILDCARD = '#'
 const isEmptySegment = (segment: string): boolean => segment.length === 0
 
 /**
+ * Validate pre-split concrete topic segments (no wildcards, no empty parts).
+ * Prefer this on hot paths that already split the topic string once.
+ */
+export const isValidTopicParts = (segments: readonly string[]): boolean => {
+    if (segments.length === 0) return false
+    for (let i = 0; i < segments.length; i += 1) {
+        const segment = segments[i]!
+        if (isEmptySegment(segment)) return false
+        if (
+            segment.includes(SINGLE_WILDCARD) ||
+            segment.includes(MULTI_WILDCARD)
+        ) {
+            return false
+        }
+    }
+    return true
+}
+
+/**
  * Validate a concrete publish topic (no wildcards, no empty segments).
  */
 export const isValidTopic = (topic: string): boolean => {
     if (topic.length === 0) return false
-    if (topic.includes(SINGLE_WILDCARD) || topic.includes(MULTI_WILDCARD)) {
-        return false
-    }
-    const segments = topic.split(TOPIC_SEPARATOR)
-    return segments.length > 0 && !segments.some(isEmptySegment)
+    return isValidTopicParts(topic.split(TOPIC_SEPARATOR))
 }
 
 /**

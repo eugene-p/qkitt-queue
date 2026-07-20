@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildQueue } from '../core/queue'
+import { buildQueue, QueueFullError } from '../core/queue'
 import {
     withRowPersist,
     type RowRecord,
@@ -399,6 +399,40 @@ describe('withRowPersist', () => {
         expect(queue.toArray()).toEqual(['a'])
         await queue.flush()
         expect(insert).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not leak idSet or schedule insert when enqueue hits maxSize', async () => {
+        const insert = vi.fn(async () => {})
+        const store: RowStore<string> = {
+            loadAll: async () => [],
+            insert,
+            remove: async () => {},
+            clear: async () => {},
+        }
+        let n = 0
+        const queue = withRowPersist(
+            buildQueue<RowRecord<string>>({ maxSize: 1 }),
+            store,
+            { createId: () => `id-${++n}` },
+        )
+
+        queue.enqueue('a')
+        expect(() => queue.enqueue('b')).toThrow(QueueFullError)
+        expect(queue.toArray()).toEqual(['a'])
+        expect(queue.rowIds()).toEqual(['id-1'])
+
+        // createId already advanced for the failed attempt (id-2); idSet must
+        // not retain it or the next sequential id would falsely duplicate.
+        queue.dequeue()
+        queue.enqueue('c')
+        expect(queue.toArray()).toEqual(['c'])
+        expect(queue.rowIds()).toEqual(['id-3'])
+
+        await queue.flush()
+        // Only successful enqueues insert (a then c); full enqueue is skipped.
+        expect(insert).toHaveBeenCalledTimes(2)
+        expect(insert).toHaveBeenNthCalledWith(1, { id: 'id-1', item: 'a' })
+        expect(insert).toHaveBeenNthCalledWith(2, { id: 'id-3', item: 'c' })
     })
 
     it('rejects empty or whitespace-only generated ids on enqueue before store ops', async () => {

@@ -73,6 +73,21 @@ export const expectPositiveInteger = (value: unknown, path: string): number => {
     return value
 }
 
+/** Safe integer ≥ 0 (debounce ms, …). */
+export const expectNonNegativeInteger = (
+    value: unknown,
+    path: string,
+): number => {
+    if (!isIntegerInRange(value, 0)) {
+        return configError(
+            'INVALID_TYPE',
+            `${path} must be a safe integer >= 0`,
+            path,
+        )
+    }
+    return value
+}
+
 export const parseAdapter = (
     value: unknown,
     path: string,

@@ -45,3 +45,10 @@ Desktop.ini
 tmp/
 temp/
 .docs/
+agent-tools/
+
+# Local agent / audit scratch (do not commit)
+AGENTS.md
+performance-audit.md
+performance-eval-*.md
+performance-skipped.md

@@ -1,6 +1,7 @@
 import {
     buildEventEmitter,
     createTypedEmit,
+    type EventCallback,
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
@@ -108,6 +109,28 @@ export const withRowPersist = <
         emitter.emit as (eventName: string, data: unknown) => void,
     )
 
+    // Incremental id set: O(1) uniqueness checks (avoids toArray+Set per enqueue).
+    const idSet = new Set<string>()
+
+    const rebuildIdSet = (rows: readonly RowRecord<T>[]): void => {
+        idSet.clear()
+        for (let i = 0; i < rows.length; i += 1) {
+            idSet.add(rows[i]!.id)
+        }
+    }
+
+    // Integer sub counts: skip mapRowPayload + outer emit when nobody listens.
+    let enqueuedSubs = 0
+    let dequeuedSubs = 0
+
+    const bumpQueueSubs = (
+        eventName: keyof QueueEvents<T>,
+        delta: number,
+    ): void => {
+        if (eventName === 'queue:enqueued') enqueuedSubs += delta
+        else if (eventName === 'queue:dequeued') dequeuedSubs += delta
+    }
+
     const mapRowPayload = (payload: {
         item: RowRecord<T>
         size: number
@@ -117,9 +140,11 @@ export const withRowPersist = <
     })
 
     inner.on('queue:enqueued', (payload) => {
+        if (enqueuedSubs === 0) return
         emitter.emit('queue:enqueued', mapRowPayload(payload))
     })
     inner.on('queue:dequeued', (payload) => {
+        if (dequeuedSubs === 0) return
         emitter.emit('queue:dequeued', mapRowPayload(payload))
     })
     inner.on('queue:emptied', () => {
@@ -128,6 +153,49 @@ export const withRowPersist = <
     inner.on('queue:cleared', (payload) => {
         emitter.emit('queue:cleared', payload)
     })
+
+    const on: QueueWithRowPersist<T>['on'] = (eventName, callback) => {
+        const unsubscribe = emitter.on(eventName, callback)
+        if (
+            eventName === 'queue:enqueued' ||
+            eventName === 'queue:dequeued'
+        ) {
+            bumpQueueSubs(eventName, 1)
+            return () => {
+                unsubscribe()
+                bumpQueueSubs(eventName, -1)
+            }
+        }
+        return unsubscribe
+    }
+
+    const once: QueueWithRowPersist<T>['once'] = (eventName, callback) => {
+        if (
+            eventName !== 'queue:enqueued' &&
+            eventName !== 'queue:dequeued'
+        ) {
+            return emitter.once(eventName, callback)
+        }
+
+        bumpQueueSubs(eventName, 1)
+        let settled = false
+        const release = (): void => {
+            if (settled) return
+            settled = true
+            bumpQueueSubs(eventName, -1)
+        }
+        const unsubscribe = emitter.once(
+            eventName,
+            (data) => {
+                release()
+                ;(callback as EventCallback<typeof data>)(data)
+            },
+        )
+        return () => {
+            unsubscribe()
+            release()
+        }
+    }
 
     const trackError = (
         operation: RowPersistEvents<T>['persist:error']['operation'],
@@ -144,6 +212,7 @@ export const withRowPersist = <
             // Silent rebuild: no queue:enqueued during gate (workers must
             // not dequeue while store removes are suppressed).
             inner.replaceAll(rows)
+            rebuildIdSet(rows)
             emitPersist('persist:loaded', { size: inner.size() })
         },
         onLoadError: (error) => {
@@ -164,9 +233,11 @@ export const withRowPersist = <
      * Uses `inner.replaceAll` (silent bare queue), not the decorated public API.
      */
     const rollbackLocalById = (id: string): void => {
+        if (!idSet.has(id)) return
         const remaining = inner.toArray().filter((row) => row.id !== id)
         if (remaining.length === inner.size()) return
         inner.replaceAll(remaining)
+        idSet.delete(id)
     }
 
     const scheduleStore = (op: () => Promise<void>): void => {
@@ -175,19 +246,23 @@ export const withRowPersist = <
         })
     }
 
-    const currentIds = (): Set<string> =>
-        new Set(inner.toArray().map((row) => row.id))
-
     const enqueue = (item: T): void => {
         assertNotHydrating(gate)
 
-        const id = assertUniqueRowId(nextId(), currentIds())
+        const id = assertUniqueRowId(nextId(), idSet)
         const record = { id, item }
 
+        // Reserve id before enqueue so nested enqueue (from queue:enqueued
+        // handlers) still sees it for uniqueness. Roll back if enqueue throws
+        // (e.g. QueueFullError) so the set cannot leak.
+        //
         // Schedule insert *before* the in-memory enqueue so stacked workers
         // (which dequeue on `queue:enqueued`) cannot put remove ahead of insert
-        // on the write chain.
+        // on the write chain. If enqueue throws, the op no-ops via `accepted`.
+        idSet.add(id)
+        let accepted = false
         scheduleStore(async () => {
+            if (!accepted) return
             try {
                 await store.insert(record)
                 emitPersist('persist:inserted', { id, item })
@@ -197,7 +272,13 @@ export const withRowPersist = <
             }
         })
 
-        inner.enqueue(record)
+        try {
+            inner.enqueue(record)
+            accepted = true
+        } catch (error) {
+            idSet.delete(id)
+            throw error
+        }
     }
 
     const tryDequeue = (): QueueSlot<T> | undefined => {
@@ -208,6 +289,7 @@ export const withRowPersist = <
         if (held === undefined) return undefined
 
         const { id, item } = held.value
+        idSet.delete(id)
 
         scheduleStore(async () => {
             try {
@@ -244,6 +326,7 @@ export const withRowPersist = <
         if (removed === 0) return
 
         inner.clear()
+        idSet.clear()
 
         scheduleStore(async () => {
             try {
@@ -267,6 +350,7 @@ export const withRowPersist = <
         })
 
         inner.replaceAll(records)
+        rebuildIdSet(records)
 
         scheduleStore(async () => {
             try {
@@ -293,6 +377,24 @@ export const withRowPersist = <
         })
     }
 
+    const toArray = (): T[] => {
+        const rows = inner.toArray()
+        const items = new Array<T>(rows.length)
+        for (let i = 0; i < rows.length; i += 1) {
+            items[i] = rows[i]!.item
+        }
+        return items
+    }
+
+    const rowIds = (): string[] => {
+        const rows = inner.toArray()
+        const ids = new Array<string>(rows.length)
+        for (let i = 0; i < rows.length; i += 1) {
+            ids[i] = rows[i]!.id
+        }
+        return ids
+    }
+
     const api = markQueueLayer(
         decorateQueue(inner, {
             enqueue,
@@ -300,14 +402,14 @@ export const withRowPersist = <
             tryDequeue,
             peek,
             tryPeek,
-            toArray: () => inner.toArray().map((row) => row.item),
+            toArray,
             clear,
             replaceAll,
-            on: emitter.on,
-            once: emitter.once,
+            on,
+            once,
             emit: emitter.emit,
             hydrate,
-            rowIds: () => inner.toArray().map((row) => row.id),
+            rowIds,
             flush,
         }),
         PERSIST_LAYER,

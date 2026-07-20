@@ -67,6 +67,96 @@ describe('withSnapshotPersist', () => {
         expect(store.data).toEqual([])
     })
 
+    it('coalesces a burst of auto-saves into one save (microtask default)', async () => {
+        const save = vi.fn(async (items: readonly number[]) => {
+            void items
+        })
+        const store: SnapshotStore<number> = {
+            load: async () => [],
+            save,
+        }
+        const queue = withSnapshotPersist(buildQueue<number>(), store)
+
+        for (let i = 0; i < 50; i += 1) {
+            queue.enqueue(i)
+        }
+        await queue.flush()
+
+        expect(save).toHaveBeenCalledTimes(1)
+        expect(save).toHaveBeenCalledWith(
+            Array.from({ length: 50 }, (_, i) => i),
+        )
+    })
+
+    it('debounces auto-save when autoSaveDebounceMs > 0', async () => {
+        vi.useFakeTimers()
+        try {
+            const save = vi.fn(async (items: readonly number[]) => {
+                void items
+            })
+            const store: SnapshotStore<number> = {
+                load: async () => [],
+                save,
+            }
+            const queue = withSnapshotPersist(buildQueue<number>(), store, {
+                autoSaveDebounceMs: 25,
+            })
+
+            queue.enqueue(1)
+            queue.enqueue(2)
+            expect(save).not.toHaveBeenCalled()
+
+            await vi.advanceTimersByTimeAsync(24)
+            expect(save).not.toHaveBeenCalled()
+
+            queue.enqueue(3)
+            await vi.advanceTimersByTimeAsync(24)
+            expect(save).not.toHaveBeenCalled()
+
+            await vi.advanceTimersByTimeAsync(1)
+            // Timer fired; write chain may still be settling.
+            await queue.flush()
+
+            expect(save).toHaveBeenCalledTimes(1)
+            expect(save).toHaveBeenCalledWith([1, 2, 3])
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('flush promotes a pending debounced auto-save immediately', async () => {
+        vi.useFakeTimers()
+        try {
+            const store = memorySnapshot<string>()
+            const queue = withSnapshotPersist(buildQueue<string>(), store, {
+                autoSaveDebounceMs: 10_000,
+            })
+
+            queue.enqueue('a')
+            queue.enqueue('b')
+            expect(store.data).toEqual([])
+
+            await queue.flush()
+            expect(store.data).toEqual(['a', 'b'])
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('rejects invalid autoSaveDebounceMs', () => {
+        const store = memorySnapshot<string>()
+        expect(() =>
+            withSnapshotPersist(buildQueue<string>(), store, {
+                autoSaveDebounceMs: -1,
+            }),
+        ).toThrow(/autoSaveDebounceMs/)
+        expect(() =>
+            withSnapshotPersist(buildQueue<string>(), store, {
+                autoSaveDebounceMs: 1.5,
+            }),
+        ).toThrow(/autoSaveDebounceMs/)
+    })
+
     it('auto-saves after dequeuing an undefined payload', async () => {
         const store = memorySnapshot<string | undefined>()
         const queue = withSnapshotPersist(

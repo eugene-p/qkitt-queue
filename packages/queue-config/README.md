@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@qkitt/queue-config.svg)](https://www.npmjs.com/package/@qkitt/queue-config)
-[![License: ISC](https://img.shields.io/npm/l/@qkitt/queue-config.svg)](https://github.com/eugene-p/qkitt-queue/blob/main/LICENSE)
+[![License: ISC](https://img.shields.io/npm/l/@qkitt/queue-config.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue-config.svg)](https://nodejs.org)
 
 Declarative setup for [`@qkitt/queue`](../queue): named stores, queues, workers, and optional topic-router bindings in one object.
@@ -110,7 +110,7 @@ Each named store may back **at most one** queue (shared store definitions are re
 | Field | Type | Notes |
 | --- | --- | --- |
 | `maxSize` | `number` | Safe integer ≥ 1; same as `buildQueue({ maxSize })` |
-| `persist` | `{ store, autoSave? }` | `store` = name in `stores`; `autoSave` snapshot-only, default `true` |
+| `persist` | `{ store, autoSave?, autoSaveDebounceMs? }` | `store` = name in `stores`; `autoSave` / `autoSaveDebounceMs` snapshot-only (`autoSave` default `true`, debounce default microtask/`0`) |
 | `worker` | `WorkerFn` or `{ run, concurrency?, autoStart? }` | **JS only** — not available in JSON |
 
 ```ts
@@ -288,7 +288,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | --- | --- |
 | `SystemConfig` | Top-level config |
 | `StoreDefinition` | Built-in or custom store entry |
-| `PersistConfig` | `{ store, autoSave? }` on a queue |
+| `PersistConfig` | `{ store, autoSave?, autoSaveDebounceMs? }` on a queue |
 | `QueueConfig` | `maxSize`, `persist`, `worker` |
 | `WorkerConfig` | Function or `{ run, concurrency?, autoStart? }` |
 | `RouterConfig` / `BindingConfig` | Router section |

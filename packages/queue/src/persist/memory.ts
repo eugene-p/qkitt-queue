@@ -40,6 +40,17 @@ export const createMemoryRowStore = <T>(
         id: row.id,
         item: row.item,
     }))
+    // id → index for O(1) upsert/remove lookup (splice still shifts the array).
+    const indexById = new Map<string, number>()
+    for (let i = 0; i < rows.length; i += 1) {
+        indexById.set(rows[i]!.id, i)
+    }
+
+    const reindexFrom = (start: number): void => {
+        for (let i = start; i < rows.length; i += 1) {
+            indexById.set(rows[i]!.id, i)
+        }
+    }
 
     return {
         get rows() {
@@ -49,22 +60,25 @@ export const createMemoryRowStore = <T>(
         insert: (record) => {
             // Upsert by id so re-insert matches web-storage row store semantics
             // (order list stays unique; payload is replaced).
-            const index = rows.findIndex((row) => row.id === record.id)
+            const index = indexById.get(record.id)
             const next = { id: record.id, item: record.item }
-            if (index >= 0) {
+            if (index !== undefined) {
                 rows[index] = next
             } else {
+                indexById.set(record.id, rows.length)
                 rows.push(next)
             }
         },
         remove: (id) => {
-            const index = rows.findIndex((row) => row.id === id)
-            if (index >= 0) {
-                rows.splice(index, 1)
-            }
+            const index = indexById.get(id)
+            if (index === undefined) return
+            rows.splice(index, 1)
+            indexById.delete(id)
+            reindexFrom(index)
         },
         clear: () => {
             rows.length = 0
+            indexById.clear()
         },
     }
 }

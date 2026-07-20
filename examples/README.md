@@ -2,7 +2,7 @@
 
 Runnable scripts for [`@qkitt/queue`](../packages/queue) and [`@qkitt/queue-config`](../packages/queue-config).
 
-From the monorepo root after `npm install` and `npm run build`:
+Requires Node.js 18+. From the monorepo root after `npm install` and `npm run build`:
 
 ```bash
 npx tsx examples/worker-drain/main.ts
@@ -15,7 +15,7 @@ npx tsx examples/with-config/main.ts
 npm run examples
 ```
 
-| Example | Story | Layers / package |
+| Example | Use case | Layers / package |
 | --- | --- | --- |
 | [`worker-drain`](./worker-drain/main.ts) | Concurrent backlog drain | `buildQueue` → `withWorker` |
 | [`retry-pipeline`](./retry-pipeline/main.ts) | Multi-step job + flaky retry | `pipelineWorker` + `retryWorker` → `withWorker` |

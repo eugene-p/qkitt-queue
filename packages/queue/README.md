@@ -2,16 +2,14 @@
 
 [![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@qkitt/queue.svg)](https://www.npmjs.com/package/@qkitt/queue)
-[![License: ISC](https://img.shields.io/npm/l/@qkitt/queue.svg)](https://github.com/eugene-p/qkitt-queue/blob/main/LICENSE)
+[![License: ISC](https://img.shields.io/npm/l/@qkitt/queue.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue.svg)](https://nodejs.org)
 
-Fast, composable in-process queues for TypeScript.
+Fast, composable in-process queues for TypeScript — zero runtime dependencies.
 
-Layers you can stack: bare queue, concurrent worker, optional persistence, topic routing. Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. Zero runtime dependencies. ESM only. Node.js 18+.
+Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing. Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 18+ and modern browsers. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
 
-Bare queue is FIFO (enqueue at the tail, dequeue from the head).
-
-**[API reference](#api-reference)** · [Composition](#composition) · [Benchmarks](#benchmarks-summary)
+**[API reference](#api-reference)** · [Composition](#composition) · [Topics & routing](#topics--routing) · [Persistence](#persistence) · [Package layout](#package-layout) · [Benchmarks](#benchmark-summary)
 
 ## Install
 
@@ -33,7 +31,7 @@ import {
 } from '@qkitt/queue'
 ```
 
-Or by area: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/events`.
+Subpath exports are available by area: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/events`. See [Package layout](#package-layout) for what each subpath exports.
 
 Runnable scenarios (worker, retry, persist, router): [`examples/`](../../examples) in the monorepo.
 
@@ -141,7 +139,7 @@ await queue.hydrate()
 
 ### 4. Worker helpers
 
-`pipelineWorker` and `retryWorker` build **worker functions**. They do not touch the queue. Compose them, then pass the result to `withWorker`.
+`pipelineWorker` and `retryWorker` return plain worker functions — compose them first, then pass the result to `withWorker`. They do not touch the queue directly.
 
 **Retry**
 
@@ -250,11 +248,7 @@ queue.on('worker:failed', ({ error }) => console.error(error))
 
 ### 6. Optional: drive from config
 
-Same stacks can be declared in a config object via **[`@qkitt/queue-config`](../queue-config)**:
-
-```bash
-npm install @qkitt/queue @qkitt/queue-config
-```
+Prefer a declarative setup? [`@qkitt/queue-config`](../queue-config) builds the same queue → persist → worker stacks from a JS/JSON object:
 
 ```ts
 import { defineConfig, buildFromConfig } from '@qkitt/queue-config'
@@ -421,11 +415,52 @@ Every layer is typed. `on` / `once` both return an unsubscribe function. The emi
 
 Events cost nothing when nobody is subscribed.
 
-## Benchmarks (summary)
+## Notes & pitfalls
 
-In-process peers only (not Redis job systems). Full tables, environment, and method: monorepo [root README § Benchmarks](../../README.md#benchmarks). Re-run: [`packages/bench`](../bench) (`npm run bench` from repo root).
+**Stack order matters.** Persist wraps the bare queue; worker is outermost.
 
-Worker drain measures concurrent jobs and retained memory under a backlog. Bare `buildQueue` is comparable to dedicated queue structures and much faster than naive `Array#shift`.
+```ts
+// wrong — withRowPersist throws (worker already attached)
+withRowPersist(withWorker(buildQueue<RowRecord<T>>(), run), store)
+
+// right
+withWorker(withRowPersist(buildQueue<RowRecord<T>>(), store), run)
+```
+
+**Await `hydrate()` before enqueue** when using persist, or mutations throw `QueueHydratingError`.
+
+```ts
+const queue = withSnapshotPersist(buildQueue<T>(), store)
+queue.enqueue(item)      // throws QueueHydratingError
+await queue.hydrate()
+queue.enqueue(item)      // fine
+```
+
+**Nullish payloads need `tryDequeue()` / `tryPeek()`.** Plain `dequeue()` and `peek()` return `undefined` for both "empty" and a queued `undefined` — fine for most types, but use the `try*` variants when `T` includes `null` or `undefined`:
+
+```ts
+const q = buildQueue<string | undefined>()
+q.enqueue(undefined)
+
+q.dequeue()       // undefined — the item, or an empty queue?
+q.tryDequeue()    // { value: undefined } — item present; undefined means empty
+```
+
+**Failed items are not re-queued.** Use `retryWorker` or handle the event:
+
+```ts
+queue.on('worker:failed', ({ item, error }) => {
+  // log, alert, or re-enqueue manually
+})
+```
+
+**Web Storage is not multi-tab safe or transactional.** Prefer one owning tab, or a real DB, when durability is shared.
+
+## Benchmark summary
+
+In-process peers only. Full tables and setup in the [root README](../../README.md#benchmarks). Re-run: [`packages/bench`](../bench) (`npm run bench` from repo root).
+
+Worker drain measures concurrent jobs and retained memory under a backlog. Bare `buildQueue` is in the same range as dedicated queue structures with lower retained memory, and beats `Array#shift` by two orders of magnitude.
 
 **Worker drain** — 10 000 no-op jobs (ops/s · pending-job heap)
 
@@ -450,6 +485,8 @@ Relative numbers (Node 22, Windows laptop, 2026-07-19). Re-run before drawing ab
 ---
 
 ## API reference
+
+The sections above show composition patterns; the reference below covers every public signature.
 
 ### `buildQueue`
 
@@ -518,7 +555,7 @@ withWorker<T, R>(
 | `isProcessing()` | Any in-flight items |
 | `activeCount()` | In-flight count |
 
-Inner extras (`flush`, `hydrate`, …) are preserved when the queue is already decorated.
+Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the decorated queue.
 
 **Events**
 
@@ -547,6 +584,9 @@ withSnapshotPersist<T>(
 | Option | Type | Default |
 | --- | --- | --- |
 | `autoSave` | `boolean` | `true` |
+| `autoSaveDebounceMs` | `number` | `0` (microtask coalesce) |
+
+When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules one save per microtask; `> 0` waits that many ms after the last mutation. Call `flush()` before shutdown if durability matters. Explicit `persist()` is never debounced.
 
 **Added methods:** `hydrate()`, `persist()`, `flush()`.
 
@@ -673,6 +713,7 @@ Also: `createTypedEmit`, types `EventEmitter`, `EventMap`, `EventCallback`, `Mer
 
 | Type | Role |
 | --- | --- |
+| `QueueSlot<T>` | `{ value: T }` — structural wrapper for `tryDequeue` / `tryPeek` |
 | `Queue<T>` | Bare queue surface |
 | `QueueWithWorker<T, R>` | Queue + worker controls |
 | `QueueWithSnapshotPersist<T>` / `QueueWithRowPersist<T>` | Persist-decorated queues |
@@ -699,6 +740,10 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 Companion: [`@qkitt/queue-config`](../queue-config) — declarative `defineConfig` / `buildFromConfig`.
 
 `@qkitt/queue/worker` is worker **helpers**. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. Same split for persist: adapters under `/persist`, wrappers under `/queue`.
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md) for release notes and migration guidance.
 
 ## License
 

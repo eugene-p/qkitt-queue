@@ -3,6 +3,7 @@ import {
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
+import { isIntegerInRange } from '../../util/number.util'
 import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents, QueueSlot } from '../core/queue'
@@ -24,10 +25,25 @@ export type SnapshotPersistEvents = {
 
 export type SnapshotPersistOptions = {
     /**
-     * Automatically `save` after enqueue / dequeue / clear.
+     * Automatically `save` after enqueue / dequeue / clear / replaceAll.
      * Defaults to `true`.
      */
     autoSave?: boolean
+    /**
+     * Delay before writing after a mutation when {@link autoSave} is true.
+     *
+     * - `0` or omitted: coalesce synchronous bursts into **one save per
+     *   microtask** (default).
+     * - `> 0`: wait this many milliseconds after the **last** mutation
+     *   (timer resets on each enqueue/dequeue/clear/replaceAll).
+     *
+     * Explicit {@link QueueWithSnapshotPersist.persist} is never debounced.
+     * Call {@link QueueWithSnapshotPersist.flush} (or `hydrate`) to force a
+     * pending auto-save onto the write chain before continuing or exiting.
+     *
+     * Must be a safe integer ≥ 0.
+     */
+    autoSaveDebounceMs?: number
 }
 
 type SnapshotQueueEvents<T, TEvents extends EventMap> = MergeEventMaps<
@@ -51,6 +67,34 @@ export type QueueWithSnapshotPersist<
     flush: () => Promise<void>
 }
 
+const resolveAutoSaveDebounceMs = (value: number | undefined): number => {
+    const ms = value ?? 0
+    if (!isIntegerInRange(ms, 0)) {
+        throw new Error('autoSaveDebounceMs must be a safe integer >= 0')
+    }
+    return ms
+}
+
+type TimerHandle = unknown
+
+const scheduleTimeout = (fn: () => void, delay: number): TimerHandle => {
+    const schedule = (
+        globalThis as unknown as {
+            setTimeout: (cb: () => void, ms: number) => unknown
+        }
+    ).setTimeout
+    return schedule(fn, delay)
+}
+
+const cancelTimeout = (handle: TimerHandle): void => {
+    const clear = (
+        globalThis as unknown as {
+            clearTimeout: (id: unknown) => void
+        }
+    ).clearTimeout
+    clear(handle)
+}
+
 /**
  * Persist the whole queue as one snapshot.
  * Good for simple backends where you rewrite the full list each time.
@@ -64,6 +108,10 @@ export type QueueWithSnapshotPersist<
  * A second concurrent `hydrate()` rejects with “hydrate already in progress”.
  * The hydrate gate has no built-in deadline: if the store may hang, wrap
  * `hydrate()` in `Promise.race` with a timeout.
+ *
+ * Auto-save coalesces burst mutations (microtask by default, or
+ * {@link SnapshotPersistOptions.autoSaveDebounceMs}). Prefer `flush()` before
+ * process exit when durability matters.
  */
 export const withSnapshotPersist = <
     T,
@@ -76,6 +124,9 @@ export const withSnapshotPersist = <
     assertBareQueueForPersist(queue, 'withSnapshotPersist')
 
     const autoSave = options.autoSave ?? true
+    const autoSaveDebounceMs = resolveAutoSaveDebounceMs(
+        options.autoSaveDebounceMs,
+    )
     const inner = queue
     const emitPersist = createTypedEmit<SnapshotPersistEvents>(
         inner.emit as (eventName: string, data: unknown) => void,
@@ -98,7 +149,8 @@ export const withSnapshotPersist = <
         },
     })
 
-    const { gate, writes, hydrate, flush } = lifecycle
+    const { gate, writes, hydrate: hydrateCore, flush: flushWrites } =
+        lifecycle
 
     const persist = (): Promise<void> =>
         writes.push(async () => {
@@ -112,12 +164,67 @@ export const withSnapshotPersist = <
             }
         })
 
-    const scheduleSave = (): void => {
-        // Mutators already assertNotHydrating(gate); hydrate uses inner only.
-        if (!autoSave) return
+    // Coalesce / debounce auto-saves. Explicit persist() is immediate.
+    // flush/hydrate promote a pending save onto the write chain first.
+    let saveScheduled = false
+    let debounceTimer: TimerHandle | undefined
+
+    const clearDebounceTimer = (): void => {
+        if (debounceTimer === undefined) return
+        cancelTimeout(debounceTimer)
+        debounceTimer = undefined
+    }
+
+    const promoteScheduledSave = (): void => {
+        if (!saveScheduled) return
+        saveScheduled = false
+        clearDebounceTimer()
         void persist().catch(() => {
             // Error already emitted as persist:error.
         })
+    }
+
+    const scheduleMicrotask = (fn: () => void): void => {
+        const schedule = (
+            globalThis as { queueMicrotask?: (cb: () => void) => void }
+        ).queueMicrotask
+        if (typeof schedule === 'function') {
+            schedule(fn)
+            return
+        }
+        // Fallback when queueMicrotask is unavailable (very old runtimes).
+        void Promise.resolve().then(fn)
+    }
+
+    const scheduleSave = (): void => {
+        // Mutators already assertNotHydrating(gate); hydrate uses inner only.
+        if (!autoSave) return
+
+        if (autoSaveDebounceMs === 0) {
+            if (saveScheduled) return
+            saveScheduled = true
+            scheduleMicrotask(() => {
+                promoteScheduledSave()
+            })
+            return
+        }
+
+        // Debounce: reset the timer on every mutation.
+        saveScheduled = true
+        clearDebounceTimer()
+        debounceTimer = scheduleTimeout(() => {
+            debounceTimer = undefined
+            promoteScheduledSave()
+        }, autoSaveDebounceMs)
+    }
+
+    const flush = async (): Promise<void> => {
+        promoteScheduledSave()
+        await flushWrites()
+    }
+    const hydrate = async (): Promise<void> => {
+        promoteScheduledSave()
+        await hydrateCore()
     }
 
     const enqueue = (item: T): void => {

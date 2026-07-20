@@ -91,6 +91,7 @@ const buildQueueFromConfig = <T>(
             }
             queue = withSnapshotPersist(queue, store, {
                 autoSave: queueConfig.persist.autoSave,
+                autoSaveDebounceMs: queueConfig.persist.autoSaveDebounceMs,
             })
         } else {
             if (!isRowStore(store)) {

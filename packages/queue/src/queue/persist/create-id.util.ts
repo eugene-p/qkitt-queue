@@ -9,17 +9,32 @@ const ALPHABET =
 
 const DEFAULT_SIZE = 21
 
-const fillRandom = (bytes: Uint8Array): void => {
+type GetRandomValues = (array: Uint8Array) => Uint8Array
+
+let cachedGetRandomValues: GetRandomValues | undefined
+let cryptoResolved = false
+
+const resolveGetRandomValues = (): GetRandomValues | undefined => {
+    if (cryptoResolved) return cachedGetRandomValues
+    cryptoResolved = true
     const cryptoObj = (
         globalThis as {
             crypto?: {
-                getRandomValues?: (array: Uint8Array) => Uint8Array
+                getRandomValues?: GetRandomValues
             }
         }
     ).crypto
+    cachedGetRandomValues =
+        typeof cryptoObj?.getRandomValues === 'function'
+            ? cryptoObj.getRandomValues.bind(cryptoObj)
+            : undefined
+    return cachedGetRandomValues
+}
 
-    if (typeof cryptoObj?.getRandomValues === 'function') {
-        cryptoObj.getRandomValues(bytes)
+const fillRandom = (bytes: Uint8Array): void => {
+    const getRandomValues = resolveGetRandomValues()
+    if (getRandomValues) {
+        getRandomValues(bytes)
         return
     }
 
@@ -41,9 +56,9 @@ export const createId = (size: number = DEFAULT_SIZE): string => {
     const bytes = new Uint8Array(size)
     fillRandom(bytes)
 
-    let id = ''
+    const chars = new Array<string>(size)
     for (let i = 0; i < size; i += 1) {
-        id += ALPHABET[(bytes[i] as number) & 63]
+        chars[i] = ALPHABET[(bytes[i] as number) & 63]!
     }
-    return id
+    return chars.join('')
 }

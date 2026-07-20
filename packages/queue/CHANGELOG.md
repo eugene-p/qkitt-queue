@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-07-19
+
+### Added
+
+- `SnapshotPersistOptions.autoSaveDebounceMs` — optional debounce for snapshot auto-save (`0` / omitted = one save per microtask; `> 0` waits ms after the last mutation). `flush()` / `hydrate()` still promote a pending save immediately; explicit `persist()` is never debounced
+
+### Performance
+
+- Row persist: persistent id `Set` for O(1) uniqueness checks (no per-enqueue `toArray` rebuild)
+- Snapshot auto-save: coalesce burst mutations (microtask default; see `autoSaveDebounceMs`)
+- Router: single topic split via `isValidTopicParts`; stable-binding publish avoids full route array snapshot (version counter)
+- Events: in-place `remove` (`indexOf` + `splice`); two-listener dispatch fast path
+- Row persist: skip outer `queue:enqueued` / `queue:dequeued` payload mapping when no listeners; single-pass `toArray` / `rowIds`
+- `createId`: cache `crypto.getRandomValues`; build id with array + `join`
+- Memory row store: id → index map for insert/remove lookup
+- Web storage access: cache resolved `localStorage` / `sessionStorage` after first successful resolve
+
+### Fixed
+
+- Row persist: if `inner.enqueue` throws (e.g. `QueueFullError`), roll back the reserved id and skip the scheduled store insert so neither `idSet` nor durable state leaks
+
 ## [0.5.3] — 2026-07-19
 
 ### Added
@@ -190,6 +211,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.5.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.4
 [0.5.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.3
 [0.5.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.2
 [0.5.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.1

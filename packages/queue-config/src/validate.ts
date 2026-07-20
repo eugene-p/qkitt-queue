@@ -11,6 +11,7 @@ import { configError } from './errors'
 import {
     assertWebStorageKey,
     expectBoolean,
+    expectNonNegativeInteger,
     expectPositiveInteger,
     expectString,
     isPlainObject,
@@ -141,10 +142,20 @@ const parsePersistConfig = (
         obj.autoSave === undefined
             ? undefined
             : expectBoolean(obj.autoSave, `${path}.autoSave`)
+    const autoSaveDebounceMs =
+        obj.autoSaveDebounceMs === undefined
+            ? undefined
+            : expectNonNegativeInteger(
+                  obj.autoSaveDebounceMs,
+                  `${path}.autoSaveDebounceMs`,
+              )
 
     return {
         store,
         ...(autoSave !== undefined ? { autoSave } : {}),
+        ...(autoSaveDebounceMs !== undefined
+            ? { autoSaveDebounceMs }
+            : {}),
     }
 }
 

@@ -74,11 +74,15 @@ export const buildEventEmitter = <
         const listeners = listenersByEvent.get(eventName)
         if (!listeners) return
 
-        const next = listeners.filter((cb) => cb !== callback)
-        if (next.length === 0) {
+        // Remove one registration (indexOf + splice). Safe during emit because
+        // dispatchTo snapshots multi-listener lists or captures refs first.
+        const idx = listeners.indexOf(
+            callback as EventCallback<TEvents[keyof TEvents]>,
+        )
+        if (idx === -1) return
+        listeners.splice(idx, 1)
+        if (listeners.length === 0) {
             listenersByEvent.delete(eventName)
-        } else {
-            listenersByEvent.set(eventName, next)
         }
     }
 
@@ -118,6 +122,23 @@ export const buildEventEmitter = <
         if (listeners.length === 1) {
             try {
                 listeners[0]!(data as TEvents[keyof TEvents])
+            } catch {
+                // Isolate: e.g. a throwing user handler must not skip worker pump.
+            }
+            return
+        }
+
+        // Common case: queue event + worker (or two user listeners).
+        if (listeners.length === 2) {
+            const a = listeners[0]!
+            const b = listeners[1]!
+            try {
+                a(data as TEvents[keyof TEvents])
+            } catch {
+                // Isolate: e.g. a throwing user handler must not skip worker pump.
+            }
+            try {
+                b(data as TEvents[keyof TEvents])
             } catch {
                 // Isolate: e.g. a throwing user handler must not skip worker pump.
             }

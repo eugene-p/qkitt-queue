@@ -1,8 +1,8 @@
 {
   "name": "@qkitt/queue",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "type": "module",
-  "description": "A small, typed FIFO queue toolkit for TypeScript",
+  "description": "Fast, composable in-process queues for TypeScript — zero runtime dependencies",
   "license": "ISC",
   "author": "eugene-p",
   "keywords": [

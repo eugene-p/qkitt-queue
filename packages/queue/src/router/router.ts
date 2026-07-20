@@ -6,7 +6,7 @@ import {
 } from '../events'
 import {
     isValidPattern,
-    isValidTopic,
+    isValidTopicParts,
     matchTopicParts,
     TOPIC_SEPARATOR,
 } from './match.util'
@@ -132,6 +132,8 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
     }
 
     const routes: InternalBinding[] = []
+    /** Bumped on bind / unbind / clear so publish can skip a full snapshot. */
+    let routeVersion = 0
     let unmatchedTarget: RouteTarget | undefined = options.unmatchedTarget
     let unmatchedTotal = 0
     let lastUnmatchedRecord: UnmatchedRecord | undefined
@@ -152,6 +154,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
             target: target as RouteTarget,
         }
         routes.push(binding)
+        routeVersion += 1
         emitRouter('router:bound', { pattern })
 
         return () => {
@@ -172,6 +175,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
             removed += 1
         }
         if (removed > 0) {
+            routeVersion += 1
             emitRouter('router:unbound', { pattern, removed })
         }
     }
@@ -194,32 +198,64 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         }
     }
 
+    const deliverToRoute = <T>(
+        route: InternalBinding,
+        message: RouteMessage<T>,
+        topic: string,
+    ): void => {
+        try {
+            route.target.enqueue(message as RouteMessage)
+        } catch (error) {
+            emitRouter('router:error', {
+                operation: 'publish',
+                error,
+                topic,
+                pattern: route.pattern,
+            })
+        }
+    }
+
     const publish = <T = unknown>(topic: string, data: T): number => {
-        if (!isValidTopic(topic)) {
+        // Split once: validate parts and match without a second split.
+        const topicParts = topic.split(TOPIC_SEPARATOR)
+        if (!isValidTopicParts(topicParts)) {
             const error = new Error(`Invalid publish topic: ${topic}`)
             emitRouter('router:error', { operation: 'publish', error, topic })
             throw error
         }
 
         const message: RouteMessage<T> = { topic, data }
-        const topicParts = topic.split(TOPIC_SEPARATOR)
         let matched = 0
+        const startVersion = routeVersion
 
-        // Snapshot so bind/unbind during publish is safe.
-        // Topic already validated; patterns pre-split at bind — no re-validation.
-        for (const route of [...routes]) {
+        // Fast path: iterate in place when bindings are stable. If bind/unbind
+        // runs mid-publish, snapshot the *unprocessed* tail and finish safely.
+        //
+        // Intentional departure from strict snapshot-at-start (`[...routes]`):
+        // - A route unbound before it is reached is skipped (old: still matched).
+        // - A route bound mid-publish can still match if appended before the
+        //   version bump is observed (old: not in the start snapshot).
+        // Both require re-entrant bind/unbind from a target's enqueue — rare.
+        for (let i = 0; ; ) {
+            if (i >= routes.length) break
+
+            if (routeVersion !== startVersion) {
+                const snapshot = routes.slice(i)
+                for (const route of snapshot) {
+                    if (!matchTopicParts(route.patternParts, topicParts)) {
+                        continue
+                    }
+                    matched += 1
+                    deliverToRoute(route, message, topic)
+                }
+                break
+            }
+
+            const route = routes[i]!
+            i += 1
             if (!matchTopicParts(route.patternParts, topicParts)) continue
             matched += 1
-            try {
-                route.target.enqueue(message as RouteMessage)
-            } catch (error) {
-                emitRouter('router:error', {
-                    operation: 'publish',
-                    error,
-                    topic,
-                    pattern: route.pattern,
-                })
-            }
+            deliverToRoute(route, message, topic)
         }
 
         if (matched === 0) {
@@ -241,7 +277,9 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         }))
 
     const clear = (): void => {
+        if (routes.length === 0) return
         routes.length = 0
+        routeVersion += 1
     }
 
     const setUnmatchedTarget = (target: RouteTarget | undefined): void => {

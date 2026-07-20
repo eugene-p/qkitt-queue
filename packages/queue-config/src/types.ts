@@ -66,6 +66,12 @@ export type PersistConfig = {
      * Defaults to `true`. Ignored for row stores.
      */
     autoSave?: boolean
+    /**
+     * Snapshot stores only: debounce auto-save after mutations (ms).
+     * `0` / omitted = one save per microtask; `> 0` waits after the last mutation.
+     * Ignored for row stores. Must be a safe integer ≥ 0.
+     */
+    autoSaveDebounceMs?: number
 }
 
 /**

@@ -929,6 +929,49 @@ describe('queue peer API contract (integration)', () => {
         expect(q.isEmpty()).toBe(true)
     })
 
+    it('accepts autoSaveDebounceMs on snapshot persist config', () => {
+        const config = validateSystemConfig({
+            stores: {
+                mem: { adapter: 'memory', strategy: 'snapshot' },
+            },
+            queues: {
+                jobs: {
+                    persist: {
+                        store: 'mem',
+                        autoSave: true,
+                        autoSaveDebounceMs: 50,
+                    },
+                },
+            },
+        })
+        expect(config.queues.jobs?.persist).toEqual({
+            store: 'mem',
+            autoSave: true,
+            autoSaveDebounceMs: 50,
+        })
+    })
+
+    it('rejects invalid autoSaveDebounceMs in persist config', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        mem: { adapter: 'memory', strategy: 'snapshot' },
+                    },
+                    queues: {
+                        jobs: {
+                            persist: {
+                                store: 'mem',
+                                autoSaveDebounceMs: -1,
+                            },
+                        },
+                    },
+                }),
+            'INVALID_TYPE',
+            /autoSaveDebounceMs/,
+        )
+    })
+
     it('exposes snapshot persist helpers from withSnapshotPersist', async () => {
         const system = await buildFromConfig({
             stores: {
