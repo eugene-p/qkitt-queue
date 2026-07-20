@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] — 2026-07-20
+
+### Added
+
+- `pipelineDone(value)` / `isPipelineDone` / type `PipelineDone` — successful early exit from `pipelineWorker` (skips later steps, resolves with `value`; not an error, so `retryWorker` does not retry)
+
 ## [0.5.5] — 2026-07-19
 
 ### Docs
@@ -220,6 +226,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.5.6]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.6
 [0.5.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.5
 [0.5.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.4
 [0.5.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.3

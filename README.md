@@ -1,4 +1,11 @@
-# qkitt-queue
+<p align="center" style="margin-bottom:0px;">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/logo-dark.svg">
+    <img src="./assets/logo.svg" alt="qkitt-queue" width="150" height="150">
+  </picture>
+</p>
+
+<h1 align="center" style="padding-bottom:2rem; margin-top:0px">Fast in-process queues for TypeScript</h1>
 
 [![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
 [![npm @qkitt/queue](https://img.shields.io/npm/v/@qkitt/queue.svg?label=%40qkitt%2Fqueue)](https://www.npmjs.com/package/@qkitt/queue)
@@ -6,7 +13,10 @@
 [![License: ISC](https://img.shields.io/npm/l/@qkitt/queue.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue.svg)](https://nodejs.org)
 
-Fast, composable in-process queues for TypeScript — zero runtime dependencies.
+> **ESM-only.** This package ships ES modules exclusively. If you're in a CJS context, use a dynamic import:
+> ```ts
+> const { buildQueue, withWorker } = await import('@qkitt/queue')
+> ```
 
 | Package | What it is |
 | --- | --- |
@@ -15,6 +25,8 @@ Fast, composable in-process queues for TypeScript — zero runtime dependencies.
 | [`@qkitt/queue-bench`](./packages/bench) | Benchmarks against in-process peers (monorepo only) |
 
 Most apps only need `@qkitt/queue` — compose layers in code and reach for `@qkitt/queue-config` when you want a declarative setup instead.
+
+**Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
 ## Install
 
@@ -123,6 +135,8 @@ npx tsx examples/worker-drain/main.ts
 
 ## Develop
 
+Requires Node.js >= 18. CI runs on Node 20, 22, 24, and 26.
+
 ```bash
 npm install
 npm test
@@ -155,6 +169,10 @@ Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run benc
 | p-queue | 1,251 | 1,214 | 82 | 78 | 10.84 MiB |
 
 Median ops/s, higher is better. Heap Δ = retained memory measured with all items still held (worker paused).
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, code style, and PR expectations. For usage questions, prefer [GitHub Discussions](https://github.com/eugene-p/qkitt-queue/discussions).
 
 ## License
 

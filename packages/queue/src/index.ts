@@ -73,10 +73,13 @@ export {
 export {
     pipelineWorker,
     pipeline,
+    pipelineDone,
+    isPipelineDone,
     PipelineStepError,
     retryWorker,
     withRetry,
     RetryExhaustedError,
+    type PipelineDone,
     type PipelineStep,
     type PipelineStepContext,
     type PipelineStepObject,

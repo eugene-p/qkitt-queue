@@ -1,0 +1,34 @@
+name: Feature request
+description: Suggest a new capability or API addition.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! The library intentionally stays small, so please describe the use case clearly.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: What problem are you trying to solve? What does your code look like today without this feature?
+    validations:
+      required: true
+
+  - type: textarea
+    id: api-shape
+    attributes:
+      label: Proposed API
+      description: Sketch the API you'd expect — function signatures, options, return types. Doesn't need to be final.
+      render: typescript
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you found a workaround? Is there another library that solves this? Why does it not fit?
+    validations:
+      required: false

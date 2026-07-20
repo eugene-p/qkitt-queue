@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"
+     class="qk-logo qk-dark" role="img" aria-label="qkitt-queue logo">
+  <title>qkitt-queue</title>
+
+  <style>
+    /* Dedicated dark-surface variant: ink forced to white.
+       Shown via the README picture element's dark source.
+       For a single auto-adapting file, use logo.svg instead. */
+    .qk-logo { --qk-ink: #fff; }
+    .qk-bowl { fill: none; stroke: var(--qk-ink); }
+    .qk-item, .qk-tail { fill: var(--qk-ink); }
+  </style>
+
+  <g transform="translate(-3.7795161)">
+    <g transform="translate(-12.232982,17.620063)">
+      <g transform="translate(-9.7795334,-1.6804972)">
+        <rect class="qk-tail" width="36" height="36" x="385.51181" y="403.40158" rx="8" ry="8"/>
+        <rect class="qk-tail" fill-opacity="0.67" width="36" height="36" x="430.86615" y="403.53546" rx="8" ry="8"/>
+        <rect class="qk-tail" fill-opacity="0.33" width="36" height="36" x="476.22046" y="403.53546" rx="8" ry="8"/>
+      </g>
+      <rect class="qk-item" width="36" height="36" x="134.51256" y="217.62665" rx="8" ry="8"/>
+      <rect class="qk-item" width="36" height="36" x="255.45746" y="217.62665" rx="8" ry="8"/>
+      <rect class="qk-item" width="36" height="28" x="194.98502" y="285.65814" rx="8" ry="8"/>
+      <path class="qk-bowl" stroke-width="36" stroke-linecap="butt" stroke-linejoin="miter"
+            d="m 364.89605,419.85543 c -70.99745,-0.51078 -34.22179,-53.88656 -86.32064,-53.88656 -52.09885,0 -104.96386,-0.25538 -104.96386,-0.25538 m -33.55504,-232.5084 h 141.41733 c 33.50173,0 80.47244,-103.029281 80.47244,-69.527544 V 305.09486 c 0,33.50174 -26.97071,60.47245 -60.47244,60.47245 H 120.05651 c -33.501729,0 -60.472439,-26.97071 -60.472439,-60.47245 V 63.677546 c 0,-33.501737 46.970709,69.527544 80.472439,69.527544 z"/>
+    </g>
+  </g>
+</svg>

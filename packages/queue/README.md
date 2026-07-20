@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/eugene-p/qkitt-queue/main/assets/logo.svg" alt="qkitt-queue" width="150" height="150">
+
 # @qkitt/queue
 
 [![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
@@ -8,6 +10,8 @@
 Fast, composable in-process queues for TypeScript — zero runtime dependencies.
 
 Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing. Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 18+ and modern browsers. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
+
+**Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
 **[API reference](#api-reference)** · [Recipes](#recipes) · [Composition](#composition) · [Topics & routing](#topics--routing) · [Persistence](#persistence) · [Waiting for drain](#waiting-for-drain) · [Package layout](#package-layout) · [Benchmarks](#benchmark-summary)
 
@@ -215,6 +219,25 @@ const run = pipelineWorker([
 ```
 
 Empty step lists throw at construction. Step failures throw `PipelineStepError`.
+
+Return `pipelineDone(value)` from a step to **finish successfully early** (later steps are not run; the worker resolves with `value`). This is not an error — safe under `retryWorker` (no retry). Use for guards/filters (already done, nothing to send) without threading a skip flag through every step.
+
+```ts
+import { pipelineWorker, pipelineDone } from '@qkitt/queue'
+
+type EmailJob = { to: string; body: string; dedupeKey: string }
+
+const run = pipelineWorker([
+  async (job: EmailJob) => {
+    if (await alreadySent(job.dedupeKey)) {
+      return pipelineDone({ status: 'duplicate', key: job.dedupeKey })
+    }
+    return job
+  },
+  async (job) => sendEmail(job),
+  async (result) => recordSent(result),
+])
+```
 
 > Heterogeneous step lists often infer as `unknown`. Use `pipelineWorker<In, Out>([…])` when you need a precise result type on `worker:completed`.
 
@@ -567,7 +590,7 @@ Relative numbers (Node 22, Windows laptop, 2026-07-19). YMMV.
 
 The sections above show composition patterns; the reference below covers every public signature.
 
-**Primary (most apps):** `buildQueue`, `withWorker`, `retryWorker`, `pipelineWorker`, `withSnapshotPersist`, `withRowPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
+**Primary (most apps):** `buildQueue`, `withWorker`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withSnapshotPersist`, `withRowPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
 
 Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`, `createId`, topic matchers) is for specialized use — see individual entries below.
 
@@ -728,9 +751,13 @@ Passing a number is shorthand for `{ retries: n }`.
 
 ```ts
 pipelineWorker<T, R = unknown>(steps: readonly PipelineStep[]): WorkerFn<T, R>
+pipelineDone<T>(value: T): PipelineDone<T>
+isPipelineDone(value: unknown): value is PipelineDone
 ```
 
 Each step is `StepFn` or `{ name, fn, metadata? }`. Bare functions get names like `step[0]`.
+
+**Early exit:** `return pipelineDone(value)` from a step — remaining steps are skipped; the worker **resolves** with `value` (marker is unwrapped). Not a failure; `retryWorker` will not retry.
 
 **Errors:** `PipelineStepError` (`stepName`, `stepIndex`, `metadata`, `cause`). Empty `steps` throws at construction.
 
@@ -817,7 +844,7 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | --- | --- | --- |
 | `@qkitt/queue` | Everything | — |
 | `@qkitt/queue/queue` | `buildQueue`, `withWorker`, persist wrappers | Store adapters |
-| `@qkitt/queue/worker` | `pipelineWorker`, `retryWorker`, related errors/types | `withWorker` |
+| `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
 | `@qkitt/queue/router` | `buildRouter`, match helpers | — |
 | `@qkitt/queue/persist` | Memory + Web Storage stores | `withRowPersist` / `withSnapshotPersist` |
 | `@qkitt/queue/events` | `buildEventEmitter`, … | — |

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
+import { retryWorker } from './retry'
 import {
+    isPipelineDone,
     pipeline,
+    pipelineDone,
     pipelineWorker,
     PipelineStepError,
 } from './pipeline'
@@ -181,6 +184,102 @@ describe('pipelineWorker', () => {
         expect(() => pipelineWorker([{ name: 'x' } as never])).toThrow(
             /must be a function or \{ name, fn/,
         )
+    })
+
+    describe('pipelineDone', () => {
+        it('is recognized only for pipelineDone markers', () => {
+            expect(isPipelineDone(pipelineDone(1))).toBe(true)
+            expect(isPipelineDone(pipelineDone(undefined))).toBe(true)
+            expect(isPipelineDone({ value: 1 })).toBe(false)
+            expect(isPipelineDone(null)).toBe(false)
+            expect(isPipelineDone(1)).toBe(false)
+        })
+
+        it('resolves with undefined when done wraps undefined', async () => {
+            const later = vi.fn(async () => 'nope')
+            const worker = pipelineWorker([
+                async () => pipelineDone(undefined),
+                later,
+            ])
+            await expect(worker('x')).resolves.toBeUndefined()
+            expect(later).not.toHaveBeenCalled()
+        })
+
+        it('stops the pipeline and resolves with the unwrapped value', async () => {
+            const later = vi.fn(async (n: number) => n * 10)
+            const worker = pipelineWorker([
+                async (n: number) => {
+                    if (n < 0) return pipelineDone({ status: 'skipped', n })
+                    return n + 1
+                },
+                later,
+            ])
+
+            await expect(worker(-3)).resolves.toEqual({
+                status: 'skipped',
+                n: -3,
+            })
+            expect(later).not.toHaveBeenCalled()
+
+            await expect(worker(2)).resolves.toBe(30)
+            expect(later).toHaveBeenCalledOnce()
+        })
+
+        it('works from a named middle step', async () => {
+            const third = vi.fn(async (s: string) => s.toUpperCase())
+            const worker = pipelineWorker([
+                async (n: number) => n + 1,
+                {
+                    name: 'guard',
+                    fn: async (n: number) => {
+                        if (n === 2) return pipelineDone('early')
+                        return String(n)
+                    },
+                },
+                third,
+            ])
+
+            await expect(worker(1)).resolves.toBe('early')
+            expect(third).not.toHaveBeenCalled()
+
+            await expect(worker(2)).resolves.toBe('3')
+            expect(third).toHaveBeenCalledWith('3', expect.any(Object))
+        })
+
+        it('unwraps when the last step returns pipelineDone', async () => {
+            const worker = pipelineWorker([
+                async (n: number) => n + 1,
+                async (n: number) => pipelineDone(n * 2),
+            ])
+            await expect(worker(3)).resolves.toBe(8)
+        })
+
+        it('does not treat plain objects with a value field as done', async () => {
+            const worker = pipelineWorker([
+                async () => ({ value: 42, status: 'ok' }),
+                async (row: { value: number }) => row.value,
+            ])
+            await expect(worker(undefined)).resolves.toBe(42)
+        })
+
+        it('does not retry under retryWorker (success path)', async () => {
+            const attempts = vi.fn(async (n: number) => {
+                if (n === 0) return pipelineDone({ status: 'skipped' })
+                throw new Error('should not run as failure')
+            })
+            const worker = retryWorker(
+                pipelineWorker([
+                    attempts,
+                    async () => {
+                        throw new Error('later step')
+                    },
+                ]),
+                { retries: 3, delay: 0 },
+            )
+
+            await expect(worker(0)).resolves.toEqual({ status: 'skipped' })
+            expect(attempts).toHaveBeenCalledOnce()
+        })
     })
 })
 

@@ -1,6 +1,6 @@
 {
   "name": "@qkitt/queue",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "type": "module",
   "description": "Fast, composable in-process queues for TypeScript — zero runtime dependencies",
   "license": "ISC",
@@ -15,7 +15,14 @@
     "topic",
     "persist",
     "typescript",
-    "esm"
+    "esm",
+    "job queue",
+    "task queue",
+    "concurrency",
+    "in-process",
+    "zero-dependency",
+    "backpressure",
+    "event emitter"
   ],
   "homepage": "https://github.com/eugene-p/qkitt-queue#readme",
   "repository": {

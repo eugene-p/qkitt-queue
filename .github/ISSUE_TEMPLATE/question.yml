@@ -1,0 +1,25 @@
+name: Question
+description: "How do I…? — usage questions and clarifications."
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For usage questions, consider also posting in [GitHub Discussions](https://github.com/eugene-p/qkitt-queue/discussions) — answers there help future users find solutions.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do? Include relevant code if applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What you've tried
+      description: Any approaches you've already attempted, links you've read, etc.
+    validations:
+      required: false

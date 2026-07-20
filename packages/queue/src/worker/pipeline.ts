@@ -62,6 +62,46 @@ const normalizeStep = (step: PipelineStep, index: number): NormalizedStep => {
     )
 }
 
+/** Brand for {@link pipelineDone} results — not part of the public result value. */
+const PIPELINE_DONE = Symbol('qkitt.pipelineDone')
+
+/**
+ * Marker returned from a step to finish the pipeline successfully without
+ * running later steps. Created only via {@link pipelineDone}.
+ */
+export type PipelineDone<T = unknown> = {
+    readonly [PIPELINE_DONE]: true
+    readonly value: T
+}
+
+/**
+ * Signal a successful early exit from {@link pipelineWorker}.
+ * Remaining steps are skipped; the worker resolves with `value`
+ * (not the marker). Does not throw — safe under {@link retryWorker}.
+ *
+ * @example
+ * pipelineWorker([
+ *   async (job) => {
+ *     if (await alreadySent(job.dedupeKey)) {
+ *       return pipelineDone({ status: 'duplicate', key: job.dedupeKey })
+ *     }
+ *     return job
+ *   },
+ *   async (job) => sendEmail(job),
+ * ])
+ */
+export const pipelineDone = <T>(value: T): PipelineDone<T> => ({
+    [PIPELINE_DONE]: true,
+    value,
+})
+
+/** True when `value` is a {@link pipelineDone} marker. */
+export const isPipelineDone = (value: unknown): value is PipelineDone =>
+    typeof value === 'object' &&
+    value !== null &&
+    (value as PipelineDone)[PIPELINE_DONE] === true &&
+    'value' in (value as object)
+
 /** Thrown when a pipeline step rejects or throws. */
 export class PipelineStepError extends Error {
     override readonly name = 'PipelineStepError'
@@ -94,6 +134,8 @@ export class PipelineStepError extends Error {
  * Accepts bare functions or `{ name, fn, metadata? }` objects (mixable).
  * Each step receives `(input, ctx)` where `ctx` has `name`, `index`, `metadata`.
  * Empty arrays throw at construction. Step failures throw {@link PipelineStepError}.
+ * A step may return {@link pipelineDone}`(value)` to finish successfully early
+ * (later steps are not run; the worker resolves with `value`).
  *
  * Type parameters: pass `pipelineWorker<In, Out>(steps)` when you need a precise
  * result type — heterogeneous step arrays cannot infer end-to-end types.
@@ -136,6 +178,9 @@ export function pipelineWorker<T, R = unknown>(
                     error,
                     step.metadata,
                 )
+            }
+            if (isPipelineDone(value)) {
+                return value.value as R
             }
         }
         return value as R

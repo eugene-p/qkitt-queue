@@ -11,6 +11,8 @@ Builds the same stack as hand-written composition (`queue → persist → worker
 
 **Peer dependency:** `@qkitt/queue` `^0.5.0`. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
 
+**Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.2` → `0.3`). Check the changelog on minor upgrades.
+
 Runnable demo: [`examples/with-config`](../../examples/with-config) in the monorepo.
 
 **[API reference](#api-reference)** · [Config reference](#config-reference) · [JSON mode](#json-mode)

@@ -10,7 +10,10 @@ export {
 export {
     pipelineWorker,
     pipeline,
+    pipelineDone,
+    isPipelineDone,
     PipelineStepError,
+    type PipelineDone,
     type PipelineStep,
     type PipelineStepObject,
 } from './pipeline'
