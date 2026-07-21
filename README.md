@@ -124,6 +124,20 @@ npx tsx examples/worker-drain/main.ts
 # or all: npm run examples
 ```
 
+## When to use this
+
+In-process, queue toolkit. Start bare, add a layer as requirements change:
+
+- **FIFO backlog** — hold work in order until something drains it (orders awaiting fulfillment, moderation queue, form submissions waiting for review).
+- **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
+- **Retries** — survive flaky third-party calls (payment capture, carrier API, email or SMS gateway).
+- **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
+- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash).
+- **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
+- **Declarative config** — stand up a multi-queue system from one object (`@qkitt/queue-config`).
+
+Out of scope: work that spans machines or processes.
+
 ## Docs
 
 | Link | Covers |
