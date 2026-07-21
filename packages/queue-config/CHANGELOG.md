@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `engines.node` is now `>=20` (aligned with core and CI)
+
 ## [0.2.2] — 2026-07-19
 
 ### Docs

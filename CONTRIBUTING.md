@@ -10,7 +10,7 @@ cd qkitt-queue
 npm install
 ```
 
-Requires Node.js >= 18 (`engines`). CI tests on Node 20, 22, 24, and 26. The repo is an npm workspaces monorepo with three packages under `packages/`.
+Requires Node.js >= 20 (`engines`). CI tests on Node 20, 22, 24, and 26. The repo is an npm workspaces monorepo with three packages under `packages/`.
 
 ## Useful commands
 

@@ -2,7 +2,7 @@
 
 Runnable scripts for [`@qkitt/queue`](../packages/queue) and [`@qkitt/queue-config`](../packages/queue-config).
 
-Requires Node.js 18+. From the monorepo root after `npm install` and `npm run build`:
+Requires Node.js 20+. From the monorepo root after `npm install` and `npm run build`:
 
 ```bash
 npx tsx examples/worker-drain/main.ts

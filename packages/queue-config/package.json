@@ -22,7 +22,7 @@
     "url": "https://github.com/eugene-p/qkitt-queue/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "sideEffects": false,
   "main": "./dist/index.js",

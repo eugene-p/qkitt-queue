@@ -135,7 +135,7 @@ npx tsx examples/worker-drain/main.ts
 
 ## Develop
 
-Requires Node.js >= 18. CI runs on Node 20, 22, 24, and 26.
+Requires Node.js >= 20. CI runs on Node 20, 22, 24, and 26.
 
 ```bash
 npm install

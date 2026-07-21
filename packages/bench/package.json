@@ -6,7 +6,7 @@
   "description": "Non-publishable benchmarks for @qkitt/queue vs in-process peers",
   "license": "ISC",
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "scripts": {
     "bench": "tsx --expose-gc src/index.ts",
