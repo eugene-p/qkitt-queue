@@ -163,25 +163,25 @@ npm run bench
 
 Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run bench` · shorter summary in the [queue README](./packages/queue/README.md#benchmark-summary)
 
-> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 22.19.0 · `tinybench` via `tsx --expose-gc` · 2026-07-19 · YMMV
+> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 22.23.1 · `tinybench` via `tsx --expose-gc` · 2026-07-22 · YMMV
 
 ### Bare queue — 50k enqueue + dequeue
 
 | Library | ops/s (med) | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 1,467 | 1.19 MiB |
-| denque | 1,849 | 1.36 MiB |
-| yocto-queue | 2,361 | 1.92 MiB |
+| **@qkitt/queue** `buildQueue` | 789 | 1.19 MiB |
+| denque | 1,462 | 1.73 MiB |
+| yocto-queue | 2,161 | 1.92 MiB |
 | native `Array` push/shift | 7 | 1.18 MiB |
 
 ### Worker drain — N async no-op jobs, concurrency C
 
 | Library | 1k c=1 | 1k c=4 | 10k c=1 | 10k c=4 | heap Δ (10k c=1) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **6,246** | **6,532** | **622** | **635** | **243 KiB** |
-| fastq | 4,144 | 3,883 | 109 | 106 | 6.82 MiB |
-| async.queue | 2,512 | 2,939 | 185 | 213 | 5.00 MiB |
-| p-queue | 1,251 | 1,214 | 82 | 78 | 10.84 MiB |
+| **@qkitt/queue** `withWorker` | **7,622** | **9,671** | **846** | **874** | **247 KiB** |
+| fastq | 3,998 | 4,223 | 107 | 100 | 6.80 MiB |
+| async.queue | 2,744 | 2,757 | 195 | 220 | 4.94 MiB |
+| p-queue | 1,063 | 1,286 | 82 | 71 | 11.04 MiB |
 
 Median ops/s, higher is better. Heap Δ = retained memory measured with all items still held (worker paused).
 

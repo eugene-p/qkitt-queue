@@ -597,21 +597,21 @@ Worker drain measures concurrent jobs and retained memory under a backlog. Bare 
 
 | Library | c=1 | c=4 | heap Δ (c=1) |
 | --- | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **622** | **635** | **243 KiB** |
-| fastq | 109 | 106 | 6.82 MiB |
-| async.queue | 185 | 213 | 5.00 MiB |
-| p-queue | 82 | 78 | 10.84 MiB |
+| **@qkitt/queue** `withWorker` | **846** | **874** | **247 KiB** |
+| fastq | 107 | 100 | 6.80 MiB |
+| async.queue | 195 | 220 | 4.94 MiB |
+| p-queue | 82 | 71 | 11.04 MiB |
 
 **Bare queue** — 50 000 enqueue + dequeue (ops/s median · retained heap)
 
 | Library | ops/s | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 1,467 | 1.19 MiB |
-| denque | 1,849 | 1.36 MiB |
-| yocto-queue | 2,361 | 1.92 MiB |
+| **@qkitt/queue** `buildQueue` | 789 | 1.19 MiB |
+| denque | 1,462 | 1.73 MiB |
+| yocto-queue | 2,161 | 1.92 MiB |
 | native `Array` push/shift | 7 | 1.18 MiB |
 
-Relative numbers (Node 22, Windows laptop, 2026-07-19). YMMV.
+Relative numbers (Node 22.23.1, Windows laptop, 2026-07-22). YMMV.
 
 ---
 

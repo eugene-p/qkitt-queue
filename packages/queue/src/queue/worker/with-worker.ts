@@ -1,9 +1,9 @@
 import {
-    createTypedEmit,
     type EventCallback,
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
+import { createSubscriptionCounts } from '../../events/subscription-counts'
 import { isIntegerInRange } from '../../util/number.util'
 import type { WorkerFn } from '../../worker/types'
 import { decorateQueue } from '../core/forward.util'
@@ -72,6 +72,10 @@ const resolveConcurrency = (value: number | undefined): number => {
     return concurrency
 }
 
+/** Thenable check — same unwrapping surface as `await` (not only native Promise). */
+const isThenable = (value: unknown): value is PromiseLike<unknown> =>
+    value != null && typeof (value as { then?: unknown }).then === 'function'
+
 /**
  * Wrap a queue with a worker that dequeues and processes items FIFO-style.
  * Listens for `queue:enqueued` and pumps work up to `concurrency`.
@@ -107,41 +111,95 @@ export const withWorker = <
     const autoStart = options.autoStart ?? true
 
     const inner = queue
-    const emitWorker = createTypedEmit<WorkerEvents<T, R>>(
-        inner.emit as (eventName: string, data: unknown) => void,
-    )
-    const onQueue = inner.on as <K extends keyof QueueEvents<T>>(
-        eventName: K,
-        callback: EventCallback<QueueEvents<T>[K]>,
+    const emitInner = inner.emit as (
+        eventName: string,
+        data: unknown,
+    ) => void
+    const onInner = inner.on as (
+        eventName: string,
+        callback: EventCallback<unknown>,
     ) => () => void
+    const { counts: subs, wrapOn } = createSubscriptionCounts({
+        started: 'worker:started',
+        completed: 'worker:completed',
+        failed: 'worker:failed',
+        idle: 'worker:idle',
+        pumpError: 'worker:pump-error',
+    })
+    const on = wrapOn(onInner) as QueueWithWorker<
+        T,
+        R,
+        WorkerQueueEvents<T, R, TEvents>
+    >['on']
 
     let running = false
     let active = 0
+    /** Prevents nested pump when a sync worker finishes inside the pump loop. */
+    let pumping = false
 
-    const processItem = async (item: T): Promise<void> => {
-        emitWorker('worker:started', { item })
+    const finishItem = (): void => {
+        active -= 1
 
-        try {
-            const result = await worker(item)
-            emitWorker('worker:completed', { item, result })
-        } catch (error) {
-            emitWorker('worker:failed', { item, error })
-        } finally {
-            active -= 1
+        if (active === 0 && inner.isEmpty() && subs.idle > 0) {
+            emitInner('worker:idle', undefined)
+        }
 
-            if (active === 0 && inner.isEmpty()) {
-                emitWorker('worker:idle', undefined)
-            }
-
+        // Sync completions re-enter the open `while` via `active--` only.
+        // Async completions need an explicit pump after the microtask.
+        if (!pumping) {
             pump()
         }
+    }
+
+    const processItem = (item: T): void => {
+        if (subs.started > 0) {
+            emitInner('worker:started', { item })
+        }
+
+        let ret: R | PromiseLike<R>
+        try {
+            ret = worker(item)
+        } catch (error) {
+            if (subs.failed > 0) {
+                emitInner('worker:failed', { item, error })
+            }
+            finishItem()
+            return
+        }
+
+        if (isThenable(ret)) {
+            // One thenable hop — no outer `async` function Promise.
+            Promise.resolve(ret).then(
+                (result) => {
+                    if (subs.completed > 0) {
+                        emitInner('worker:completed', {
+                            item,
+                            result: result as R,
+                        })
+                    }
+                    finishItem()
+                },
+                (error: unknown) => {
+                    if (subs.failed > 0) {
+                        emitInner('worker:failed', { item, error })
+                    }
+                    finishItem()
+                },
+            )
+            return
+        }
+
+        if (subs.completed > 0) {
+            emitInner('worker:completed', { item, result: ret })
+        }
+        finishItem()
     }
 
     let unsubscribeEnqueued: (() => void) | undefined
 
     const subscribeEnqueued = (): void => {
         if (unsubscribeEnqueued) return
-        unsubscribeEnqueued = onQueue('queue:enqueued', () => {
+        unsubscribeEnqueued = onInner('queue:enqueued', () => {
             pump()
         })
     }
@@ -153,6 +211,8 @@ export const withWorker = <
     }
 
     const pump = (): void => {
+        if (pumping) return
+        pumping = true
         try {
             while (running && active < concurrency) {
                 // Slot presence = non-empty; payload may be null/undefined.
@@ -160,7 +220,7 @@ export const withWorker = <
                 if (slot === undefined) break
 
                 active += 1
-                void processItem(slot.value)
+                processItem(slot.value)
             }
         } catch (error) {
             // Persist hydrate: wait for post-hydrate restore kick.
@@ -168,8 +228,12 @@ export const withWorker = <
                 return
             }
             // Unexpected dequeue failure: surface and stop so it is not silent.
-            emitWorker('worker:pump-error', { error })
+            if (subs.pumpError > 0) {
+                emitInner('worker:pump-error', { error })
+            }
             stop()
+        } finally {
+            pumping = false
         }
     }
 
@@ -188,6 +252,7 @@ export const withWorker = <
 
     const api = markQueueLayer(
         decorateQueue(inner, {
+            on,
             start,
             stop,
             isRunning: () => running,

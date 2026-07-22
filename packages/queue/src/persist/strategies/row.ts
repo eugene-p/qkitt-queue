@@ -11,6 +11,7 @@ import {
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
+import { createSubscriptionCounts } from '../../events/subscription-counts'
 import { decorateQueue } from '../../queue/core/forward.util'
 import { markQueueLayer, PERSIST_LAYER } from '../../queue/core/layers.util'
 import {
@@ -87,17 +88,11 @@ export const attachRowPersist = <
         }
     }
 
-    // Integer sub counts: skip mapRowPayload + outer emit when nobody listens.
-    let enqueuedSubs = 0
-    let dequeuedSubs = 0
-
-    const bumpQueueSubs = (
-        eventName: keyof QueueEvents<T>,
-        delta: number,
-    ): void => {
-        if (eventName === 'queue:enqueued') enqueuedSubs += delta
-        else if (eventName === 'queue:dequeued') dequeuedSubs += delta
-    }
+    const { counts: subs, wrapOn } = createSubscriptionCounts({
+        enqueued: 'queue:enqueued',
+        dequeued: 'queue:dequeued',
+    })
+    const on = wrapOn(emitter.on)
 
     const mapRowPayload = (payload: {
         item: RowRecord<T>
@@ -108,11 +103,11 @@ export const attachRowPersist = <
     })
 
     inner.on('queue:enqueued', (payload) => {
-        if (enqueuedSubs === 0) return
+        if (subs.enqueued === 0) return
         emitter.emit('queue:enqueued', mapRowPayload(payload))
     })
     inner.on('queue:dequeued', (payload) => {
-        if (dequeuedSubs === 0) return
+        if (subs.dequeued === 0) return
         emitter.emit('queue:dequeued', mapRowPayload(payload))
     })
     inner.on('queue:emptied', () => {
@@ -121,24 +116,6 @@ export const attachRowPersist = <
     inner.on('queue:cleared', (payload) => {
         emitter.emit('queue:cleared', payload)
     })
-
-    const on: Queue<T, RowQueueEvents<T, QueueEvents<T>>>['on'] = (
-        eventName,
-        callback,
-    ) => {
-        const unsubscribe = emitter.on(eventName, callback)
-        if (
-            eventName === 'queue:enqueued' ||
-            eventName === 'queue:dequeued'
-        ) {
-            bumpQueueSubs(eventName, 1)
-            return () => {
-                unsubscribe()
-                bumpQueueSubs(eventName, -1)
-            }
-        }
-        return unsubscribe
-    }
 
     const trackError = (
         operation: RowPersistEvents<T>['persist:error']['operation'],

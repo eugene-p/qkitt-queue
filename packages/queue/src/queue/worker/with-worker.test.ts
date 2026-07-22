@@ -445,4 +445,56 @@ describe('withWorker', () => {
         expect(seen).toEqual([undefined, null, 'done'])
         expect(queue.isEmpty()).toBe(true)
     })
+
+    it('runs sync workers without an outer async hop', async () => {
+        const order: number[] = []
+        const queue = withWorker(buildQueue<number>(), (item) => {
+            order.push(item)
+            return item * 2
+        })
+
+        const completed = vi.fn()
+        queue.on('worker:completed', completed)
+
+        const idle = waitForIdle(queue)
+        queue.enqueue(1)
+        queue.enqueue(2)
+        await idle
+
+        expect(order).toEqual([1, 2])
+        expect(completed).toHaveBeenNthCalledWith(1, { item: 1, result: 2 })
+        expect(completed).toHaveBeenNthCalledWith(2, { item: 2, result: 4 })
+    })
+
+    it('drains many sync jobs without stack overflow', async () => {
+        const n = 5_000
+        let count = 0
+        const queue = withWorker(buildQueue<number>(), (item) => {
+            count += 1
+            return item
+        })
+
+        const idle = waitForIdle(queue)
+        for (let i = 0; i < n; i += 1) queue.enqueue(i)
+        await idle
+
+        expect(count).toBe(n)
+        expect(queue.isEmpty()).toBe(true)
+    })
+
+    it('emits worker:failed when a sync worker throws', async () => {
+        const error = new Error('sync boom')
+        const queue = withWorker(buildQueue<number>(), () => {
+            throw error
+        })
+
+        const failed = vi.fn()
+        queue.on('worker:failed', failed)
+
+        const idle = waitForIdle(queue)
+        queue.enqueue(1)
+        await idle
+
+        expect(failed).toHaveBeenCalledWith({ item: 1, error })
+    })
 })

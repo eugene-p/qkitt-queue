@@ -3,6 +3,7 @@ import {
     type EventEmitter,
     type EventMap,
 } from '../../events'
+import { createSubscriptionCounts } from '../../events/subscription-counts'
 import { isIntegerInRange } from '../../util/number.util'
 import { markQueueMaxSize } from './queue-max-size.util'
 
@@ -112,39 +113,13 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     let outbox: T[] = []
     let count = 0
     const emitter = buildEventEmitter<QueueEvents<T>>()
-
-    // Integer sub counts: no-listener enqueue/dequeue stays a branch — no
-    // Map.get and no payload allocation when nobody is subscribed.
-    let enqueuedSubs = 0
-    let dequeuedSubs = 0
-    let emptiedSubs = 0
-    let clearedSubs = 0
-
-    const bump = (eventName: keyof QueueEvents<T>, delta: number): void => {
-        switch (eventName) {
-            case 'queue:enqueued':
-                enqueuedSubs += delta
-                break
-            case 'queue:dequeued':
-                dequeuedSubs += delta
-                break
-            case 'queue:emptied':
-                emptiedSubs += delta
-                break
-            case 'queue:cleared':
-                clearedSubs += delta
-                break
-        }
-    }
-
-    const on: Queue<T>['on'] = (eventName, callback) => {
-        const unsubscribe = emitter.on(eventName, callback)
-        bump(eventName, 1)
-        return () => {
-            unsubscribe()
-            bump(eventName, -1)
-        }
-    }
+    const { counts: subs, wrapOn } = createSubscriptionCounts({
+        enqueued: 'queue:enqueued',
+        dequeued: 'queue:dequeued',
+        emptied: 'queue:emptied',
+        cleared: 'queue:cleared',
+    })
+    const on = wrapOn(emitter.on)
 
     const flipInboxToOutbox = (): void => {
         // Reverse in place, then retarget: no intermediate copy of elements.
@@ -159,7 +134,7 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         }
         inbox.push(item)
         count += 1
-        if (enqueuedSubs > 0) {
+        if (subs.enqueued > 0) {
             emitter.emit('queue:enqueued', { item, size: count })
         }
     }
@@ -175,10 +150,10 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
 
         const value = outbox.pop() as T
         count -= 1
-        if (dequeuedSubs > 0) {
+        if (subs.dequeued > 0) {
             emitter.emit('queue:dequeued', { item: value, size: count })
         }
-        if (count === 0 && emptiedSubs > 0) {
+        if (count === 0 && subs.emptied > 0) {
             emitter.emit('queue:emptied', undefined)
         }
 
@@ -196,10 +171,10 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
 
         const value = outbox.pop() as T
         count -= 1
-        if (dequeuedSubs > 0) {
+        if (subs.dequeued > 0) {
             emitter.emit('queue:dequeued', { item: value, size: count })
         }
-        if (count === 0 && emptiedSubs > 0) {
+        if (count === 0 && subs.emptied > 0) {
             emitter.emit('queue:emptied', undefined)
         }
 
@@ -230,7 +205,7 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         inbox = []
         outbox = []
         count = 0
-        if (clearedSubs > 0) {
+        if (subs.cleared > 0) {
             emitter.emit('queue:cleared', { removed })
         }
     }

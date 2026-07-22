@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-07-22
+
+### Performance
+
+- **Workers:** thenable process path (sync workers avoid an outer `async` Promise); skip worker event payload work when nobody is subscribed
+- Shared `createSubscriptionCounts` helper for integer listener gates on queue, worker, and row-persist hot paths
+
+### Docs
+
+- Refreshed root and package benchmark numbers
+
 ## [0.6.1] — 2026-07-22
 
 ### Changed
@@ -263,6 +274,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.6.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.2
 [0.6.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.1
 [0.6.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.0
 [0.5.6]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.6
