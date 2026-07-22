@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-22
+
+### Breaking
+
+- Peer dependency: `@qkitt/queue` `^0.6.0` (was `^0.5.0`)
+- Removed deprecated type alias `StoreKind` (use `BuiltinStoreAdapter`)
+
 ### Changed
 
+- Builds queues with `withPersist` (core’s unified persist API)
 - `engines.node` is now `>=20` (aligned with core and CI)
 
 ## [0.2.2] — 2026-07-19
@@ -71,6 +79,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.3.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.3.0
 [0.2.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.2
 [0.2.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.1
 [0.2.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.0

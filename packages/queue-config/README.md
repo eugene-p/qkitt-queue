@@ -9,7 +9,7 @@ Declarative setup for [`@qkitt/queue`](../queue): named stores, queues, workers,
 
 Builds the same stack as hand-written composition (`queue → persist → worker → router`) from a config object. Optional; most apps only need `@qkitt/queue`.
 
-**Peer dependency:** `@qkitt/queue` `^0.5.0`. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
+**Peer dependency:** `@qkitt/queue` `^0.6.0`. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.2` → `0.3`). Check the changelog on minor upgrades.
 

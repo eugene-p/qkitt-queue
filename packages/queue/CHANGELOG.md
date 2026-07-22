@@ -7,9 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-22
+
+### Breaking
+
+- **Events:** public surface is `on` / `emit` only. Removed `once`, `emitLazy`, and `hasListeners` from `EventEmitter`, `Queue`, and wrappers. Use `on` + the returned unsubscribe (or unsubscribe after first fire yourself).
+- **Workers:** removed deprecated aliases `withRetry` and `pipeline` (use `retryWorker` / `pipelineWorker`). `isPipelineDone` is no longer exported (`pipelineDone` remains).
+- **Router:** topic-match helpers and wildcard constants are no longer public (`matchTopic`, `matchTopicParts`, `isValidTopic`, `isValidPattern`, `TOPIC_SEPARATOR`, `SINGLE_WILDCARD`, `MULTI_WILDCARD`). Use `buildRouter`.
+- **Persist:** `withRowPersist` / `withSnapshotPersist` → `withPersist(queue, store)`. Strategy comes from the store shape; options live on the store handle (`persistOptions`). Persist types and APIs are under `@qkitt/queue/persist` (and the root barrel), not `@qkitt/queue/queue`.
+
 ### Changed
 
 - `engines.node` is now `>=20` (aligned with CI; Node 18 dropped)
+
+### Migration
+
+```ts
+// events — was once(...)
+const unsub = queue.on('queue:emptied', (e) => {
+  unsub()
+  // ...
+})
+
+// workers
+retryWorker(fn, opts)   // was withRetry
+pipelineWorker(steps)   // was pipeline
+
+// persist
+withPersist(buildQueue(), store)  // was withRowPersist / withSnapshotPersist
+```
 
 ## [0.5.6] — 2026-07-20
 
@@ -230,6 +256,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.6.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.0
 [0.5.6]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.6
 [0.5.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.5
 [0.5.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.4
