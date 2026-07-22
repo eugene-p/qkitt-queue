@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-07-22
+
+### Changed
+
+- **Bundle split (persist):** `withPersist` / strategy runtime and built-in store factories ship as separate JS chunks. New optional subpaths: `@qkitt/queue/persist/stores`, `.../memory`, `.../web-storage`. Root and `@qkitt/queue/persist` still re-export stores.
+- **Package contents:** only declaration files reachable from public export entry points are published (private strategy / util `.d.ts` no longer pack).
+
 ## [0.6.0] — 2026-07-22
 
 ### Breaking
@@ -256,6 +263,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.6.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.1
 [0.6.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.0
 [0.5.6]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.6
 [0.5.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.5.5

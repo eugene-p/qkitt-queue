@@ -1,6 +1,6 @@
 {
   "name": "@qkitt/queue",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "type": "module",
   "description": "Fast, composable in-process queues for TypeScript — zero runtime dependencies",
   "license": "ISC",
@@ -55,6 +55,22 @@
       "import": "./dist/persist/index.js",
       "default": "./dist/persist/index.js"
     },
+    "./persist/stores": {
+      "types": "./dist/persist/stores/index.d.ts",
+      "import": "./dist/persist/stores/index.js",
+      "default": "./dist/persist/stores/index.js"
+    },
+    "./persist/stores/memory": {
+      "types": "./dist/persist/stores/memory.d.ts",
+      "import": "./dist/persist/stores/memory.js",
+      "default": "./dist/persist/stores/memory.js"
+    },
+    "./persist/stores/web-storage": {
+      "types": "./dist/persist/stores/web-storage.d.ts",
+      "import": "./dist/persist/stores/web-storage.js",
+      "default": "./dist/persist/stores/web-storage.js"
+    },
+
     "./queue": {
       "types": "./dist/queue/index.d.ts",
       "import": "./dist/queue/index.js",
@@ -85,7 +101,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "tsup && tsc -p tsconfig.build.json",
+    "build": "tsup && tsc -p tsconfig.build.json && node scripts/prune-dts.mjs",
     "pack:check": "npm pack --dry-run",
     "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check"
   }

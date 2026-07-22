@@ -6,10 +6,16 @@ import {
 } from '../../events'
 import { isIntegerInRange } from '../../util/number.util'
 import type { WorkerFn } from '../../worker/types'
-import { decorateQueue, type PreserveQueueExtras } from '../core/forward.util'
+import { decorateQueue } from '../core/forward.util'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 import { QueueHydratingError } from '../../persist/hydrate-gate.util'
+
+/** Non-core keys from an inner queue (e.g. persist `flush` / `hydrate`). */
+type PreserveQueueExtras<TQueue extends object> = Omit<
+    TQueue,
+    keyof Queue<unknown, EventMap>
+>
 
 export type WorkerEvents<T, R = unknown> = {
     /** Fired just before the worker runs an item. */
@@ -78,7 +84,7 @@ const resolveConcurrency = (value: number | undefined): number => {
  * `withWorker(withPersist(buildQueue(), store), worker)` — not the reverse.
  *
  * Inner decorator extras (e.g. `flush` from row/snapshot persist) are preserved
- * at runtime and in the return type via {@link PreserveQueueExtras}.
+ * at runtime and in the return type.
  *
  * While a stacked persist layer is hydrating, `tryDequeue` throws
  * {@link QueueHydratingError}; the pump waits for the post-hydrate

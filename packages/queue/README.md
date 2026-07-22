@@ -831,11 +831,14 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
 | `@qkitt/queue/router` | `buildRouter`, router types | — |
 | `@qkitt/queue/persist` | `withPersist`, stores, contracts, event types, `QueueHydratingError` | `buildQueue`, `withWorker` |
+| `@qkitt/queue/persist/stores` | Memory + web store factories only | `withPersist`, strategy runtime |
+| `@qkitt/queue/persist/stores/memory` | Memory store factories | Web storage |
+| `@qkitt/queue/persist/stores/web-storage` | Web storage factories + `StorageCodecError` | Memory stores |
 | `@qkitt/queue/events` | `buildEventEmitter`, … | — |
 
 Companion: [`@qkitt/queue-config`](../queue-config) — declarative `defineConfig` / `buildFromConfig`.
 
-`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. The persist decorator (`withPersist`) and all store factories live under `@qkitt/queue/persist`.
+`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. The persist decorator (`withPersist`) and all store factories live under `@qkitt/queue/persist`. Prefer `@qkitt/queue/persist/stores/*` when you want store factories without pulling strategy code via a narrow subpath (root and `/persist` still re-export stores for convenience; modern bundlers tree-shake unused chunks when `sideEffects` is false).
 
 ## Changelog
 

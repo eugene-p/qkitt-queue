@@ -7,33 +7,41 @@ export {
     type MergeEventMaps,
 } from './events'
 
+// Persist core (withPersist + strategy runtime) — separate from store factories.
 export {
-    createLocalStorageRowStore,
-    createLocalStorageSnapshotStore,
-    createMemoryRowStore,
-    createMemorySnapshotStore,
-    createSessionStorageRowStore,
-    createSessionStorageSnapshotStore,
-    createWebRowStore,
-    createWebSnapshotStore,
     isRowStore,
     isSnapshotStore,
     QueueHydratingError,
-    StorageCodecError,
     withPersist,
-    type JsonCodec,
-    type MemoryRowStore,
-    type MemorySnapshotStore,
     type QueueWithPersist,
     type RowPersistEvents,
     type RowRecord,
     type RowStore,
     type SnapshotPersistEvents,
     type SnapshotStore,
+} from './persist'
+
+// Built-in stores — own chunks so unused adapters drop from app bundles.
+export {
+    createMemoryRowStore,
+    createMemorySnapshotStore,
+    type MemoryRowStore,
+    type MemorySnapshotStore,
+} from './persist/stores/memory'
+
+export {
+    createLocalStorageRowStore,
+    createLocalStorageSnapshotStore,
+    createSessionStorageRowStore,
+    createSessionStorageSnapshotStore,
+    createWebRowStore,
+    createWebSnapshotStore,
+    StorageCodecError,
+    type JsonCodec,
     type WebRowStoreOptions,
     type WebSnapshotStoreOptions,
     type WebStorageLike,
-} from './persist'
+} from './persist/stores/web-storage'
 
 export {
     buildQueue,
