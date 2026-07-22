@@ -1,18 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { retryWorker } from './retry'
 import {
-    isPipelineDone,
-    pipeline,
     pipelineDone,
     pipelineWorker,
     PipelineStepError,
 } from './pipeline'
 
 describe('pipelineWorker', () => {
-    it('exports pipeline as an alias of pipelineWorker', () => {
-        expect(pipeline).toBe(pipelineWorker)
-    })
-
     it('rejects an empty step list', () => {
         expect(() => pipelineWorker([])).toThrow(
             'pipelineWorker requires at least one step',
@@ -187,14 +181,6 @@ describe('pipelineWorker', () => {
     })
 
     describe('pipelineDone', () => {
-        it('is recognized only for pipelineDone markers', () => {
-            expect(isPipelineDone(pipelineDone(1))).toBe(true)
-            expect(isPipelineDone(pipelineDone(undefined))).toBe(true)
-            expect(isPipelineDone({ value: 1 })).toBe(false)
-            expect(isPipelineDone(null)).toBe(false)
-            expect(isPipelineDone(1)).toBe(false)
-        })
-
         it('resolves with undefined when done wraps undefined', async () => {
             const later = vi.fn(async () => 'nope')
             const worker = pipelineWorker([

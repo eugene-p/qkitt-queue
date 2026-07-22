@@ -26,8 +26,6 @@ export type {
     ResolvedStore,
     RouterConfig,
     StoreDefinition,
-    /** @deprecated Use {@link BuiltinStoreAdapter}. */
-    StoreKind,
     SystemConfig,
     WorkerConfig,
 } from './types'

@@ -96,7 +96,7 @@ export const pipelineDone = <T>(value: T): PipelineDone<T> => ({
 })
 
 /** True when `value` is a {@link pipelineDone} marker. */
-export const isPipelineDone = (value: unknown): value is PipelineDone =>
+const isPipelineDone = (value: unknown): value is PipelineDone =>
     typeof value === 'object' &&
     value !== null &&
     (value as PipelineDone)[PIPELINE_DONE] === true &&
@@ -187,5 +187,3 @@ export function pipelineWorker<T, R = unknown>(
     }
 }
 
-/** @deprecated Prefer {@link pipelineWorker}. Same function. */
-export const pipeline = pipelineWorker

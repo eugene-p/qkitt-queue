@@ -8,9 +8,14 @@ const flush = async (times = 1) => {
     }
 }
 
-const waitForIdle = (queue: { once: Function }) =>
+const waitForIdle = (queue: {
+    on: (event: 'worker:idle', cb: () => void) => () => void
+}) =>
     new Promise<void>((resolve) => {
-        queue.once('worker:idle', () => resolve())
+        const off = queue.on('worker:idle', () => {
+            off()
+            resolve()
+        })
     })
 
 describe('withWorker', () => {

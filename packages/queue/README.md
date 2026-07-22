@@ -476,7 +476,7 @@ type RowStore<T> = {
 
 ## Events
 
-Every layer is typed. `on` / `once` both return an unsubscribe function. The emitter also works standalone via `buildEventEmitter` (see [API](#api-reference)).
+Every layer is typed. `on` returns an unsubscribe function. The emitter also works standalone via `buildEventEmitter` (see [API](#api-reference)).
 
 | Layer | Events |
 | --- | --- |
@@ -592,7 +592,7 @@ The sections above show composition patterns; the reference below covers every p
 
 **Primary (most apps):** `buildQueue`, `withWorker`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withSnapshotPersist`, `withRowPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
 
-Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`, `createId`, topic matchers) is for specialized use — see individual entries below.
+Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`, `createId`) is for specialized use — see individual entries below.
 
 ### `buildQueue`
 
@@ -618,7 +618,7 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `clear()` | `void` | Remove all; emits `queue:cleared` |
 | `replaceAll(items)` | `void` | Silent replace (no queue events). Used by persist hydrate — not a substitute for looping `enqueue`. |
 | `toArray()` | `T[]` | Snapshot head → tail |
-| `on` / `once` | `() => void` | Subscribe; return unsubscribe |
+| `on` | `() => void` | Subscribe; returns unsubscribe |
 | `emit` | | Advanced; prefer domain methods so invariants hold |
 
 `null` / `undefined` are valid payloads. Prefer `tryDequeue` / `tryPeek` when `T` may be nullish so emptiness is structural (`undefined` return) rather than inferred from the value.
@@ -752,7 +752,6 @@ Passing a number is shorthand for `{ retries: n }`.
 ```ts
 pipelineWorker<T, R = unknown>(steps: readonly PipelineStep[]): WorkerFn<T, R>
 pipelineDone<T>(value: T): PipelineDone<T>
-isPipelineDone(value: unknown): value is PipelineDone
 ```
 
 Each step is `StepFn` or `{ name, fn, metadata? }`. Bare functions get names like `step[0]`.
@@ -773,9 +772,7 @@ buildRouter(options?: BuildRouterOptions): Router
 | --- | --- | --- |
 | `unmatchedTarget` | `{ enqueue(msg) }` | Sink for unmatched publishes |
 
-**Methods:** `bind(pattern, target)` → unbind fn, `unbind(pattern, target?)`, `publish(topic, data)` → matched binding count (unmatched sink excluded), `unmatchedCount()`, `lastUnmatched()`, `clearUnmatched()`, `setUnmatchedTarget(target?)`, `on` / `once` / `emit`.
-
-**Helpers:** `matchTopic`, `isValidPattern`, `isValidTopic`, constants `SINGLE_WILDCARD`, `MULTI_WILDCARD`, `TOPIC_SEPARATOR`.
+**Methods:** `bind(pattern, target)` → unbind fn, `unbind(pattern, target?)`, `publish(topic, data)` → matched binding count (unmatched sink excluded), `unmatchedCount()`, `lastUnmatched()`, `clearUnmatched()`, `setUnmatchedTarget(target?)`, `on` / `emit`.
 
 **Events**
 
@@ -845,7 +842,7 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | `@qkitt/queue` | Everything | — |
 | `@qkitt/queue/queue` | `buildQueue`, `withWorker`, persist wrappers | Store adapters |
 | `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
-| `@qkitt/queue/router` | `buildRouter`, match helpers | — |
+| `@qkitt/queue/router` | `buildRouter`, router types | — |
 | `@qkitt/queue/persist` | Memory + Web Storage stores | `withRowPersist` / `withSnapshotPersist` |
 | `@qkitt/queue/events` | `buildEventEmitter`, … | — |
 

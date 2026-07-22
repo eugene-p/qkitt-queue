@@ -76,7 +76,6 @@ export type Queue<T, TEvents extends EventMap = QueueEvents<T>> = {
     /** Snapshot of items from head to tail (does not mutate). */
     toArray: () => T[]
     on: EventEmitter<TEvents>['on']
-    once: EventEmitter<TEvents>['once']
     emit: EventEmitter<TEvents>['emit']
 }
 
@@ -114,8 +113,7 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     const emitter = buildEventEmitter<QueueEvents<T>>()
 
     // Integer sub counts: no-listener enqueue/dequeue stays a branch — no
-    // Map.get, no closure allocation. emitLazy would create a payload factory
-    // per op even with zero subscribers, which shows up on the 50k FIFO path.
+    // Map.get and no payload allocation when nobody is subscribed.
     let enqueuedSubs = 0
     let dequeuedSubs = 0
     let emptiedSubs = 0
@@ -144,24 +142,6 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         return () => {
             unsubscribe()
             bump(eventName, -1)
-        }
-    }
-
-    const once: Queue<T>['once'] = (eventName, callback) => {
-        bump(eventName, 1)
-        let settled = false
-        const release = (): void => {
-            if (settled) return
-            settled = true
-            bump(eventName, -1)
-        }
-        const unsubscribe = emitter.once(eventName, (data) => {
-            release()
-            callback(data)
-        })
-        return () => {
-            unsubscribe()
-            release()
         }
     }
 
@@ -290,7 +270,6 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         replaceAll,
         toArray,
         on,
-        once,
         emit: emitter.emit,
     }
 

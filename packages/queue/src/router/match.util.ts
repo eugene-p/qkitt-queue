@@ -2,10 +2,10 @@
 export const TOPIC_SEPARATOR = '.'
 
 /** Matches exactly one non-empty segment. */
-export const SINGLE_WILDCARD = '*'
+const SINGLE_WILDCARD = '*'
 
 /** Matches zero or more segments; only valid as the final pattern token. */
-export const MULTI_WILDCARD = '#'
+const MULTI_WILDCARD = '#'
 
 const isEmptySegment = (segment: string): boolean => segment.length === 0
 
@@ -26,14 +26,6 @@ export const isValidTopicParts = (segments: readonly string[]): boolean => {
         }
     }
     return true
-}
-
-/**
- * Validate a concrete publish topic (no wildcards, no empty segments).
- */
-export const isValidTopic = (topic: string): boolean => {
-    if (topic.length === 0) return false
-    return isValidTopicParts(topic.split(TOPIC_SEPARATOR))
 }
 
 /**
@@ -69,8 +61,13 @@ export const isValidPattern = (pattern: string): boolean => {
 
 /**
  * Core matcher over pre-split segments. No validation — caller must supply
- * valid parts (e.g. after {@link isValidPattern} / {@link isValidTopic}).
- * Used by {@link matchTopic} and by the router hot path to avoid re-splitting.
+ * valid parts (e.g. after {@link isValidPattern} / {@link isValidTopicParts}).
+ *
+ * MQTT / AMQP-style:
+ * - `orders.created` matches only that topic
+ * - `orders.*` matches `orders.created`, not `orders.a.b`
+ * - `orders.#` matches `orders`, `orders.created`, `orders.a.b`
+ * - `#` matches everything
  */
 export const matchTopicParts = (
     patternParts: readonly string[],
@@ -101,20 +98,4 @@ export const matchTopicParts = (
     }
 
     return pi === patternParts.length && ti === topicParts.length
-}
-
-/**
- * MQTT / AMQP-style topic match.
- *
- * - `orders.created` matches only that topic
- * - `orders.*` matches `orders.created`, not `orders.a.b`
- * - `orders.#` matches `orders`, `orders.created`, `orders.a.b`
- * - `#` matches everything
- */
-export const matchTopic = (pattern: string, topic: string): boolean => {
-    if (!isValidPattern(pattern) || !isValidTopic(topic)) return false
-    return matchTopicParts(
-        pattern.split(TOPIC_SEPARATOR),
-        topic.split(TOPIC_SEPARATOR),
-    )
 }

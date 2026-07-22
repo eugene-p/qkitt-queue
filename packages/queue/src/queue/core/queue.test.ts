@@ -121,20 +121,18 @@ describe('buildQueue', () => {
         expect(cleared).not.toHaveBeenCalled()
     })
 
-    it('once and off work for queue events', () => {
+    it('on unsubscribe stops further queue events', () => {
         const queue = buildQueue<number>()
-        const onceHandler = vi.fn()
-        const offHandler = vi.fn()
+        const handler = vi.fn()
 
-        queue.once('queue:enqueued', onceHandler)
-        const unsub = queue.on('queue:enqueued', offHandler)
+        const unsub = queue.on('queue:enqueued', handler)
 
         queue.enqueue(1)
         unsub()
         queue.enqueue(2)
 
-        expect(onceHandler).toHaveBeenCalledOnce()
-        expect(offHandler).toHaveBeenCalledOnce()
+        expect(handler).toHaveBeenCalledOnce()
+        expect(handler).toHaveBeenCalledWith({ item: 1, size: 1 })
     })
 
     it('replaceAll sets items without emitting queue events', () => {

@@ -117,5 +117,3 @@ export const retryWorker = <T, R>(
     }
 }
 
-/** @deprecated Prefer {@link retryWorker}. Same function. */
-export const withRetry = retryWorker

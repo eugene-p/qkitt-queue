@@ -252,7 +252,10 @@ describe('withSnapshotPersist', () => {
         const queue = withWorker(base, async (item) => item)
 
         const idle = new Promise<void>((resolve) => {
-            queue.once('worker:idle', () => resolve())
+            const off = queue.on('worker:idle', () => {
+                off()
+                resolve()
+            })
         })
         await queue.hydrate()
         await idle

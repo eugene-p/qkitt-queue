@@ -1,80 +1,70 @@
 import { describe, expect, it } from 'vitest'
 import {
     isValidPattern,
-    isValidTopic,
-    matchTopic,
+    isValidTopicParts,
     matchTopicParts,
     TOPIC_SEPARATOR,
 } from './match.util'
 
-describe('matchTopic', () => {
+const parts = (s: string): string[] => s.split(TOPIC_SEPARATOR)
+
+/** Match only when both sides validate (same gate as the router hot path). */
+const match = (pattern: string, topic: string): boolean => {
+    const patternParts = parts(pattern)
+    const topicParts = parts(topic)
+    if (!isValidPattern(pattern) || !isValidTopicParts(topicParts)) return false
+    return matchTopicParts(patternParts, topicParts)
+}
+
+describe('matchTopicParts', () => {
     it('matches exact topics', () => {
-        expect(matchTopic('orders.created', 'orders.created')).toBe(true)
-        expect(matchTopic('orders.created', 'orders.updated')).toBe(false)
-        expect(matchTopic('orders.created', 'orders.created.eu')).toBe(false)
+        expect(match('orders.created', 'orders.created')).toBe(true)
+        expect(match('orders.created', 'orders.updated')).toBe(false)
+        expect(match('orders.created', 'orders.created.eu')).toBe(false)
     })
 
     it('matches single-segment *', () => {
-        expect(matchTopic('orders.*', 'orders.created')).toBe(true)
-        expect(matchTopic('orders.*', 'orders.updated')).toBe(true)
-        expect(matchTopic('orders.*', 'orders.created.eu')).toBe(false)
-        expect(matchTopic('orders.*', 'orders')).toBe(false)
-        expect(matchTopic('*.created', 'orders.created')).toBe(true)
-        expect(matchTopic('a.*.c', 'a.b.c')).toBe(true)
-        expect(matchTopic('a.*.c', 'a.b.d')).toBe(false)
+        expect(match('orders.*', 'orders.created')).toBe(true)
+        expect(match('orders.*', 'orders.updated')).toBe(true)
+        expect(match('orders.*', 'orders.created.eu')).toBe(false)
+        expect(match('orders.*', 'orders')).toBe(false)
+        expect(match('*.created', 'orders.created')).toBe(true)
+        expect(match('a.*.c', 'a.b.c')).toBe(true)
+        expect(match('a.*.c', 'a.b.d')).toBe(false)
     })
 
     it('matches multi-segment #', () => {
-        expect(matchTopic('orders.#', 'orders')).toBe(true)
-        expect(matchTopic('orders.#', 'orders.created')).toBe(true)
-        expect(matchTopic('orders.#', 'orders.created.eu')).toBe(true)
-        expect(matchTopic('#', 'anything.at.all')).toBe(true)
-        expect(matchTopic('a.b.#', 'a.b')).toBe(true)
-        expect(matchTopic('a.b.#', 'a.b.c.d')).toBe(true)
-        expect(matchTopic('a.b.#', 'a.c')).toBe(false)
+        expect(match('orders.#', 'orders')).toBe(true)
+        expect(match('orders.#', 'orders.created')).toBe(true)
+        expect(match('orders.#', 'orders.created.eu')).toBe(true)
+        expect(match('#', 'anything.at.all')).toBe(true)
+        expect(match('a.b.#', 'a.b')).toBe(true)
+        expect(match('a.b.#', 'a.b.c.d')).toBe(true)
+        expect(match('a.b.#', 'a.c')).toBe(false)
     })
 
-    it('rejects invalid patterns and topics for matching', () => {
-        expect(matchTopic('a.#.b', 'a.x.b')).toBe(false)
-        expect(matchTopic('orders.*', 'orders.*.x')).toBe(false)
-        expect(matchTopic('', 'a')).toBe(false)
-        expect(matchTopic('a', '')).toBe(false)
-    })
-})
-
-describe('matchTopicParts', () => {
-    it('matches pre-split parts the same as matchTopic', () => {
-        const cases: Array<[string, string, boolean]> = [
-            ['orders.created', 'orders.created', true],
-            ['orders.*', 'orders.created', true],
-            ['orders.*', 'orders.created.eu', false],
-            ['orders.#', 'orders.created.eu', true],
-            ['#', 'anything.at.all', true],
-            ['a.b.#', 'a.c', false],
-        ]
-        for (const [pattern, topic, expected] of cases) {
-            expect(
-                matchTopicParts(
-                    pattern.split(TOPIC_SEPARATOR),
-                    topic.split(TOPIC_SEPARATOR),
-                ),
-            ).toBe(expected)
-            expect(matchTopic(pattern, topic)).toBe(expected)
-        }
+    it('rejects invalid patterns and topics', () => {
+        expect(match('a.#.b', 'a.x.b')).toBe(false)
+        expect(match('orders.*', 'orders.*.x')).toBe(false)
+        expect(match('', 'a')).toBe(false)
+        expect(match('a', '')).toBe(false)
     })
 })
 
-describe('isValidTopic / isValidPattern', () => {
-    it('validates topics', () => {
-        expect(isValidTopic('orders.created')).toBe(true)
-        expect(isValidTopic('smth.smth.2')).toBe(true)
-        expect(isValidTopic('orders.*')).toBe(false)
-        expect(isValidTopic('orders.#')).toBe(false)
-        expect(isValidTopic('orders..created')).toBe(false)
-        expect(isValidTopic('')).toBe(false)
+describe('isValidTopicParts', () => {
+    it('validates concrete topic segments', () => {
+        expect(isValidTopicParts(parts('orders.created'))).toBe(true)
+        expect(isValidTopicParts(parts('smth.smth.2'))).toBe(true)
+        expect(isValidTopicParts(parts('orders.*'))).toBe(false)
+        expect(isValidTopicParts(parts('orders.#'))).toBe(false)
+        expect(isValidTopicParts(parts('orders..created'))).toBe(false)
+        expect(isValidTopicParts([])).toBe(false)
+        expect(isValidTopicParts([''])).toBe(false)
     })
+})
 
-    it('validates patterns', () => {
+describe('isValidPattern', () => {
+    it('validates bind patterns', () => {
         expect(isValidPattern('orders.created')).toBe(true)
         expect(isValidPattern('orders.*')).toBe(true)
         expect(isValidPattern('orders.#')).toBe(true)
@@ -83,7 +73,6 @@ describe('isValidTopic / isValidPattern', () => {
         expect(isValidPattern('a.#.b')).toBe(false)
         expect(isValidPattern('a..b')).toBe(false)
         expect(isValidPattern('')).toBe(false)
-        // Wildcard chars only valid as whole segments.
         expect(isValidPattern('orders*')).toBe(false)
         expect(isValidPattern('orders#')).toBe(false)
         expect(isValidPattern('ord*.x')).toBe(false)

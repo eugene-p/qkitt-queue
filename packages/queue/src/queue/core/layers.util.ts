@@ -6,7 +6,7 @@
 export const WORKER_LAYER = Symbol.for('qkitt:worker-layer')
 export const PERSIST_LAYER = Symbol.for('qkitt:persist-layer')
 
-export type QueueLayerBrand = typeof WORKER_LAYER | typeof PERSIST_LAYER
+type QueueLayerBrand = typeof WORKER_LAYER | typeof PERSIST_LAYER
 
 /** Non-enumerable brand on a queue decorator object (idempotent). */
 export const markQueueLayer = <T extends object>(

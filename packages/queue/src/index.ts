@@ -54,13 +54,6 @@ export {
 
 export {
     buildRouter,
-    isValidPattern,
-    isValidTopic,
-    matchTopic,
-    matchTopicParts,
-    MULTI_WILDCARD,
-    SINGLE_WILDCARD,
-    TOPIC_SEPARATOR,
     type Binding,
     type BuildRouterOptions,
     type RouteMessage,
@@ -72,12 +65,9 @@ export {
 
 export {
     pipelineWorker,
-    pipeline,
     pipelineDone,
-    isPipelineDone,
     PipelineStepError,
     retryWorker,
-    withRetry,
     RetryExhaustedError,
     type PipelineDone,
     type PipelineStep,

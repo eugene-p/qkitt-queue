@@ -79,7 +79,7 @@ const MEMORY_FACTORIES = {
  * (IndexedDB, network-backed stores), introduce an async path rather than
  * blocking here — {@link resolveAllStores} would need a matching redesign.
  */
-export const resolveStore = <T>(
+const resolveStore = <T>(
     storeName: string,
     definition: StoreDefinition,
     options: BuildFromConfigOptions,

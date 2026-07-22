@@ -1,11 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RetryExhaustedError, retryWorker, withRetry } from './retry'
+import { RetryExhaustedError, retryWorker } from './retry'
 
 describe('retryWorker', () => {
-    it('exports withRetry as an alias of retryWorker', () => {
-        expect(withRetry).toBe(retryWorker)
-    })
-
     it('returns on first success without retrying', async () => {
         const inner = vi.fn(async (n: number) => n * 2)
         const worker = retryWorker(inner, 3)

@@ -1,7 +1,6 @@
 import {
     buildEventEmitter,
     createTypedEmit,
-    type EventCallback,
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
@@ -170,34 +169,6 @@ export const withRowPersist = <
             }
         }
         return unsubscribe
-    }
-
-    const once: QueueWithRowPersist<T>['once'] = (eventName, callback) => {
-        if (
-            eventName !== 'queue:enqueued' &&
-            eventName !== 'queue:dequeued'
-        ) {
-            return emitter.once(eventName, callback)
-        }
-
-        bumpQueueSubs(eventName, 1)
-        let settled = false
-        const release = (): void => {
-            if (settled) return
-            settled = true
-            bumpQueueSubs(eventName, -1)
-        }
-        const unsubscribe = emitter.once(
-            eventName,
-            (data) => {
-                release()
-                ;(callback as EventCallback<typeof data>)(data)
-            },
-        )
-        return () => {
-            unsubscribe()
-            release()
-        }
     }
 
     const trackError = (
@@ -409,7 +380,6 @@ export const withRowPersist = <
             clear,
             replaceAll,
             on,
-            once,
             emit: emitter.emit,
             hydrate,
             rowIds,

@@ -16,11 +16,6 @@ import type {
  */
 export type BuiltinStoreAdapter = 'memory' | 'localStorage' | 'sessionStorage'
 
-/**
- * @deprecated Use {@link BuiltinStoreAdapter}. Kept as an alias.
- */
-export type StoreKind = BuiltinStoreAdapter
-
 /** Shared fields for built-in (library-constructed) store entries. */
 type BuiltinStoreDefinition = {
     adapter: BuiltinStoreAdapter

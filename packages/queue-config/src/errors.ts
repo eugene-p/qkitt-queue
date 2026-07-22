@@ -17,9 +17,8 @@ export type ConfigErrorCode =
     | 'INVALID_IMPL'
     | 'CONFLICTING_FIELDS'
     | 'MISSING_FIELD'
-    | 'BUILD_ERROR'
 
-export type ConfigValidationErrorOptions = {
+type ConfigValidationErrorOptions = {
     code: ConfigErrorCode
     /** Dot-path into the config when applicable (e.g. `config.stores.jobs.key`). */
     path?: string

@@ -272,7 +272,10 @@ describe('withRowPersist', () => {
         const queue = withWorker(base, async (item) => item.toUpperCase())
 
         const idle = new Promise<void>((resolve) => {
-            queue.once('worker:idle', () => resolve())
+            const off = queue.on('worker:idle', () => {
+                off()
+                resolve()
+            })
         })
         queue.enqueue('a')
         queue.enqueue('b')
@@ -295,7 +298,10 @@ describe('withRowPersist', () => {
         const queue = withWorker(base, async (item) => item)
 
         const idle = new Promise<void>((resolve) => {
-            queue.once('worker:idle', () => resolve())
+            const off = queue.on('worker:idle', () => {
+                off()
+                resolve()
+            })
         })
         await queue.hydrate()
         await idle

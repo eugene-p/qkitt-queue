@@ -8,13 +8,3 @@ export {
     type RouterEvents,
     type UnmatchedRecord,
 } from './router'
-
-export {
-    isValidPattern,
-    isValidTopic,
-    matchTopic,
-    matchTopicParts,
-    MULTI_WILDCARD,
-    SINGLE_WILDCARD,
-    TOPIC_SEPARATOR,
-} from './match.util'

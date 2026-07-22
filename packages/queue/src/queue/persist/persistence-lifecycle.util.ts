@@ -9,14 +9,14 @@ import {
 } from './hydrate-gate.util'
 import { createWriteChain, type WriteChain } from './write-chain.util'
 
-export type PersistenceLifecycle = {
+type PersistenceLifecycle = {
     gate: HydrateGate
     writes: WriteChain
     hydrate: () => Promise<void>
     flush: () => Promise<void>
 }
 
-export type CreatePersistenceLifecycleOptions = {
+type CreatePersistenceLifecycleOptions = {
     /**
      * Flush-safe load + silent `replaceAll` + emit `persist:loaded`.
      * Called only while the hydrate gate is closed.

@@ -2,7 +2,7 @@ import type { BuiltinStoreAdapter } from './types'
 import { configError } from './errors'
 import { isIntegerInRange } from './number.util'
 
-export const BUILTIN_ADAPTERS = new Set<BuiltinStoreAdapter>([
+const BUILTIN_ADAPTERS = new Set<BuiltinStoreAdapter>([
     'memory',
     'localStorage',
     'sessionStorage',

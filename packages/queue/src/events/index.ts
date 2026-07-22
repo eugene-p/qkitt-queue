@@ -34,29 +34,11 @@ export type EventEmitter<TEvents extends EventMap = EventMap> = {
         eventName: K,
         callback: EventCallback<TEvents[K]>,
     ) => () => void
-    /** Subscribe for a single emission, then auto-unsubscribe. Returns an unsubscribe function. */
-    once: <K extends keyof TEvents>(
-        eventName: K,
-        callback: EventCallback<TEvents[K]>,
-    ) => () => void
     /**
      * Emit an event to all current listeners (snapshot taken before dispatch).
      * Listener errors are isolated: one throw does not skip remaining listeners.
-     * Failures are swallowed at emit time — listeners should handle their own errors
-     * (critical paths like worker pump must not die because of a user handler).
      */
     emit: <K extends keyof TEvents>(eventName: K, data: TEvents[K]) => void
-    /**
-     * Like {@link EventEmitter.emit}, but `create` runs only when at least one
-     * listener is registered. Use on hot paths to skip payload allocation when
-     * nobody is subscribed.
-     */
-    emitLazy: <K extends keyof TEvents>(
-        eventName: K,
-        create: () => TEvents[K],
-    ) => void
-    /** Whether any listeners are registered for `eventName`. */
-    hasListeners: <K extends keyof TEvents>(eventName: K) => boolean
 }
 
 export const buildEventEmitter = <
@@ -102,18 +84,6 @@ export const buildEventEmitter = <
         return () => remove(eventName, callback)
     }
 
-    const once = <K extends keyof TEvents>(
-        eventName: K,
-        callback: EventCallback<TEvents[K]>,
-    ): (() => void) => {
-        const wrapper: EventCallback<TEvents[K]> = (data) => {
-            remove(eventName, wrapper)
-            callback(data)
-        }
-
-        return on(eventName, wrapper)
-    }
-
     const dispatchTo = <K extends keyof TEvents>(
         listeners: EventCallback<TEvents[keyof TEvents]>[],
         data: TEvents[K],
@@ -122,23 +92,6 @@ export const buildEventEmitter = <
         if (listeners.length === 1) {
             try {
                 listeners[0]!(data as TEvents[keyof TEvents])
-            } catch {
-                // Isolate: e.g. a throwing user handler must not skip worker pump.
-            }
-            return
-        }
-
-        // Common case: queue event + worker (or two user listeners).
-        if (listeners.length === 2) {
-            const a = listeners[0]!
-            const b = listeners[1]!
-            try {
-                a(data as TEvents[keyof TEvents])
-            } catch {
-                // Isolate: e.g. a throwing user handler must not skip worker pump.
-            }
-            try {
-                b(data as TEvents[keyof TEvents])
             } catch {
                 // Isolate: e.g. a throwing user handler must not skip worker pump.
             }
@@ -164,25 +117,8 @@ export const buildEventEmitter = <
         dispatchTo(listeners, data)
     }
 
-    const emitLazy = <K extends keyof TEvents>(
-        eventName: K,
-        create: () => TEvents[K],
-    ): void => {
-        const listeners = listenersByEvent.get(eventName)
-        if (!listeners?.length) return
-        dispatchTo(listeners, create())
-    }
-
-    const hasListeners = <K extends keyof TEvents>(eventName: K): boolean => {
-        const listeners = listenersByEvent.get(eventName)
-        return !!listeners?.length
-    }
-
     return {
         on,
-        once,
         emit,
-        emitLazy,
-        hasListeners,
     }
 }

@@ -113,7 +113,6 @@ export type Router<TEvents extends EventMap = RouterEvents> = {
     clearUnmatched: () => void
 
     on: EventEmitter<TEvents>['on']
-    once: EventEmitter<TEvents>['once']
     emit: EventEmitter<TEvents>['emit']
 }
 
@@ -309,7 +308,6 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         lastUnmatched,
         clearUnmatched,
         on: events.on,
-        once: events.once,
         emit: events.emit,
     }
 
