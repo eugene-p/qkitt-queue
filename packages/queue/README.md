@@ -25,8 +25,7 @@ npm install @qkitt/queue
 import {
   buildQueue,
   withWorker,
-  withSnapshotPersist,
-  withRowPersist,
+  withPersist,
   pipelineWorker,
   retryWorker,
   buildRouter,
@@ -118,14 +117,14 @@ Stack order matters: **persist wraps the bare queue; worker is outermost** so `d
 import {
   buildQueue,
   withWorker,
-  withSnapshotPersist,
+  withPersist,
   createMemorySnapshotStore,
 } from '@qkitt/queue'
 
 const store = createMemorySnapshotStore<Job>()
 // Stack: bare → persist → worker (persist inside, worker outside)
 const queue = withWorker(
-  withSnapshotPersist(buildQueue<Job>(), store),
+  withPersist(buildQueue<Job>(), store),
   async (job) => handle(job),
   { concurrency: 2 },
 )
@@ -142,27 +141,26 @@ await queue.flush()   // wait for pending saves before exit
 3. Mutate as usual — `enqueue` / `dequeue` stay sync.
 4. `await queue.flush()` before process exit. Snapshot auto-save may debounce; `flush` promotes pending writes.
 
-Row-style persist (insert/remove per item) uses the same stack rule — wrap a `RowRecord` queue, then the worker:
+Row-style persist (insert/remove per item) uses the same stack rule:
 
 ```ts
 import {
   buildQueue,
-  withRowPersist,
+  withPersist,
   withWorker,
   createMemoryRowStore,
-  type RowRecord,
 } from '@qkitt/queue'
 
 const store = createMemoryRowStore<Job>()
 const queue = withWorker(
-  withRowPersist(buildQueue<RowRecord<Job>>(), store),
+  withPersist(buildQueue<Job>(), store),
   async (job) => handle(job),
 )
 
 await queue.hydrate()
 ```
 
-The inner queue stores `RowRecord<T>` (`{ id, item }`) so the store can key by id. The public surface is still `T` — you enqueue plain jobs, never a `RowRecord` yourself.
+The strategy is inferred from the store's method shape — `load`/`save` selects snapshot; `loadAll`/`insert`/`remove`/`clear` selects row. The public surface is `T` — you enqueue plain jobs; row ids are managed internally.
 
 ### 4. Worker helpers
 
@@ -266,11 +264,10 @@ const run = retryWorker(
 import {
   buildQueue,
   withWorker,
-  withRowPersist,
+  withPersist,
   pipelineWorker,
   retryWorker,
   createMemoryRowStore,
-  type RowRecord,
 } from '@qkitt/queue'
 
 type EmailJob = { to: string; body: string }
@@ -297,7 +294,7 @@ const run = retryWorker(
 )
 
 const queue = withWorker(
-  withRowPersist(buildQueue<RowRecord<EmailJob>>(), store),
+  withPersist(buildQueue<EmailJob>(), store),
   run,
   { concurrency: 2 },
 )
@@ -397,7 +394,7 @@ Two strategies:
 
 ```ts
 const store = createMemorySnapshotStore<string>()
-const queue = withSnapshotPersist(buildQueue<string>(), store)
+const queue = withPersist(buildQueue<string>(), store)
 
 await queue.hydrate()
 queue.enqueue('a')    // auto-saves by default
@@ -417,8 +414,8 @@ Row has no `persist()`; use `flush()` to await the insert/remove/clear chain.
 
 ```ts
 const store = createMemoryRowStore<string>()
-const queue = withRowPersist(buildQueue<RowRecord<string>>(), store)
-// optional: { createId: () => crypto.randomUUID() }
+const queue = withPersist(buildQueue<string>(), store)
+// optional: pass { createId: () => crypto.randomUUID() } as factory second arg
 
 await queue.hydrate()
 queue.enqueue('job-1')
@@ -428,27 +425,25 @@ queue.replaceAll(['x', 'y']) // clears store and reinserts with fresh ids
 await queue.flush()
 ```
 
-Row ids from `createId` / `loadAll` must be unique non-empty strings (not whitespace-only).
+Row ids (from the store's id factory or `loadAll`) must be unique non-empty strings (not whitespace-only).
 
 ### Browser storage
 
 ```ts
 import {
-  withSnapshotPersist,
-  withRowPersist,
+  withPersist,
   createLocalStorageSnapshotStore,
   createLocalStorageRowStore,
-  type RowRecord,
 } from '@qkitt/queue'
 
-const snap = withSnapshotPersist(
+const snap = withPersist(
   buildQueue<{ id: string }>(),
   createLocalStorageSnapshotStore('my-app:queue'),
 )
 await snap.hydrate()
 
-const rows = withRowPersist(
-  buildQueue<RowRecord<{ id: string }>>(),
+const rows = withPersist(
+  buildQueue<{ id: string }>(),
   createLocalStorageRowStore('my-app:jobs'),
 )
 await rows.hydrate()
@@ -522,17 +517,17 @@ Resolves when the queue is empty and nothing is in flight. A later `enqueue` sta
 **Stack order matters.** Persist wraps the bare queue; worker is outermost. **Persist inside, worker outside.**
 
 ```ts
-// wrong — withRowPersist throws (worker already attached)
-withRowPersist(withWorker(buildQueue<RowRecord<T>>(), run), store)
+// wrong — withPersist throws (worker already attached)
+withPersist(withWorker(buildQueue<T>(), run), store)
 
 // right
-withWorker(withRowPersist(buildQueue<RowRecord<T>>(), store), run)
+withWorker(withPersist(buildQueue<T>(), store), run)
 ```
 
 **Await `hydrate()` before enqueue** when using persist, or mutations throw `QueueHydratingError`. Call `flush()` before process exit so debounced writes are not lost.
 
 ```ts
-const queue = withSnapshotPersist(buildQueue<T>(), store)
+const queue = withPersist(buildQueue<T>(), store)
 queue.enqueue(item)      // throws QueueHydratingError
 await queue.hydrate()
 queue.enqueue(item)      // fine
@@ -590,9 +585,9 @@ Relative numbers (Node 22, Windows laptop, 2026-07-19). YMMV.
 
 The sections above show composition patterns; the reference below covers every public signature.
 
-**Primary (most apps):** `buildQueue`, `withWorker`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withSnapshotPersist`, `withRowPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
+**Primary (most apps):** `buildQueue`, `withWorker`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
 
-Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`, `createId`) is for specialized use — see individual entries below.
+Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`) is for specialized use — see individual entries below.
 
 ### `buildQueue`
 
@@ -677,52 +672,43 @@ The pump uses `tryDequeue` so nullish payloads are processed. While a stacked pe
 
 ---
 
-### `withSnapshotPersist`
+### `withPersist`
 
 ```ts
-withSnapshotPersist<T>(
-  queue: Queue<T>,
-  store: SnapshotStore<T>,
-  options?: SnapshotPersistOptions,
-): QueueWithSnapshotPersist<T>
+withPersist<T>(queue: Queue<T>, store: SnapshotStore<T>): QueueWithPersist<T, 'snapshot'>
+withPersist<T>(queue: Queue<T>, store: RowStore<T>): QueueWithPersist<T, 'row'>
 ```
+
+Strategy is inferred from the store's method shape at runtime:
+- `load` + `save` → snapshot
+- `loadAll` + `insert` + `remove` + `clear` → row
+
+Strategy options are read from `store.persistOptions` (attached by factories or custom authors). Custom stores that omit it get defaults.
+
+**Snapshot options** (via factory or `persistOptions`):
 
 | Option | Type | Default |
 | --- | --- | --- |
 | `autoSave` | `boolean` | `true` |
 | `autoSaveDebounceMs` | `number` | `0` (microtask coalesce) |
 
-When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules one save per microtask; `> 0` waits that many ms after the last mutation. See [Snapshot: `persist` vs `flush`](#snapshot) for when to call which.
-
-**Added methods:** `hydrate()`, `persist()`, `flush()`.
-
-**Events:** `persist:loaded`, `persist:saved`, `persist:error` (`operation`: `'load' | 'save'`).
-
-**Errors:** `QueueHydratingError` on concurrent mutation during hydrate.
-
----
-
-### `withRowPersist`
-
-```ts
-withRowPersist<T>(
-  queue: Queue<RowRecord<T>>,
-  store: RowStore<T>,
-  options?: RowPersistOptions,
-): QueueWithRowPersist<T>
-```
+**Row options** (via factory or `persistOptions`):
 
 | Option | Type | Default |
 | --- | --- | --- |
 | `createId` | `() => string` | Library default (nanoid-style) |
 
-Requires `buildQueue<RowRecord<T>>()`. The decorated surface is `QueueWithRowPersist<T>` — you enqueue plain `T`; the inner queue holds `{ id, item }` records.
+When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules one save per microtask; `> 0` waits that many ms after the last mutation.
 
-**Added methods:** `hydrate()`, `flush()`, `rowIds()`.
+**Snapshot added methods:** `hydrate()`, `persist()`, `flush()`.
 
-**Events:** `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error`.
+**Row added methods:** `hydrate()`, `flush()`, `rowIds()`.
 
-Throws if a worker is already attached (wrong stack order).
+**Snapshot events:** `persist:loaded`, `persist:saved`, `persist:error` (`operation`: `'load' | 'save'`).
+
+**Row events:** `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error`.
+
+**Errors:** `QueueHydratingError` on concurrent mutation during hydrate. Throws if a worker is already attached (wrong stack order) or if the store matches both shapes.
 
 ---
 
@@ -823,11 +809,12 @@ Also: `createTypedEmit`, types `EventEmitter`, `EventMap`, `EventCallback`, `Mer
 | `QueueSlot<T>` | `{ value: T }` — structural wrapper for `tryDequeue` / `tryPeek` |
 | `Queue<T>` | Bare queue surface |
 | `QueueWithWorker<T, R>` | Queue + worker controls |
-| `QueueWithSnapshotPersist<T>` / `QueueWithRowPersist<T>` | Persist-decorated queues |
+| `QueueWithPersist<T, S>` | Persist-decorated queue (`S` = `'snapshot'` or `'row'`) |
 | `WorkerFn<T, R>` | `(item) => R \| Promise<R>` |
 | `WorkerControls` | `start` / `stop` / … |
 | `WithWorkerOptions`, `BuildQueueOptions` | Options objects |
 | `RowRecord<T>`, `RowStore<T>`, `SnapshotStore<T>` | Persist contracts |
+| `RowPersistEvents<T>`, `SnapshotPersistEvents` | Persist event maps for `.on('persist:…')` |
 | `RouteMessage<T>`, `Router`, `Binding` | Router |
 | `RetryOptions`, `PipelineStep`, `PipelineStepContext` | Worker helpers |
 
@@ -840,15 +827,15 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | Subpath | Exports | Does *not* contain |
 | --- | --- | --- |
 | `@qkitt/queue` | Everything | — |
-| `@qkitt/queue/queue` | `buildQueue`, `withWorker`, persist wrappers | Store adapters |
+| `@qkitt/queue/queue` | `buildQueue`, `withWorker`, queue + worker types | Persist, stores |
 | `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
 | `@qkitt/queue/router` | `buildRouter`, router types | — |
-| `@qkitt/queue/persist` | Memory + Web Storage stores | `withRowPersist` / `withSnapshotPersist` |
+| `@qkitt/queue/persist` | `withPersist`, stores, contracts, event types, `QueueHydratingError` | `buildQueue`, `withWorker` |
 | `@qkitt/queue/events` | `buildEventEmitter`, … | — |
 
 Companion: [`@qkitt/queue-config`](../queue-config) — declarative `defineConfig` / `buildFromConfig`.
 
-`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. Same split for persist: adapters under `/persist`, wrappers under `/queue`.
+`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. The persist decorator (`withPersist`) and all store factories live under `@qkitt/queue/persist`.
 
 ## Changelog
 

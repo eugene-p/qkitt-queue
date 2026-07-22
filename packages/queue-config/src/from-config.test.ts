@@ -972,7 +972,7 @@ describe('queue peer API contract (integration)', () => {
         )
     })
 
-    it('exposes snapshot persist helpers from withSnapshotPersist', async () => {
+    it('exposes snapshot persist helpers from withPersist', async () => {
         const system = await buildFromConfig({
             stores: {
                 snap: { adapter: 'memory', strategy: 'snapshot' },
@@ -1006,7 +1006,7 @@ describe('queue peer API contract (integration)', () => {
         void again
     })
 
-    it('exposes row persist helpers from withRowPersist', async () => {
+    it('exposes row persist helpers from withPersist', async () => {
         const system = await buildFromConfig({
             stores: {
                 rows: { adapter: 'memory', strategy: 'row' },

@@ -1,3 +1,4 @@
+import { isRowStore, isSnapshotStore } from '@qkitt/queue'
 import type { BuiltinStoreAdapter } from './types'
 import { configError } from './errors'
 import { isIntegerInRange } from './number.util'
@@ -20,27 +21,6 @@ export const isPlainObject = (
     }
     const proto = Object.getPrototypeOf(value)
     return proto === Object.prototype || proto === null
-}
-
-/** Method-shape check shared by parse-time and resolve-time guards. */
-export const hasSnapshotStoreShape = (value: object): boolean =>
-    typeof (value as { load?: unknown }).load === 'function' &&
-    typeof (value as { save?: unknown }).save === 'function'
-
-/** Method-shape check shared by parse-time and resolve-time guards. */
-export const hasRowStoreShape = (value: object): boolean => {
-    const store = value as {
-        loadAll?: unknown
-        insert?: unknown
-        remove?: unknown
-        clear?: unknown
-    }
-    return (
-        typeof store.loadAll === 'function' &&
-        typeof store.insert === 'function' &&
-        typeof store.remove === 'function' &&
-        typeof store.clear === 'function'
-    )
 }
 
 export const expectString = (value: unknown, path: string): string => {
@@ -107,11 +87,11 @@ export const parseAdapter = (
 
 /** Parse-time duck check: plain object with snapshot methods. */
 export const isSnapshotStoreLike = (value: unknown): boolean =>
-    isPlainObject(value) && hasSnapshotStoreShape(value)
+    isPlainObject(value) && isSnapshotStore(value)
 
 /** Parse-time duck check: plain object with row methods. */
 export const isRowStoreLike = (value: unknown): boolean =>
-    isPlainObject(value) && hasRowStoreShape(value)
+    isPlainObject(value) && isRowStore(value)
 
 export const parseStrategy = (
     value: unknown,

@@ -1,8 +1,12 @@
 import type {
+    RowPersistOptions,
     RowRecord,
     RowStore,
+    RowStoreHandle,
+    SnapshotPersistOptions,
     SnapshotStore,
-} from '../queue/persist/persist.types'
+    SnapshotStoreHandle,
+} from '../contracts'
 import {
     decodeWithCodec,
     defaultJsonCodec,
@@ -39,10 +43,16 @@ export type WebSnapshotStoreOptions<T> = {
  * - Prefer a single tab owner, or a server-side store for shared durability.
  */
 export const createWebSnapshotStore = <T>(
-    options: WebSnapshotStoreOptions<T>,
-): SnapshotStore<T> => {
+    options: WebSnapshotStoreOptions<T> & SnapshotPersistOptions,
+): SnapshotStoreHandle<T> => {
     const storage = () => resolveStorage(options.storage)
     const codec = options.codec ?? defaultJsonCodec<T[]>()
+    const { autoSave, autoSaveDebounceMs } = options
+
+    const persistOptions: SnapshotPersistOptions = {}
+    if (autoSave !== undefined) persistOptions.autoSave = autoSave
+    if (autoSaveDebounceMs !== undefined)
+        persistOptions.autoSaveDebounceMs = autoSaveDebounceMs
 
     return {
         load: () => {
@@ -58,6 +68,9 @@ export const createWebSnapshotStore = <T>(
         save: (items) => {
             storage().setItem(options.key, codec.serialize([...items]))
         },
+        ...(Object.keys(persistOptions).length > 0
+            ? { persistOptions }
+            : {}),
     }
 }
 
@@ -97,12 +110,16 @@ const orderCodec: OrderCodec = {
  * - Use one owning tab, or a real DB/backend when durability must be shared.
  */
 export const createWebRowStore = <T>(
-    options: WebRowStoreOptions<T>,
-): RowStore<T> => {
+    options: WebRowStoreOptions<T> & RowPersistOptions,
+): RowStoreHandle<T> => {
     const storage = () => resolveStorage(options.storage)
     const itemCodec = options.itemCodec ?? defaultJsonCodec<T>()
     const orderKey = `${options.key}:order`
     const rowKey = (id: string) => `${options.key}:row:${id}`
+
+    const { createId: _createId } = options
+    const persistOptions: RowPersistOptions = {}
+    if (_createId !== undefined) persistOptions.createId = _createId
 
     const readOrder = (): string[] => {
         const raw = storage().getItem(orderKey)
@@ -163,14 +180,18 @@ export const createWebRowStore = <T>(
             }
             store.removeItem(orderKey)
         },
+        ...(Object.keys(persistOptions).length > 0
+            ? { persistOptions }
+            : {}),
     }
 }
 
 /** Convenience: snapshot store on `localStorage` (resolved lazily on use). */
 export const createLocalStorageSnapshotStore = <T>(
     key: string,
-    options: Omit<WebSnapshotStoreOptions<T>, 'key' | 'storage'> = {},
-): SnapshotStore<T> =>
+    options: Omit<WebSnapshotStoreOptions<T>, 'key' | 'storage'> &
+        SnapshotPersistOptions = {},
+): SnapshotStoreHandle<T> =>
     createWebSnapshotStore({
         ...options,
         key,
@@ -180,8 +201,9 @@ export const createLocalStorageSnapshotStore = <T>(
 /** Convenience: row store on `localStorage` (resolved lazily on use). */
 export const createLocalStorageRowStore = <T>(
     key: string,
-    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> = {},
-): RowStore<T> =>
+    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> &
+        RowPersistOptions = {},
+): RowStoreHandle<T> =>
     createWebRowStore({
         ...options,
         key,
@@ -191,8 +213,9 @@ export const createLocalStorageRowStore = <T>(
 /** Convenience: snapshot store on `sessionStorage` (resolved lazily on use). */
 export const createSessionStorageSnapshotStore = <T>(
     key: string,
-    options: Omit<WebSnapshotStoreOptions<T>, 'key' | 'storage'> = {},
-): SnapshotStore<T> =>
+    options: Omit<WebSnapshotStoreOptions<T>, 'key' | 'storage'> &
+        SnapshotPersistOptions = {},
+): SnapshotStoreHandle<T> =>
     createWebSnapshotStore({
         ...options,
         key,
@@ -202,8 +225,9 @@ export const createSessionStorageSnapshotStore = <T>(
 /** Convenience: row store on `sessionStorage` (resolved lazily on use). */
 export const createSessionStorageRowStore = <T>(
     key: string,
-    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> = {},
-): RowStore<T> =>
+    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> &
+        RowPersistOptions = {},
+): RowStoreHandle<T> =>
     createWebRowStore({
         ...options,
         key,

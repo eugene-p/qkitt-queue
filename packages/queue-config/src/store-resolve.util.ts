@@ -7,29 +7,19 @@ import {
     createSessionStorageSnapshotStore,
     createWebRowStore,
     createWebSnapshotStore,
+    isRowStore,
+    isSnapshotStore,
     type RowStore,
     type SnapshotStore,
 } from '@qkitt/queue'
 import { configError } from './errors'
-import {
-    assertWebStorageKey,
-    hasRowStoreShape,
-    hasSnapshotStoreShape,
-} from './parse.util'
+import { assertWebStorageKey } from './parse.util'
 import type {
     BuildFromConfigOptions,
     BuiltinStoreAdapter,
     ResolvedStore,
     StoreDefinition,
 } from './types'
-
-export const isSnapshotStore = <T>(
-    value: SnapshotStore<T> | RowStore<T>,
-): value is SnapshotStore<T> => hasSnapshotStoreShape(value)
-
-export const isRowStore = <T>(
-    value: SnapshotStore<T> | RowStore<T>,
-): value is RowStore<T> => hasRowStoreShape(value)
 
 type WebAdapter = Exclude<BuiltinStoreAdapter, 'memory'>
 
@@ -86,14 +76,14 @@ const resolveStore = <T>(
 ): ResolvedStore<T> => {
     if ('impl' in definition) {
         const impl = definition.impl as ResolvedStore<T>
-        if (definition.strategy === 'snapshot' && !isSnapshotStore(impl)) {
+        if (definition.strategy === 'snapshot' && !isSnapshotStore<T>(impl)) {
             return configError(
                 'INVALID_IMPL',
                 `config.stores.${storeName}.impl must be a SnapshotStore (strategy is "snapshot")`,
                 `config.stores.${storeName}.impl`,
             )
         }
-        if (definition.strategy === 'row' && !isRowStore(impl)) {
+        if (definition.strategy === 'row' && !isRowStore<T>(impl)) {
             return configError(
                 'INVALID_IMPL',
                 `config.stores.${storeName}.impl must be a RowStore (strategy is "row")`,

@@ -1,6 +1,6 @@
 /**
  * Compact URL-safe ids (nanoid-style alphabet + random bytes).
- * Used as the default row id factory for {@link withRowPersist}.
+ * Used as the default row id factory for row persist.
  */
 
 /** 64 URL-safe chars; power-of-two size keeps `byte & 63` unbiased. */

@@ -1,11 +1,11 @@
 /**
  * Survive a "crash": snapshot persist, drop the queue, hydrate and finish work.
- * Layers: buildQueue → withSnapshotPersist → withWorker (worker outermost)
+ * Layers: buildQueue → withPersist → withWorker (worker outermost)
  */
 import {
   buildQueue,
   createMemorySnapshotStore,
-  withSnapshotPersist,
+  withPersist,
   withWorker,
 } from '@qkitt/queue'
 import { line, phase, sleep, summary, title, waitIdle } from '../_log'
@@ -22,7 +22,7 @@ async function main() {
   // phase 1: persist only — no worker, so nothing can drain before flush
   phase('phase 1: enqueue + crash')
 
-  const before = withSnapshotPersist(buildQueue<Job>(), store)
+  const before = withPersist(buildQueue<Job>(), store)
 
   for (const id of [1, 2, 3]) {
     before.enqueue({ id })
@@ -38,7 +38,7 @@ async function main() {
   let completed = 0
 
   const after = withWorker(
-    withSnapshotPersist(buildQueue<Job>(), store),
+    withPersist(buildQueue<Job>(), store),
     async (job) => {
       line('worker', 'start', `job=${job.id}`)
       await sleep(20)

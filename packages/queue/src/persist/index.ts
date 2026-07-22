@@ -1,9 +1,24 @@
+export type {
+    QueueWithPersist,
+    RowPersistEvents,
+    RowRecord,
+    RowStore,
+    SnapshotPersistEvents,
+    SnapshotStore,
+} from './contracts'
+
+export { withPersist } from './with-persist'
+
+export { QueueHydratingError } from './hydrate-gate.util'
+
+export { isRowStore, isSnapshotStore } from './store-guards.util'
+
 export {
     createMemoryRowStore,
     createMemorySnapshotStore,
     type MemoryRowStore,
     type MemorySnapshotStore,
-} from './memory'
+} from './stores/memory'
 
 export {
     createLocalStorageRowStore,
@@ -17,4 +32,4 @@ export {
     type WebRowStoreOptions,
     type WebSnapshotStoreOptions,
     type WebStorageLike,
-} from './web-storage'
+} from './stores/web-storage'

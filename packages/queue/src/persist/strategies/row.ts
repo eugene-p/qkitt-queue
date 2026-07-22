@@ -1,83 +1,47 @@
+/**
+ * Row persist strategy (private — consume via `withPersist`).
+ *
+ * Callers pass a bare `Queue<T>`; internally an inner `Queue<RowRecord<T>>`
+ * is built to track row ids. The public surface remains plain `T`.
+ */
+
 import {
     buildEventEmitter,
     createTypedEmit,
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
-import { decorateQueue } from '../core/forward.util'
-import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
-import type { Queue, QueueEvents, QueueSlot } from '../core/queue'
-import { createId } from './create-id.util'
-import { assertNotHydrating } from './hydrate-gate.util'
-import { createPersistenceLifecycle } from './persistence-lifecycle.util'
-import { assertBareQueueForPersist } from './persist.support'
-import type { RowRecord, RowStore } from './persist.types'
+import { decorateQueue } from '../../queue/core/forward.util'
+import { markQueueLayer, PERSIST_LAYER } from '../../queue/core/layers.util'
+import {
+    buildQueue,
+    type Queue,
+    type QueueEvents,
+    type QueueSlot,
+} from '../../queue/core/queue'
+import { getQueueMaxSize } from '../../queue/core/queue-max-size.util'
+import type {
+    QueueWithPersist,
+    RowPersistEvents,
+    RowPersistOptions,
+    RowRecord,
+    RowStore,
+} from '../contracts'
+import { createId } from '../create-id.util'
+import { assertNotHydrating } from '../hydrate-gate.util'
+import { createPersistenceLifecycle } from './lifecycle.util'
 import { assertUniqueRowId, assertUniqueRowIds } from './row-id.util'
-
-export { createId } from './create-id.util'
-export type { RowRecord, RowStore } from './persist.types'
-
-export type RowPersistEvents<T> = {
-    'persist:loaded': { size: number }
-    'persist:inserted': { id: string; item: T }
-    'persist:removed': { id: string; item: T }
-    'persist:cleared': { removed: number }
-    'persist:error': {
-        operation: 'load' | 'insert' | 'remove' | 'clear'
-        error: unknown
-        id?: string
-    }
-}
-
-export type RowPersistOptions = {
-    /**
-     * Custom id factory for new rows (enqueue / replaceAll).
-     * Defaults to {@link createId} (nanoid-style URL-safe alphabet).
-     * Must return unique, non-empty ids (not whitespace-only); collisions throw
-     * before memory or store mutation.
-     *
-     * @example
-     * withRowPersist(queue, store, { createId: () => crypto.randomUUID() })
-     */
-    createId?: () => string
-}
 
 type RowQueueEvents<T, TEvents extends EventMap> = MergeEventMaps<
     TEvents,
     RowPersistEvents<T>
 >
 
-export type QueueWithRowPersist<
-    T,
-    TEvents extends EventMap = RowQueueEvents<T, QueueEvents<T>>,
-> = Queue<T, TEvents> & {
-    /**
-     * Replace in-memory queue from store rows (head → tail).
-     * If the store backend may hang, wrap in `Promise.race` with a timeout;
-     * the hydrate gate has no built-in deadline.
-     */
-    hydrate: () => Promise<void>
-    /** Ids currently in the queue, head → tail (aligned with `toArray()`). */
-    rowIds: () => string[]
-    /**
-     * Wait for pending store mutations to settle.
-     * Store writes are async (enqueue/dequeue stay sync); use this when you
-     * need durability before continuing (e.g. before process exit).
-     */
-    flush: () => Promise<void>
-}
-
 /**
- * Persist each queue mutation as a row operation.
- * Good for DB-style backends where enqueue/dequeue map to insert/delete.
+ * Attach row-level persistence to a bare queue (private strategy implementation).
  *
  * The inner queue holds `RowRecord<T>` (`{ id, item }`) so the store can key
  * by id. The decorated public surface is still `T` — you enqueue plain jobs.
- *
- * **Composition (required):** wrap a bare `RowRecord` queue, then the worker:
- * `withWorker(withRowPersist(buildQueue<RowRecord<T>>(), store), worker)`.
- * Reverse order silently skips store removes — this helper throws if it
- * detects a worker already on the queue.
  *
  * Durability:
  * - Memory updates are optimistic and synchronous (API stays sync).
@@ -88,24 +52,26 @@ export type QueueWithRowPersist<
  * - `hydrate` uses a silent rebuild (no mid-hydrate worker drain of the store),
  *   then emits one `queue:enqueued` so stacked workers pump after the gate opens.
  * - Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
- * - A second concurrent `hydrate()` rejects with “hydrate already in progress”.
- * - The hydrate gate has no built-in deadline: if the store may hang, wrap
- *   `hydrate()` in `Promise.race` with a timeout.
+ * - A second concurrent `hydrate()` rejects with "hydrate already in progress".
  * - Row ids from `createId` / `loadAll` must be unique and non-empty (not whitespace-only).
- * - Call {@link QueueWithRowPersist.flush} to await pending writes.
+ * - Call `flush()` to await pending writes.
  */
-export const withRowPersist = <
+export const attachRowPersist = <
     T,
-    TInnerEvents extends QueueEvents<RowRecord<T>> = QueueEvents<RowRecord<T>>,
+    TEvents extends QueueEvents<T> = QueueEvents<T>,
 >(
-    queue: Queue<RowRecord<T>, TInnerEvents>,
+    queue: Queue<T, TEvents>,
     store: RowStore<T>,
     options: RowPersistOptions = {},
-): QueueWithRowPersist<T, RowQueueEvents<T, QueueEvents<T>>> => {
-    assertBareQueueForPersist(queue, 'withRowPersist')
-
+): QueueWithPersist<T, 'row', TEvents> => {
     const nextId = options.createId ?? createId
-    const inner = queue
+
+    // Build the inner RowRecord queue, preserving maxSize from the caller's queue.
+    const maxSize = getQueueMaxSize(queue)
+    const inner = buildQueue<RowRecord<T>>(
+        maxSize !== undefined ? { maxSize } : {},
+    )
+
     const emitter = buildEventEmitter<RowQueueEvents<T, QueueEvents<T>>>()
     const emitPersist = createTypedEmit<RowPersistEvents<T>>(
         emitter.emit as (eventName: string, data: unknown) => void,
@@ -156,7 +122,10 @@ export const withRowPersist = <
         emitter.emit('queue:cleared', payload)
     })
 
-    const on: QueueWithRowPersist<T>['on'] = (eventName, callback) => {
+    const on: Queue<T, RowQueueEvents<T, QueueEvents<T>>>['on'] = (
+        eventName,
+        callback,
+    ) => {
         const unsubscribe = emitter.on(eventName, callback)
         if (
             eventName === 'queue:enqueued' ||
@@ -388,8 +357,5 @@ export const withRowPersist = <
         PERSIST_LAYER,
     )
 
-    return api as unknown as QueueWithRowPersist<
-        T,
-        RowQueueEvents<T, QueueEvents<T>>
-    >
+    return api as unknown as QueueWithPersist<T, 'row', TEvents>
 }

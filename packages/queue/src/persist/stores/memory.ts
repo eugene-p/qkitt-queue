@@ -1,8 +1,12 @@
 import type {
+    RowPersistOptions,
     RowRecord,
     RowStore,
+    RowStoreHandle,
+    SnapshotPersistOptions,
     SnapshotStore,
-} from '../queue/persist/persist.types'
+    SnapshotStoreHandle,
+} from '../contracts'
 
 export type MemorySnapshotStore<T> = SnapshotStore<T> & {
     /** Live in-memory snapshot (mutated by `save`). */
@@ -17,7 +21,8 @@ export type MemoryRowStore<T> = RowStore<T> & {
 /** In-process snapshot store. Useful for tests and non-durable queues. */
 export const createMemorySnapshotStore = <T>(
     initial: readonly T[] = [],
-): MemorySnapshotStore<T> => {
+    options?: SnapshotPersistOptions,
+): MemorySnapshotStore<T> & SnapshotStoreHandle<T> => {
     const data: T[] = [...initial]
 
     return {
@@ -29,13 +34,15 @@ export const createMemorySnapshotStore = <T>(
             data.length = 0
             data.push(...items)
         },
+        ...(options !== undefined ? { persistOptions: options } : {}),
     }
 }
 
 /** In-process row store with stable ids. */
 export const createMemoryRowStore = <T>(
     initial: readonly RowRecord<T>[] = [],
-): MemoryRowStore<T> => {
+    options?: RowPersistOptions,
+): MemoryRowStore<T> & RowStoreHandle<T> => {
     const rows: RowRecord<T>[] = initial.map((row) => ({
         id: row.id,
         item: row.item,
@@ -80,5 +87,6 @@ export const createMemoryRowStore = <T>(
             rows.length = 0
             indexById.clear()
         },
+        ...(options !== undefined ? { persistOptions: options } : {}),
     }
 }

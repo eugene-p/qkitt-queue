@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildQueue } from '../queue/core/queue'
-import {
-    withRowPersist,
-    type RowRecord,
-} from '../queue/persist/with-row-persist'
-import { withSnapshotPersist } from '../queue/persist/with-snapshot-persist'
+import { buildQueue } from '../../queue/core/queue'
+import { withPersist } from '../with-persist'
 import {
     createWebRowStore,
     createWebSnapshotStore,
@@ -35,7 +31,7 @@ describe('createWebSnapshotStore', () => {
             key: 'q',
             storage,
         })
-        const queue = withSnapshotPersist(buildQueue<number>(), store)
+        const queue = withPersist(buildQueue<number>(), store)
 
         queue.enqueue(1)
         queue.enqueue(2)
@@ -43,9 +39,14 @@ describe('createWebSnapshotStore', () => {
 
         expect(storage.map.get('q')).toBe('[1,2]')
 
-        const restored = withSnapshotPersist(buildQueue<number>(), store, {
-            autoSave: false,
-        })
+        const restored = withPersist(
+            buildQueue<number>(),
+            createWebSnapshotStore<number>({
+                key: 'q',
+                storage,
+                autoSave: false,
+            }),
+        )
         await restored.hydrate()
         expect(restored.toArray()).toEqual([1, 2])
     })
@@ -69,14 +70,13 @@ describe('createWebSnapshotStore', () => {
 describe('createWebRowStore', () => {
     it('stores each row under its own key plus an order list', async () => {
         const storage = createMemoryWebStorage()
+        let n = 0
         const store = createWebRowStore<string>({
             key: 'jobs',
             storage,
-        })
-        let n = 0
-        const queue = withRowPersist(buildQueue<RowRecord<string>>(), store, {
             createId: () => `id-${++n}`,
         })
+        const queue = withPersist(buildQueue<string>(), store)
 
         queue.enqueue('a')
         queue.enqueue('b')
@@ -92,7 +92,10 @@ describe('createWebRowStore', () => {
         expect(storage.map.get('jobs:order')).toBe('["id-2"]')
         expect(storage.map.has('jobs:row:id-1')).toBe(false)
 
-        const restored = withRowPersist(buildQueue<RowRecord<string>>(), store)
+        const restored = withPersist(
+            buildQueue<string>(),
+            createWebRowStore<string>({ key: 'jobs', storage }),
+        )
         await restored.hydrate()
         expect(restored.toArray()).toEqual(['b'])
         expect(restored.rowIds()).toEqual(['id-2'])
@@ -100,18 +103,13 @@ describe('createWebRowStore', () => {
 
     it('clear removes order and all row keys', async () => {
         const storage = createMemoryWebStorage()
+        let n = 0
         const store = createWebRowStore<{ n: number }>({
             key: 't',
             storage,
+            createId: () => `r${++n}`,
         })
-        let n = 0
-        const queue = withRowPersist(
-            buildQueue<RowRecord<{ n: number }>>(),
-            store,
-            {
-                createId: () => `r${++n}`,
-            },
-        )
+        const queue = withPersist(buildQueue<{ n: number }>(), store)
 
         queue.enqueue({ n: 1 })
         queue.enqueue({ n: 2 })

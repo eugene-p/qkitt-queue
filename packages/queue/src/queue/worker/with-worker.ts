@@ -9,7 +9,7 @@ import type { WorkerFn } from '../../worker/types'
 import { decorateQueue, type PreserveQueueExtras } from '../core/forward.util'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
-import { QueueHydratingError } from '../persist/hydrate-gate.util'
+import { QueueHydratingError } from '../../persist/hydrate-gate.util'
 
 export type WorkerEvents<T, R = unknown> = {
     /** Fired just before the worker runs an item. */
@@ -75,7 +75,7 @@ const resolveConcurrency = (value: number | undefined): number => {
  *
  * **Composition (required when using persist):** worker must be the **outer**
  * decorator so `dequeue` hits the persist override:
- * `withWorker(withRowPersist(buildQueue(), store), worker)` — not the reverse.
+ * `withWorker(withPersist(buildQueue(), store), worker)` — not the reverse.
  *
  * Inner decorator extras (e.g. `flush` from row/snapshot persist) are preserved
  * at runtime and in the return type via {@link PreserveQueueExtras}.

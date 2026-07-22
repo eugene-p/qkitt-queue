@@ -4,6 +4,7 @@ import {
     type EventMap,
 } from '../../events'
 import { isIntegerInRange } from '../../util/number.util'
+import { markQueueMaxSize } from './queue-max-size.util'
 
 export type QueueEvents<T> = {
     /** Fired after an item is added to the tail. */
@@ -273,5 +274,5 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         emit: emitter.emit,
     }
 
-    return api
+    return markQueueMaxSize(api, maxSize)
 }

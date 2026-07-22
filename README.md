@@ -48,7 +48,7 @@ Compose layers from the inside out:
 import {
   buildQueue,
   withWorker,
-  withSnapshotPersist,
+  withPersist,
   createMemorySnapshotStore,
 } from '@qkitt/queue'
 
@@ -56,7 +56,7 @@ type Job = { id: string }
 
 // bare → persist → worker
 const queue = withWorker(
-  withSnapshotPersist(buildQueue<Job>(), createMemorySnapshotStore()),
+  withPersist(buildQueue<Job>(), createMemorySnapshotStore()),
   async (job) => {
     // handle job
   },
@@ -87,7 +87,7 @@ const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 
 Failed items are **not** re-queued. Use `retryWorker` for in-call retries, or handle `worker:failed` and re-enqueue yourself if you need a dead-letter path.
 
-**Persist lifecycle** (when using `withSnapshotPersist` / `withRowPersist`):
+**Persist lifecycle** (when using `withPersist`):
 
 1. Build stack: bare → persist → worker (**persist inside, worker outside**).
 2. `await queue.hydrate()` before enqueue.

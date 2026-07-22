@@ -31,7 +31,7 @@ type QueueCoreKeys = keyof Queue<unknown, EventMap>
 
 /**
  * Preserve non-core methods from an inner queue when typing an outer decorator.
- * e.g. `withWorker(withRowPersist(...))` keeps `flush` / `hydrate` / `rowIds`.
+ * e.g. `withWorker(withPersist(...))` keeps `flush` / `hydrate` / `rowIds`.
  */
 export type PreserveQueueExtras<TQueue extends object> = Omit<
     TQueue,

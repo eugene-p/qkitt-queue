@@ -1,18 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { buildQueue } from '../queue/core/queue'
-import {
-    withRowPersist,
-    type RowRecord,
-} from '../queue/persist/with-row-persist'
-import { withSnapshotPersist } from '../queue/persist/with-snapshot-persist'
+import { buildQueue } from '../../queue/core/queue'
+import { withPersist } from '../with-persist'
 import { createMemoryRowStore, createMemorySnapshotStore } from './memory'
 
 describe('createMemorySnapshotStore', () => {
-    it('round-trips through withSnapshotPersist', async () => {
-        const store = createMemorySnapshotStore<string>(['a'])
-        const queue = withSnapshotPersist(buildQueue<string>(), store, {
+    it('round-trips through withPersist', async () => {
+        const store = createMemorySnapshotStore<string>(['a'], {
             autoSave: false,
         })
+        const queue = withPersist(buildQueue<string>(), store)
 
         await queue.hydrate()
         expect(queue.toArray()).toEqual(['a'])
@@ -24,13 +20,12 @@ describe('createMemorySnapshotStore', () => {
 })
 
 describe('createMemoryRowStore', () => {
-    it('round-trips through withRowPersist', async () => {
-        const store = createMemoryRowStore<string>([
-            { id: '1', item: 'x' },
-        ])
-        const first = withRowPersist(buildQueue<RowRecord<string>>(), store, {
-            createId: () => '2',
-        })
+    it('round-trips through withPersist', async () => {
+        const store = createMemoryRowStore<string>(
+            [{ id: '1', item: 'x' }],
+            { createId: () => '2' },
+        )
+        const first = withPersist(buildQueue<string>(), store)
 
         await first.hydrate()
         first.enqueue('y')
@@ -38,7 +33,7 @@ describe('createMemoryRowStore', () => {
         first.dequeue()
         await first.flush()
 
-        const second = withRowPersist(buildQueue<RowRecord<string>>(), store)
+        const second = withPersist(buildQueue<string>(), store)
         await second.hydrate()
 
         expect(second.toArray()).toEqual(['y'])

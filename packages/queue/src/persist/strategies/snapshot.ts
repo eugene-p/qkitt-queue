@@ -1,79 +1,29 @@
+/**
+ * Snapshot persist strategy (private — consume via `withPersist`).
+ */
+
 import {
     createTypedEmit,
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
 import { isIntegerInRange } from '../../util/number.util'
-import { decorateQueue } from '../core/forward.util'
-import { markQueueLayer, PERSIST_LAYER } from '../core/layers.util'
-import type { Queue, QueueEvents, QueueSlot } from '../core/queue'
-import { assertNotHydrating } from './hydrate-gate.util'
-import { createPersistenceLifecycle } from './persistence-lifecycle.util'
-import { assertBareQueueForPersist } from './persist.support'
-import type { SnapshotStore } from './persist.types'
-
-export type { SnapshotStore } from './persist.types'
-
-export type SnapshotPersistEvents = {
-    'persist:loaded': { size: number }
-    'persist:saved': { size: number }
-    'persist:error': {
-        operation: 'load' | 'save'
-        error: unknown
-    }
-}
-
-export type SnapshotPersistOptions = {
-    /**
-     * Automatically `save` after enqueue / dequeue / clear / replaceAll.
-     * Defaults to `true`.
-     */
-    autoSave?: boolean
-    /**
-     * Delay before writing after a mutation when {@link autoSave} is true.
-     *
-     * - `0` or omitted: coalesce synchronous bursts into **one save per
-     *   microtask** (default).
-     * - `> 0`: wait this many milliseconds after the **last** mutation
-     *   (timer resets on each enqueue/dequeue/clear/replaceAll).
-     *
-     * Explicit {@link QueueWithSnapshotPersist.persist} is never debounced.
-     * Call {@link QueueWithSnapshotPersist.flush} (or `hydrate`) to force a
-     * pending auto-save onto the write chain before continuing or exiting.
-     *
-     * Must be a safe integer ≥ 0.
-     */
-    autoSaveDebounceMs?: number
-}
+import { decorateQueue } from '../../queue/core/forward.util'
+import { markQueueLayer, PERSIST_LAYER } from '../../queue/core/layers.util'
+import type { Queue, QueueEvents, QueueSlot } from '../../queue/core/queue'
+import type {
+    QueueWithPersist,
+    SnapshotPersistEvents,
+    SnapshotPersistOptions,
+    SnapshotStore,
+} from '../contracts'
+import { assertNotHydrating } from '../hydrate-gate.util'
+import { createPersistenceLifecycle } from './lifecycle.util'
 
 type SnapshotQueueEvents<T, TEvents extends EventMap> = MergeEventMaps<
     TEvents,
     SnapshotPersistEvents
 >
-
-export type QueueWithSnapshotPersist<
-    T,
-    TEvents extends EventMap = SnapshotQueueEvents<T, QueueEvents<T>>,
-> = Queue<T, TEvents> & {
-    /**
-     * Replace in-memory queue contents from the store.
-     * If the store backend may hang, wrap in `Promise.race` with a timeout;
-     * the hydrate gate has no built-in deadline.
-     */
-    hydrate: () => Promise<void>
-    /** Write the current queue (head → tail) to the store. */
-    persist: () => Promise<void>
-    /** Wait for pending auto-saves (and in-flight `persist`) to settle. */
-    flush: () => Promise<void>
-}
-
-const resolveAutoSaveDebounceMs = (value: number | undefined): number => {
-    const ms = value ?? 0
-    if (!isIntegerInRange(ms, 0)) {
-        throw new Error('autoSaveDebounceMs must be a safe integer >= 0')
-    }
-    return ms
-}
 
 type TimerHandle = unknown
 
@@ -95,35 +45,34 @@ const cancelTimeout = (handle: TimerHandle): void => {
     clear(handle)
 }
 
+const resolveAutoSaveDebounceMs = (value: number | undefined): number => {
+    const ms = value ?? 0
+    if (!isIntegerInRange(ms, 0)) {
+        throw new Error('autoSaveDebounceMs must be a safe integer >= 0')
+    }
+    return ms
+}
+
 /**
- * Persist the whole queue as one snapshot.
- * Good for simple backends where you rewrite the full list each time.
- *
- * **Composition (required):** wrap the bare queue, then the worker:
- * `withWorker(withSnapshotPersist(buildQueue(), store), worker)`.
+ * Attach snapshot persistence to a bare queue (private strategy implementation).
  *
  * Uses silent hydrate rebuild + a post-gate `queue:enqueued` kick so stacked
  * workers process restored items only after auto-save is allowed again.
  * Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
- * A second concurrent `hydrate()` rejects with “hydrate already in progress”.
- * The hydrate gate has no built-in deadline: if the store may hang, wrap
- * `hydrate()` in `Promise.race` with a timeout.
+ * A second concurrent `hydrate()` rejects with "hydrate already in progress".
  *
  * Auto-save coalesces burst mutations (microtask by default, or
  * {@link SnapshotPersistOptions.autoSaveDebounceMs}). Prefer `flush()` before
- * process exit when durability matters. `flush()` waits for pending auto-saves;
- * `persist()` writes a full snapshot immediately (never debounced).
+ * process exit when durability matters.
  */
-export const withSnapshotPersist = <
+export const attachSnapshotPersist = <
     T,
     TEvents extends QueueEvents<T> = QueueEvents<T>,
 >(
     queue: Queue<T, TEvents>,
     store: SnapshotStore<T>,
     options: SnapshotPersistOptions = {},
-): QueueWithSnapshotPersist<T, SnapshotQueueEvents<T, TEvents>> => {
-    assertBareQueueForPersist(queue, 'withSnapshotPersist')
-
+): QueueWithPersist<T, 'snapshot', TEvents> => {
     const autoSave = options.autoSave ?? true
     const autoSaveDebounceMs = resolveAutoSaveDebounceMs(
         options.autoSaveDebounceMs,
@@ -275,8 +224,5 @@ export const withSnapshotPersist = <
         PERSIST_LAYER,
     )
 
-    return api as unknown as QueueWithSnapshotPersist<
-        T,
-        SnapshotQueueEvents<T, TEvents>
-    >
+    return api as unknown as QueueWithPersist<T, 'snapshot', TEvents>
 }

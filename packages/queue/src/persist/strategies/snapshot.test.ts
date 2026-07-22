@@ -1,27 +1,27 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildQueue } from '../core/queue'
-import {
-    withSnapshotPersist,
-    type SnapshotStore,
-} from './with-snapshot-persist'
+import { buildQueue } from '../../queue/core/queue'
+import type { SnapshotStore } from '../contracts'
+import { withPersist } from '../with-persist'
 
-const memorySnapshot = <T>(initial: T[] = []): SnapshotStore<T> & { data: T[] } => {
+const memorySnapshot = <T>(
+    initial: T[] = [],
+    persistOptions?: { autoSave?: boolean; autoSaveDebounceMs?: number },
+): SnapshotStore<T> & { data: T[] } & { persistOptions?: typeof persistOptions } => {
     const store = {
         data: [...initial],
         load: async () => [...store.data],
         save: async (items: readonly T[]) => {
             store.data = [...items]
         },
+        ...(persistOptions !== undefined ? { persistOptions } : {}),
     }
     return store
 }
 
-describe('withSnapshotPersist', () => {
+describe('withPersist (snapshot)', () => {
     it('hydrates the whole queue from the store', async () => {
-        const store = memorySnapshot(['a', 'b', 'c'])
-        const queue = withSnapshotPersist(buildQueue<string>(), store, {
-            autoSave: false,
-        })
+        const store = memorySnapshot(['a', 'b', 'c'], { autoSave: false })
+        const queue = withPersist(buildQueue<string>(), store)
 
         const loaded = vi.fn()
         queue.on('persist:loaded', loaded)
@@ -33,10 +33,8 @@ describe('withSnapshotPersist', () => {
     })
 
     it('persist dumps the current queue', async () => {
-        const store = memorySnapshot<string>()
-        const queue = withSnapshotPersist(buildQueue<string>(), store, {
-            autoSave: false,
-        })
+        const store = memorySnapshot<string>([], { autoSave: false })
+        const queue = withPersist(buildQueue<string>(), store)
 
         queue.enqueue('x')
         queue.enqueue('y')
@@ -48,7 +46,7 @@ describe('withSnapshotPersist', () => {
     it('auto-saves after mutations', async () => {
         const store = memorySnapshot<number>()
         const saved = vi.fn()
-        const queue = withSnapshotPersist(buildQueue<number>(), store)
+        const queue = withPersist(buildQueue<number>(), store)
 
         queue.on('persist:saved', saved)
         queue.enqueue(1)
@@ -75,7 +73,7 @@ describe('withSnapshotPersist', () => {
             load: async () => [],
             save,
         }
-        const queue = withSnapshotPersist(buildQueue<number>(), store)
+        const queue = withPersist(buildQueue<number>(), store)
 
         for (let i = 0; i < 50; i += 1) {
             queue.enqueue(i)
@@ -94,13 +92,12 @@ describe('withSnapshotPersist', () => {
             const save = vi.fn(async (items: readonly number[]) => {
                 void items
             })
-            const store: SnapshotStore<number> = {
+            const store: SnapshotStore<number> & { persistOptions: { autoSaveDebounceMs: number } } = {
                 load: async () => [],
                 save,
+                persistOptions: { autoSaveDebounceMs: 25 },
             }
-            const queue = withSnapshotPersist(buildQueue<number>(), store, {
-                autoSaveDebounceMs: 25,
-            })
+            const queue = withPersist(buildQueue<number>(), store)
 
             queue.enqueue(1)
             queue.enqueue(2)
@@ -127,10 +124,10 @@ describe('withSnapshotPersist', () => {
     it('flush promotes a pending debounced auto-save immediately', async () => {
         vi.useFakeTimers()
         try {
-            const store = memorySnapshot<string>()
-            const queue = withSnapshotPersist(buildQueue<string>(), store, {
+            const store = memorySnapshot<string>([], {
                 autoSaveDebounceMs: 10_000,
             })
+            const queue = withPersist(buildQueue<string>(), store)
 
             queue.enqueue('a')
             queue.enqueue('b')
@@ -144,25 +141,24 @@ describe('withSnapshotPersist', () => {
     })
 
     it('rejects invalid autoSaveDebounceMs', () => {
-        const store = memorySnapshot<string>()
+        const store = memorySnapshot<string>([], {
+            autoSaveDebounceMs: -1,
+        })
         expect(() =>
-            withSnapshotPersist(buildQueue<string>(), store, {
-                autoSaveDebounceMs: -1,
-            }),
+            withPersist(buildQueue<string>(), store),
         ).toThrow(/autoSaveDebounceMs/)
+
+        const store2 = memorySnapshot<string>([], {
+            autoSaveDebounceMs: 1.5,
+        })
         expect(() =>
-            withSnapshotPersist(buildQueue<string>(), store, {
-                autoSaveDebounceMs: 1.5,
-            }),
+            withPersist(buildQueue<string>(), store2),
         ).toThrow(/autoSaveDebounceMs/)
     })
 
     it('auto-saves after dequeuing an undefined payload', async () => {
         const store = memorySnapshot<string | undefined>()
-        const queue = withSnapshotPersist(
-            buildQueue<string | undefined>(),
-            store,
-        )
+        const queue = withPersist(buildQueue<string | undefined>(), store)
 
         queue.enqueue(undefined)
         queue.enqueue('keep')
@@ -183,7 +179,7 @@ describe('withSnapshotPersist', () => {
             load: async () => ['a', 'b'],
             save,
         }
-        const queue = withSnapshotPersist(buildQueue<string>(), store)
+        const queue = withPersist(buildQueue<string>(), store)
 
         await queue.hydrate()
         await queue.flush()
@@ -194,15 +190,14 @@ describe('withSnapshotPersist', () => {
     })
 
     it('emits persist:error when save fails', async () => {
-        const store: SnapshotStore<number> = {
+        const store: SnapshotStore<number> & { persistOptions: { autoSave: boolean } } = {
             load: async () => [],
             save: async () => {
                 throw new Error('disk full')
             },
+            persistOptions: { autoSave: false },
         }
-        const queue = withSnapshotPersist(buildQueue<number>(), store, {
-            autoSave: false,
-        })
+        const queue = withPersist(buildQueue<number>(), store)
         const onError = vi.fn()
         queue.on('persist:error', onError)
 
@@ -230,7 +225,7 @@ describe('withSnapshotPersist', () => {
                 await saveGate
             },
         }
-        const queue = withSnapshotPersist(buildQueue<string>(), store)
+        const queue = withPersist(buildQueue<string>(), store)
         queue.enqueue('pending')
 
         const hydratePromise = queue.hydrate()
@@ -246,9 +241,9 @@ describe('withSnapshotPersist', () => {
     })
 
     it('hydrate + withWorker drains store via auto-save', async () => {
-        const { withWorker } = await import('../worker/with-worker')
+        const { withWorker } = await import('../../queue/worker/with-worker')
         const store = memorySnapshot(['a', 'b'])
-        const base = withSnapshotPersist(buildQueue<string>(), store)
+        const base = withPersist(buildQueue<string>(), store)
         const queue = withWorker(base, async (item) => item)
 
         const idle = new Promise<void>((resolve) => {
@@ -270,16 +265,15 @@ describe('withSnapshotPersist', () => {
         const loadGate = new Promise<void>((resolve) => {
             releaseLoad = resolve
         })
-        const store: SnapshotStore<string> = {
+        const store: SnapshotStore<string> & { persistOptions: { autoSave: boolean } } = {
             load: async () => {
                 await loadGate
                 return ['a']
             },
             save: async () => {},
+            persistOptions: { autoSave: false },
         }
-        const queue = withSnapshotPersist(buildQueue<string>(), store, {
-            autoSave: false,
-        })
+        const queue = withPersist(buildQueue<string>(), store)
         const pending = queue.hydrate()
 
         await Promise.resolve()
@@ -296,17 +290,16 @@ describe('withSnapshotPersist', () => {
             releaseLoad = resolve
         })
         let loadCount = 0
-        const store: SnapshotStore<string> = {
+        const store: SnapshotStore<string> & { persistOptions: { autoSave: boolean } } = {
             load: async () => {
                 loadCount += 1
                 await loadGate
                 return ['from-store']
             },
             save: async () => {},
+            persistOptions: { autoSave: false },
         }
-        const queue = withSnapshotPersist(buildQueue<string>(), store, {
-            autoSave: false,
-        })
+        const queue = withPersist(buildQueue<string>(), store)
         const first = queue.hydrate()
 
         await Promise.resolve()

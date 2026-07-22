@@ -1,22 +1,18 @@
 import {
     buildQueue,
     buildRouter,
-    withRowPersist,
-    withSnapshotPersist,
+    isRowStore,
+    isSnapshotStore,
+    withPersist,
     withWorker,
     type RouteTarget,
     type Router,
-    type RowRecord,
     type WithWorkerOptions,
     type WorkerFn,
 } from '@qkitt/queue'
 import { freezeConfig } from './config-freeze.util'
 import { configError } from './errors'
-import {
-    isRowStore,
-    isSnapshotStore,
-    resolveAllStores,
-} from './store-resolve.util'
+import { resolveAllStores } from './store-resolve.util'
 import type {
     BuildFromConfigOptions,
     ConfiguredQueue,
@@ -82,29 +78,30 @@ const buildQueueFromConfig = <T>(
         }
 
         if (definition.strategy === 'snapshot') {
-            if (!isSnapshotStore(store)) {
+            if (!isSnapshotStore<T>(store)) {
                 return configError(
                     'INVALID_IMPL',
                     `config.stores.${storeName} is not a SnapshotStore`,
                     `config.stores.${storeName}`,
                 )
             }
-            queue = withSnapshotPersist(queue, store, {
-                autoSave: queueConfig.persist.autoSave,
-                autoSaveDebounceMs: queueConfig.persist.autoSaveDebounceMs,
-            })
+            const storeWithOptions = {
+                ...store,
+                persistOptions: {
+                    autoSave: queueConfig.persist.autoSave,
+                    autoSaveDebounceMs: queueConfig.persist.autoSaveDebounceMs,
+                },
+            }
+            queue = withPersist(queue, storeWithOptions)
         } else {
-            if (!isRowStore(store)) {
+            if (!isRowStore<T>(store)) {
                 return configError(
                     'INVALID_IMPL',
                     `config.stores.${storeName} is not a RowStore`,
                     `config.stores.${storeName}`,
                 )
             }
-            queue = withRowPersist(
-                buildQueue<RowRecord<T>>(buildOptions),
-                store,
-            )
+            queue = withPersist(queue, store)
         }
     }
 

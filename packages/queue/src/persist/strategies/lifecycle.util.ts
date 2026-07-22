@@ -6,7 +6,7 @@
 import {
     createHydrateGate,
     type HydrateGate,
-} from './hydrate-gate.util'
+} from '../hydrate-gate.util'
 import { createWriteChain, type WriteChain } from './write-chain.util'
 
 type PersistenceLifecycle = {

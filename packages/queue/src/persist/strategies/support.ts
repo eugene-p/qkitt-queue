@@ -6,11 +6,11 @@ import {
     hasQueueLayer,
     PERSIST_LAYER,
     WORKER_LAYER,
-} from '../core/layers.util'
+} from '../../queue/core/layers.util'
 
 /**
  * Fail fast when persist is stacked incorrectly.
- * Correct order: `withWorker(withRowPersist(queue, store), worker)`.
+ * Correct order: `withWorker(withPersist(queue, store), worker)`.
  * Do not wrap a worker queue or an already-persisted queue.
  */
 export const assertBareQueueForPersist = (

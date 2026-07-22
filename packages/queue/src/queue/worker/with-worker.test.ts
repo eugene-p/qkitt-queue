@@ -156,7 +156,7 @@ describe('withWorker', () => {
     })
 
     it('hydrate + running worker still drains restored items', async () => {
-        const { withSnapshotPersist } = await import('../persist/with-snapshot-persist')
+        const { withPersist } = await import('../../persist/with-persist')
         const items: number[] = [1, 2]
         const store = {
             load: async () => [...items],
@@ -167,7 +167,7 @@ describe('withWorker', () => {
         }
         const processed: number[] = []
         const queue = withWorker(
-            withSnapshotPersist(buildQueue<number>(), store),
+            withPersist(buildQueue<number>(), store),
             async (item) => {
                 processed.push(item)
             },
@@ -184,7 +184,7 @@ describe('withWorker', () => {
     })
 
     it('hydrate kick drains when restored head is undefined', async () => {
-        const { withSnapshotPersist } = await import('../persist/with-snapshot-persist')
+        const { withPersist } = await import('../../persist/with-persist')
         const items: Array<string | undefined> = [undefined, 'tail']
         const store = {
             load: async () => [...items],
@@ -195,7 +195,7 @@ describe('withWorker', () => {
         }
         const processed: Array<string | undefined> = []
         const queue = withWorker(
-            withSnapshotPersist(buildQueue<string | undefined>(), store),
+            withPersist(buildQueue<string | undefined>(), store),
             async (item) => {
                 processed.push(item)
             },
@@ -325,7 +325,7 @@ describe('withWorker', () => {
     })
 
     it('waits on QueueHydratingError without stopping or emitting pump-error', async () => {
-        const { QueueHydratingError } = await import('../persist/hydrate-gate.util')
+        const { QueueHydratingError } = await import('../../persist/hydrate-gate.util')
         const queue = buildQueue<number>()
         const originalTryDequeue = queue.tryDequeue.bind(queue)
         let failNext = false

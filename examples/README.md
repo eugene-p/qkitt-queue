@@ -19,7 +19,7 @@ npm run examples
 | --- | --- | --- |
 | [`worker-drain`](./worker-drain/main.ts) | Concurrent jobs + drain wait | `buildQueue` → `withWorker` |
 | [`retry-pipeline`](./retry-pipeline/main.ts) | Retries / multi-step | `pipelineWorker` + `retryWorker` → `withWorker` |
-| [`persist-restart`](./persist-restart/main.ts) | Survive restart (snapshot) | `withSnapshotPersist` → `withWorker` |
+| [`persist-restart`](./persist-restart/main.ts) | Survive restart (snapshot) | `withPersist` → `withWorker` |
 | [`router-topics`](./router-topics/main.ts) | Topic fan-out | `buildRouter` + worker queues |
 | [`with-config`](./with-config/main.ts) | Declarative multi-queue | `@qkitt/queue-config` |
 
