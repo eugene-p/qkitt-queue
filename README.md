@@ -115,6 +115,7 @@ const system = await buildFromConfig(
 | [`worker-drain`](./examples/worker-drain/main.ts) | Concurrent backlog drain |
 | [`retry-pipeline`](./examples/retry-pipeline/main.ts) | Multi-step job + flaky retry |
 | [`persist-restart`](./examples/persist-restart/main.ts) | Crash, hydrate, finish work |
+| [`fs-snapshot-store`](./examples/fs-snapshot-store/main.ts) | Custom file snapshot store |
 | [`router-topics`](./examples/router-topics/main.ts) | Topic publish → queues |
 | [`with-config`](./examples/with-config/main.ts) | Same idea via config |
 
@@ -132,7 +133,7 @@ In-process, queue toolkit. Start bare, add a layer as requirements change:
 - **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
 - **Retries** — survive flaky third-party calls (payment capture, carrier API, email or SMS gateway).
 - **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
-- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash).
+- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Built-in memory and Web Storage; custom stores if you implement `SnapshotStore` / `RowStore`.
 - **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
 - **Declarative config** — stand up a multi-queue system from one object (`@qkitt/queue-config`).
 

@@ -46,6 +46,7 @@ Runnable scenarios (worker, retry, persist, router): [`examples/`](../../example
 | Retries / multi-step | [`retryWorker` + `pipelineWorker`](#4-worker-helpers) |
 | Survive restart (snapshot) | [§3 Add persistence](#3-add-persistence), [Persist lifecycle](#persist-lifecycle) |
 | DB-style row persist | [Row](#row) |
+| Custom store (file, etc.) | [Custom stores](#custom-stores) |
 | Topic fan-out | [Topics & routing](#topics--routing) |
 | Declarative multi-queue | [`@qkitt/queue-config`](../queue-config) |
 
@@ -133,6 +134,8 @@ await queue.hydrate() // load from store before accepting work
 queue.enqueue({ id: '1', url: '…' })
 await queue.flush()   // wait for pending saves before exit
 ```
+
+Built-ins: memory and Web Storage. For something else, implement `SnapshotStore` or `RowStore` and pass that instance instead ([Custom stores](#custom-stores)).
 
 #### Persist lifecycle
 
@@ -379,6 +382,8 @@ If a matched binding’s `enqueue` throws, `publish` still counts that binding a
 
 ## Persistence
 
+Built-in stores: in-memory and browser Web Storage (snapshot or row). You can also use your own store as long as it matches `SnapshotStore` or `RowStore` ([Custom stores](#custom-stores)).
+
 Two strategies:
 
 | | Snapshot | Row |
@@ -455,6 +460,28 @@ Web Storage is not multi-tab safe or transactional. Prefer one owning tab, or a 
 
 ### Custom stores
 
+Same API as the built-ins: implement the interface, pass the object to `withPersist`.
+
+```ts
+import type { SnapshotStore } from '@qkitt/queue'
+import { buildQueue, withPersist } from '@qkitt/queue'
+
+const store: SnapshotStore<Job> = {
+  async load() {
+    // return items head → tail
+    return []
+  },
+  async save(items) {
+    // replace the full snapshot
+  },
+}
+
+const queue = withPersist(buildQueue<Job>(), store)
+await queue.hydrate()
+queue.enqueue({ id: '1' })
+await queue.flush()
+```
+
 ```ts
 type SnapshotStore<T> = {
   load: () => readonly T[] | Promise<readonly T[]>
@@ -468,6 +495,13 @@ type RowStore<T> = {
   clear: () => void | Promise<void>
 }
 ```
+
+- `load` / `loadAll` return FIFO order (head first).
+- Row ids must be unique, non-empty strings (not whitespace-only).
+- Optional `persistOptions` on the store object (`autoSave`, `autoSaveDebounceMs`, `createId`) — same as the factories. Omit it for defaults.
+- Queue methods stay sync; store methods may be async.
+
+Example (Node file snapshot): [`examples/fs-snapshot-store`](../../examples/fs-snapshot-store/main.ts). With `@qkitt/queue-config`, pass the instance as `{ strategy, impl }` under `stores`.
 
 ## Events
 
@@ -683,7 +717,7 @@ Strategy is inferred from the store's method shape at runtime:
 - `load` + `save` → snapshot
 - `loadAll` + `insert` + `remove` + `clear` → row
 
-Strategy options are read from `store.persistOptions` (attached by factories or custom authors). Custom stores that omit it get defaults.
+Strategy options are read from `store.persistOptions` (set by factories, or on your store). Omitted options use defaults.
 
 **Snapshot options** (via factory or `persistOptions`):
 

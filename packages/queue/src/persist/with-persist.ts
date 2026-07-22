@@ -21,8 +21,8 @@ import { attachSnapshotPersist } from './strategies/snapshot'
  * - `load` + `save` → snapshot persist
  * - `loadAll` + `insert` + `remove` + `clear` → row persist
  *
- * Strategy options are read from `store.persistOptions` (attached by factories
- * or custom authors). Custom stores that omit it get defaults.
+ * Strategy options are read from `store.persistOptions` (set by factories, or
+ * on your store). Omitted options use defaults.
  *
  * **Composition (required):** wrap the bare queue, then the worker:
  * `withWorker(withPersist(buildQueue(), store), worker)`.

@@ -47,6 +47,9 @@ temp/
 .docs/
 agent-tools/
 
+# Example runtime data (e.g. fs snapshot demo)
+examples/**/.data/
+
 # Local agent / audit scratch (do not commit)
 AGENTS.md
 performance-audit.md
