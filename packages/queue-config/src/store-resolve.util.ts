@@ -1,16 +1,12 @@
 import {
-    createLocalStorageRowStore,
-    createLocalStorageSnapshotStore,
     createMemoryRowStore,
     createMemorySnapshotStore,
-    createSessionStorageRowStore,
-    createSessionStorageSnapshotStore,
     createWebRowStore,
     createWebSnapshotStore,
-    isRowStore,
-    isSnapshotStore,
+    type JsonCodec,
     type RowStore,
     type SnapshotStore,
+    type WebStorageLike,
 } from '@qkitt/queue'
 import { configError } from './errors'
 import { assertWebStorageKey } from './parse.util'
@@ -23,43 +19,38 @@ import type {
 
 type WebAdapter = Exclude<BuiltinStoreAdapter, 'memory'>
 
-type AdapterFactories = {
-    snapshot: (key: string, options: BuildFromConfigOptions) => SnapshotStore<unknown>
-    row: (key: string, options: BuildFromConfigOptions) => RowStore<unknown>
-}
-
 /**
- * Internal registry of built-in adapters.
- * Add a new built-in by extending {@link BuiltinStoreAdapter} and this map —
- * resolution logic stays unchanged.
+ * Lazy global storage proxy matching core's `lazyGlobalStorage` behavior
+ * without importing private helpers. Resolves on first use.
  */
-const WEB_ADAPTER_FACTORIES: Record<WebAdapter, AdapterFactories> = {
-    localStorage: {
-        snapshot: (key, options) =>
-            options.storage
-                ? createWebSnapshotStore({ key, storage: options.storage })
-                : createLocalStorageSnapshotStore(key),
-        row: (key, options) =>
-            options.storage
-                ? createWebRowStore({ key, storage: options.storage })
-                : createLocalStorageRowStore(key),
-    },
-    sessionStorage: {
-        snapshot: (key, options) =>
-            options.storage
-                ? createWebSnapshotStore({ key, storage: options.storage })
-                : createSessionStorageSnapshotStore(key),
-        row: (key, options) =>
-            options.storage
-                ? createWebRowStore({ key, storage: options.storage })
-                : createSessionStorageRowStore(key),
-    },
+const lazyGlobalStorage = (
+    name: 'localStorage' | 'sessionStorage',
+): WebStorageLike => {
+    let cached: WebStorageLike | undefined
+    const resolve = (): WebStorageLike => {
+        if (cached) return cached
+        const storage = (
+            globalThis as unknown as Record<string, WebStorageLike | undefined>
+        )[name]
+        if (!storage) {
+            throw new Error(
+                `${name} is not available; pass an explicit \`storage\` option`,
+            )
+        }
+        cached = storage
+        return cached
+    }
+    return {
+        getItem: (key) => resolve().getItem(key),
+        setItem: (key, value) => resolve().setItem(key, value),
+        removeItem: (key) => resolve().removeItem(key),
+    }
 }
 
-const MEMORY_FACTORIES = {
-    snapshot: <T>() => createMemorySnapshotStore<T>(),
-    row: <T>() => createMemoryRowStore<T>(),
-} as const
+const resolveWebStorage = (
+    adapter: WebAdapter,
+    options: BuildFromConfigOptions,
+): WebStorageLike => options.storage ?? lazyGlobalStorage(adapter)
 
 /**
  * Materialize one store definition into a live SnapshotStore or RowStore.
@@ -68,6 +59,8 @@ const MEMORY_FACTORIES = {
  * Resolution is synchronous. If a future adapter needs async init
  * (IndexedDB, network-backed stores), introduce an async path rather than
  * blocking here — {@link resolveAllStores} would need a matching redesign.
+ *
+ * Store shape was already validated in parse; custom `impl` is trusted here.
  */
 const resolveStore = <T>(
     storeName: string,
@@ -75,30 +68,15 @@ const resolveStore = <T>(
     options: BuildFromConfigOptions,
 ): ResolvedStore<T> => {
     if ('impl' in definition) {
-        const impl = definition.impl as ResolvedStore<T>
-        if (definition.strategy === 'snapshot' && !isSnapshotStore<T>(impl)) {
-            return configError(
-                'INVALID_IMPL',
-                `config.stores.${storeName}.impl must be a SnapshotStore (strategy is "snapshot")`,
-                `config.stores.${storeName}.impl`,
-            )
-        }
-        if (definition.strategy === 'row' && !isRowStore<T>(impl)) {
-            return configError(
-                'INVALID_IMPL',
-                `config.stores.${storeName}.impl must be a RowStore (strategy is "row")`,
-                `config.stores.${storeName}.impl`,
-            )
-        }
-        return impl
+        return definition.impl as ResolvedStore<T>
     }
 
     const { adapter, strategy } = definition
 
     if (adapter === 'memory') {
         return strategy === 'snapshot'
-            ? MEMORY_FACTORIES.snapshot<T>()
-            : MEMORY_FACTORIES.row<T>()
+            ? createMemorySnapshotStore<T>()
+            : createMemoryRowStore<T>()
     }
 
     const key = assertWebStorageKey(
@@ -106,12 +84,23 @@ const resolveStore = <T>(
         definition.key,
         `config.stores.${storeName}.key`,
     )
+    const storage = resolveWebStorage(adapter, options)
 
-    const factories = WEB_ADAPTER_FACTORIES[adapter]
     if (strategy === 'snapshot') {
-        return factories.snapshot(key, options) as SnapshotStore<T>
+        const codec = definition.codec as JsonCodec<T[]> | undefined
+        return createWebSnapshotStore<T>({
+            key,
+            storage,
+            ...(codec !== undefined ? { codec } : {}),
+        }) as SnapshotStore<T>
     }
-    return factories.row(key, options) as RowStore<T>
+
+    const itemCodec = definition.itemCodec as JsonCodec<T> | undefined
+    return createWebRowStore<T>({
+        key,
+        storage,
+        ...(itemCodec !== undefined ? { itemCodec } : {}),
+    }) as RowStore<T>
 }
 
 export const resolveAllStores = <T>(

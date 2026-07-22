@@ -11,12 +11,16 @@ export type ConfigErrorCode =
     | 'INVALID_STRATEGY'
     | 'KEY_REQUIRED'
     | 'SHARED_STORE'
+    | 'UNUSED_STORE'
+    | 'DUPLICATE_STORAGE_KEY'
     | 'UNKNOWN_QUEUE'
     | 'JS_ONLY_FIELD'
     | 'INVALID_JSON'
     | 'INVALID_IMPL'
     | 'CONFLICTING_FIELDS'
     | 'MISSING_FIELD'
+    | 'INVALID_FIELD'
+    | 'ASYNC_REQUIRED'
 
 type ConfigValidationErrorOptions = {
     code: ConfigErrorCode

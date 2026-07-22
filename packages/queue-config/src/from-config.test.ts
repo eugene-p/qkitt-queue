@@ -3,12 +3,18 @@ import {
     createMemoryRowStore,
     createMemorySnapshotStore,
     QueueFullError,
+    type JsonCodec,
     type RouteMessage,
+    type SnapshotStore,
     type WebStorageLike,
 } from '@qkitt/queue'
 import { ConfigValidationError } from './errors'
-import { buildFromConfig, buildFromJson } from './from-config'
-import { isPlainObject } from './parse.util'
+import {
+    buildFromConfig,
+    buildFromConfigSync,
+    buildFromJson,
+} from './from-config'
+import { isObjectLike, isPlainObject } from './parse.util'
 import {
     defineConfig,
     parseSystemConfig,
@@ -47,7 +53,7 @@ const expectConfigError = (
     }
 }
 
-describe('isPlainObject', () => {
+describe('isPlainObject / isObjectLike', () => {
     it('accepts plain objects and null-prototype objects', () => {
         expect(isPlainObject({})).toBe(true)
         expect(isPlainObject(Object.create(null))).toBe(true)
@@ -60,6 +66,14 @@ describe('isPlainObject', () => {
         expect(isPlainObject(new Map())).toBe(false)
         expect(isPlainObject(new Set())).toBe(false)
         expect(isPlainObject(/re/)).toBe(false)
+    })
+
+    it('isObjectLike accepts class instances and plain objects', () => {
+        class Box {}
+        expect(isObjectLike({})).toBe(true)
+        expect(isObjectLike(new Box())).toBe(true)
+        expect(isObjectLike([])).toBe(false)
+        expect(isObjectLike(null)).toBe(false)
     })
 })
 
@@ -726,9 +740,10 @@ describe('buildFromConfig', () => {
 })
 
 describe('buildFromConfig integration', () => {
-    it('flushAll no-ops when no persist queues', async () => {
+    it('flushAll / persistAll no-op when no persist queues', async () => {
         const system = await buildFromConfig({ queues: { a: {} } })
         await expect(system.flushAll()).resolves.toBeUndefined()
+        await expect(system.persistAll()).resolves.toBeUndefined()
         await expect(system.hydrateAll()).resolves.toBeUndefined()
     })
 
@@ -1120,5 +1135,384 @@ describe('queue peer API contract (integration)', () => {
         expect(system.queues.qSess.toArray()).toEqual(['s'])
         expect(storage.getItem('c:local:order')).toBeTruthy()
         expect(storage.getItem('c:sess')).toBeTruthy()
+    })
+})
+
+describe('audit fixes (impl, persistOptions, validation, sync)', () => {
+    it('accepts class-based SnapshotStore impl', async () => {
+        class ClassSnap implements SnapshotStore<string> {
+            data: string[] = ['classed']
+            load = () => this.data
+            save = (items: readonly string[]) => {
+                this.data = [...items]
+            }
+        }
+        const impl = new ClassSnap()
+        const system = await buildFromConfig({
+            stores: {
+                jobs: { strategy: 'snapshot', impl },
+            },
+            queues: {
+                jobs: { persist: { store: 'jobs' } },
+            },
+        })
+        expect(system.queues.jobs.toArray()).toEqual(['classed'])
+        system.queues.jobs.enqueue('next')
+        await system.flushAll()
+        expect(impl.data).toEqual(['classed', 'next'])
+    })
+
+    it('preserves store persistOptions.autoSave when queue omits it', async () => {
+        const store = createMemorySnapshotStore<string>([], {
+            autoSave: false,
+        })
+
+        const system = await buildFromConfig({
+            stores: {
+                jobs: { strategy: 'snapshot', impl: store },
+            },
+            queues: {
+                jobs: { persist: { store: 'jobs' } },
+            },
+            hydrate: false,
+        })
+
+        system.queues.jobs.enqueue('y')
+        // autoSave:false on store must be preserved — nothing written yet
+        expect(store.data).toEqual([])
+        // flush drains pending auto-saves only; explicit persist writes
+        await system.flushAll()
+        expect(store.data).toEqual([])
+        await system.persistAll()
+        expect(store.data).toEqual(['y'])
+    })
+
+    it('queue autoSave overrides store persistOptions', async () => {
+        const store = createMemorySnapshotStore<string>([], {
+            autoSave: false,
+        })
+
+        const system = await buildFromConfig({
+            stores: {
+                jobs: { strategy: 'snapshot', impl: store },
+            },
+            queues: {
+                jobs: {
+                    persist: { store: 'jobs', autoSave: true },
+                },
+            },
+            hydrate: false,
+        })
+
+        system.queues.jobs.enqueue('auto')
+        await vi.waitFor(() => {
+            expect(store.data).toEqual(['auto'])
+        })
+    })
+
+    it('rejects autoSave on row persist config', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        r: { adapter: 'memory', strategy: 'row' },
+                    },
+                    queues: {
+                        q: { persist: { store: 'r', autoSave: false } },
+                    },
+                }),
+            'INVALID_FIELD',
+            /autoSave is only valid for snapshot/,
+        )
+    })
+
+    it('rejects autoSaveDebounceMs on row persist config', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        r: { adapter: 'memory', strategy: 'row' },
+                    },
+                    queues: {
+                        q: {
+                            persist: {
+                                store: 'r',
+                                autoSaveDebounceMs: 10,
+                            },
+                        },
+                    },
+                }),
+            'INVALID_FIELD',
+            /autoSaveDebounceMs is only valid for snapshot/,
+        )
+    })
+
+    it('rejects createId on snapshot persist config', () => {
+        expectConfigError(
+            () =>
+                defineConfig({
+                    stores: {
+                        s: { adapter: 'memory', strategy: 'snapshot' },
+                    },
+                    queues: {
+                        q: {
+                            persist: {
+                                store: 's',
+                                createId: () => 'x',
+                            },
+                        },
+                    },
+                }),
+            'INVALID_FIELD',
+            /createId is only valid for row/,
+        )
+    })
+
+    it('rejects createId in data-only JSON validation', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        r: { adapter: 'memory', strategy: 'row' },
+                    },
+                    queues: {
+                        q: {
+                            persist: {
+                                store: 'r',
+                                createId: () => 'x',
+                            },
+                        },
+                    },
+                }),
+            'JS_ONLY_FIELD',
+            /createId/,
+        )
+    })
+
+    it('applies createId for row persist from config', async () => {
+        let n = 0
+        const store = createMemoryRowStore<string>()
+        const system = await buildFromConfig({
+            stores: {
+                jobs: { strategy: 'row', impl: store },
+            },
+            queues: {
+                jobs: {
+                    persist: {
+                        store: 'jobs',
+                        createId: () => `custom-${++n}`,
+                    },
+                },
+            },
+            hydrate: false,
+        })
+
+        system.queues.jobs.enqueue('a')
+        system.queues.jobs.enqueue('b')
+        await system.flushAll()
+        expect(system.queues.jobs.rowIds?.()).toEqual([
+            'custom-1',
+            'custom-2',
+        ])
+        expect(store.rows.map((r) => r.id)).toEqual([
+            'custom-1',
+            'custom-2',
+        ])
+    })
+
+    it('rejects unused stores', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        used: { adapter: 'memory', strategy: 'row' },
+                        orphan: { adapter: 'memory', strategy: 'snapshot' },
+                    },
+                    queues: {
+                        q: { persist: { store: 'used' } },
+                    },
+                }),
+            'UNUSED_STORE',
+            /orphan/,
+        )
+    })
+
+    it('rejects duplicate web storage keys', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        a: {
+                            adapter: 'localStorage',
+                            strategy: 'row',
+                            key: 'same',
+                        },
+                        b: {
+                            adapter: 'localStorage',
+                            strategy: 'snapshot',
+                            key: 'same',
+                        },
+                    },
+                    queues: {
+                        q1: { persist: { store: 'a' } },
+                        q2: { persist: { store: 'b' } },
+                    },
+                }),
+            'DUPLICATE_STORAGE_KEY',
+            /same/,
+        )
+    })
+
+    it('allows same key on different web adapters', () => {
+        const config = validateSystemConfig({
+            stores: {
+                a: {
+                    adapter: 'localStorage',
+                    strategy: 'row',
+                    key: 'shared-name',
+                },
+                b: {
+                    adapter: 'sessionStorage',
+                    strategy: 'snapshot',
+                    key: 'shared-name',
+                },
+            },
+            queues: {
+                q1: { persist: { store: 'a' } },
+                q2: { persist: { store: 'b' } },
+            },
+        })
+        expect(config.stores?.a).toBeDefined()
+        expect(config.stores?.b).toBeDefined()
+    })
+
+    it('buildFromConfigSync works without hydrate', () => {
+        const system = buildFromConfigSync({
+            queues: { a: {}, b: {} },
+        })
+        system.queues.a.enqueue(1)
+        expect(system.queues.a.dequeue()).toBe(1)
+    })
+
+    it('buildFromConfigSync throws ASYNC_REQUIRED when hydrate needed', () => {
+        expectConfigError(
+            () =>
+                buildFromConfigSync({
+                    stores: {
+                        s: { adapter: 'memory', strategy: 'snapshot' },
+                    },
+                    queues: {
+                        q: { persist: { store: 's' } },
+                    },
+                }),
+            'ASYNC_REQUIRED',
+            /hydrate/,
+        )
+    })
+
+    it('buildFromConfigSync works with hydrate: false and persist', () => {
+        const system = buildFromConfigSync({
+            stores: {
+                s: { adapter: 'memory', strategy: 'row' },
+            },
+            queues: {
+                q: { persist: { store: 's' } },
+            },
+            hydrate: false,
+        })
+        system.queues.q.enqueue('x')
+        expect(system.queues.q.size()).toBe(1)
+    })
+
+    it('applies web snapshot codec from store config', async () => {
+        const storage = createMemoryWebStorage()
+        const codec: JsonCodec<string[]> = {
+            serialize: (items) => `WRAP:${JSON.stringify(items)}`,
+            deserialize: (raw) => {
+                expect(raw.startsWith('WRAP:')).toBe(true)
+                return JSON.parse(raw.slice(5)) as string[]
+            },
+        }
+        storage.setItem('q:codec', 'WRAP:["pre"]')
+
+        const system = await buildFromConfig(
+            {
+                stores: {
+                    snap: {
+                        adapter: 'localStorage',
+                        strategy: 'snapshot',
+                        key: 'q:codec',
+                        codec,
+                    },
+                },
+                queues: {
+                    jobs: {
+                        persist: { store: 'snap', autoSave: false },
+                    },
+                },
+            },
+            { storage },
+        )
+
+        expect(system.queues.jobs.toArray()).toEqual(['pre'])
+        system.queues.jobs.enqueue('live')
+        await system.persistAll()
+        expect(storage.getItem('q:codec')).toBe('WRAP:["pre","live"]')
+    })
+
+    it('rejects codec on memory adapter', () => {
+        expectConfigError(
+            () =>
+                defineConfig({
+                    stores: {
+                        m: {
+                            adapter: 'memory',
+                            strategy: 'snapshot',
+                            codec: {
+                                serialize: () => '[]',
+                                deserialize: () => [],
+                            },
+                        },
+                    },
+                    queues: {
+                        q: { persist: { store: 'm' } },
+                    },
+                }),
+            'INVALID_FIELD',
+            /codec is only valid for localStorage/,
+        )
+    })
+
+    it('rejects codec in JSON validation', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    stores: {
+                        s: {
+                            adapter: 'localStorage',
+                            strategy: 'snapshot',
+                            key: 'k',
+                            codec: {
+                                serialize: () => '[]',
+                                deserialize: () => [],
+                            },
+                        },
+                    },
+                    queues: {
+                        q: { persist: { store: 's' } },
+                    },
+                }),
+            'JS_ONLY_FIELD',
+            /codec/,
+        )
+    })
+
+    it('skipValidate trusts a pre-validated config', async () => {
+        const config = defineConfig({
+            queues: { jobs: {} },
+        })
+        const system = await buildFromConfig(config, { skipValidate: true })
+        system.queues.jobs.enqueue(1)
+        expect(system.queues.jobs.dequeue()).toBe(1)
     })
 })

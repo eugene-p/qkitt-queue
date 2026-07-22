@@ -25,8 +25,10 @@ const freezePlainData = <T extends object>(value: T): Readonly<T> => {
     return Object.freeze(copy) as Readonly<T>
 }
 
-const freezePersist = (persist: PersistConfig): Readonly<PersistConfig> =>
-    Object.freeze({ ...persist })
+const freezePersist = (persist: PersistConfig): Readonly<PersistConfig> => {
+    // Keep createId as a live function reference; freeze the wrapper only.
+    return Object.freeze({ ...persist })
+}
 
 const freezeWorker = (worker: WorkerConfig): WorkerConfig => {
     if (typeof worker === 'function') {
@@ -48,7 +50,7 @@ const freezeQueueConfig = (queue: QueueConfig): Readonly<QueueConfig> => {
 }
 
 /**
- * Freeze a store definition without deep-freezing `impl` (live store instance).
+ * Freeze a store definition without deep-freezing `impl` / codecs (live refs).
  */
 const freezeStoreDefinition = (
     store: StoreDefinition,
@@ -56,6 +58,10 @@ const freezeStoreDefinition = (
     if ('impl' in store) {
         // Copy + freeze wrapper only — do not walk into the store instance
         // (memory stores are plain objects with mutable internal arrays).
+        return Object.freeze({ ...store }) as Readonly<StoreDefinition>
+    }
+    // Builtin defs may hold codec function refs — shallow freeze only.
+    if ('codec' in store || 'itemCodec' in store) {
         return Object.freeze({ ...store }) as Readonly<StoreDefinition>
     }
     return freezePlainData(store) as Readonly<StoreDefinition>

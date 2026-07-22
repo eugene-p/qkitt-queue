@@ -14,6 +14,7 @@ import {
     expectNonNegativeInteger,
     expectPositiveInteger,
     expectString,
+    isJsonCodecLike,
     isPlainObject,
     isRowStoreLike,
     isSnapshotStoreLike,
@@ -55,6 +56,13 @@ const parseStoreDefinition = (
             return configError(
                 'CONFLICTING_FIELDS',
                 `${path} cannot set both "adapter" and "impl"`,
+                path,
+            )
+        }
+        if (obj.codec !== undefined || obj.itemCodec !== undefined) {
+            return configError(
+                'CONFLICTING_FIELDS',
+                `${path} cannot set codec/itemCodec with custom "impl" (configure the store itself)`,
                 path,
             )
         }
@@ -108,11 +116,81 @@ const parseStoreDefinition = (
         assertWebStorageKey(adapter, key, `${path}.key`)
     }
 
+    if (obj.codec !== undefined) {
+        if (!allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.codec is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.codec`,
+            )
+        }
+        if (strategy !== 'snapshot') {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.codec is only valid for snapshot stores`,
+                `${path}.codec`,
+            )
+        }
+        if (adapter === 'memory') {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.codec is only valid for localStorage / sessionStorage adapters`,
+                `${path}.codec`,
+            )
+        }
+        if (!isJsonCodecLike(obj.codec)) {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.codec must be a JsonCodec (serialize + deserialize)`,
+                `${path}.codec`,
+            )
+        }
+    }
+
+    if (obj.itemCodec !== undefined) {
+        if (!allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.itemCodec is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.itemCodec`,
+            )
+        }
+        if (strategy !== 'row') {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.itemCodec is only valid for row stores`,
+                `${path}.itemCodec`,
+            )
+        }
+        if (adapter === 'memory') {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.itemCodec is only valid for localStorage / sessionStorage adapters`,
+                `${path}.itemCodec`,
+            )
+        }
+        if (!isJsonCodecLike(obj.itemCodec)) {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.itemCodec must be a JsonCodec (serialize + deserialize)`,
+                `${path}.itemCodec`,
+            )
+        }
+    }
+
     if (strategy === 'snapshot') {
         return {
             strategy: 'snapshot',
             adapter,
             ...(key !== undefined ? { key } : {}),
+            ...(obj.codec !== undefined
+                ? {
+                      codec: obj.codec as Extract<
+                          StoreDefinition,
+                          { strategy: 'snapshot'; adapter: unknown }
+                      >['codec'],
+                  }
+                : {}),
         }
     }
 
@@ -120,6 +198,14 @@ const parseStoreDefinition = (
         strategy: 'row',
         adapter,
         ...(key !== undefined ? { key } : {}),
+        ...(obj.itemCodec !== undefined
+            ? {
+                  itemCodec: obj.itemCodec as Extract<
+                      StoreDefinition,
+                      { strategy: 'row'; adapter: unknown }
+                  >['itemCodec'],
+              }
+            : {}),
     }
 }
 
@@ -127,6 +213,8 @@ const parsePersistConfig = (
     value: unknown,
     path: string,
     storeNames: ReadonlySet<string>,
+    storeStrategies: ReadonlyMap<string, 'snapshot' | 'row'>,
+    { allowJs }: { allowJs: boolean },
 ): PersistConfig => {
     const obj = expectPlainObject(value, path)
     const store = expectString(obj.store, `${path}.store`)
@@ -137,6 +225,8 @@ const parsePersistConfig = (
             `${path}.store`,
         )
     }
+
+    const strategy = storeStrategies.get(store)!
 
     const autoSave =
         obj.autoSave === undefined
@@ -150,12 +240,54 @@ const parsePersistConfig = (
                   `${path}.autoSaveDebounceMs`,
               )
 
+    if (autoSave !== undefined && strategy === 'row') {
+        return configError(
+            'INVALID_FIELD',
+            `${path}.autoSave is only valid for snapshot stores (store "${store}" uses strategy "row")`,
+            `${path}.autoSave`,
+        )
+    }
+    if (autoSaveDebounceMs !== undefined && strategy === 'row') {
+        return configError(
+            'INVALID_FIELD',
+            `${path}.autoSaveDebounceMs is only valid for snapshot stores (store "${store}" uses strategy "row")`,
+            `${path}.autoSaveDebounceMs`,
+        )
+    }
+
+    let createId: (() => string) | undefined
+    if (obj.createId !== undefined) {
+        if (!allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.createId is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.createId`,
+            )
+        }
+        if (strategy !== 'row') {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.createId is only valid for row stores (store "${store}" uses strategy "snapshot")`,
+                `${path}.createId`,
+            )
+        }
+        if (typeof obj.createId !== 'function') {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.createId must be a function`,
+                `${path}.createId`,
+            )
+        }
+        createId = obj.createId as () => string
+    }
+
     return {
         store,
         ...(autoSave !== undefined ? { autoSave } : {}),
         ...(autoSaveDebounceMs !== undefined
             ? { autoSaveDebounceMs }
             : {}),
+        ...(createId !== undefined ? { createId } : {}),
     }
 }
 
@@ -201,6 +333,7 @@ const parseQueueConfig = (
     value: unknown,
     path: string,
     storeNames: ReadonlySet<string>,
+    storeStrategies: ReadonlyMap<string, 'snapshot' | 'row'>,
     { allowJs }: { allowJs: boolean },
 ): QueueConfig => {
     const obj = expectPlainObject(value, path)
@@ -215,6 +348,8 @@ const parseQueueConfig = (
             obj.persist,
             `${path}.persist`,
             storeNames,
+            storeStrategies,
+            { allowJs },
         )
     }
 
@@ -325,6 +460,31 @@ const parseSystemConfigValue = (
     }
 
     const storeNames = new Set(Object.keys(stores))
+    const storeStrategies = new Map<string, 'snapshot' | 'row'>()
+    for (const [name, def] of Object.entries(stores)) {
+        storeStrategies.set(name, def.strategy)
+    }
+
+    // Duplicate web storage keys (adapter + key) corrupt each other.
+    const storageKeyUsage = new Map<string, string>()
+    for (const [name, def] of Object.entries(stores)) {
+        if (!('adapter' in def)) continue
+        if (def.adapter !== 'localStorage' && def.adapter !== 'sessionStorage') {
+            continue
+        }
+        if (def.key === undefined) continue
+        const fingerprint = `${def.adapter}\0${def.key}`
+        const existing = storageKeyUsage.get(fingerprint)
+        if (existing !== undefined) {
+            return configError(
+                'DUPLICATE_STORAGE_KEY',
+                `Stores "${existing}" and "${name}" both use ${def.adapter} key "${def.key}". ` +
+                    'Each web store must use a unique adapter+key pair.',
+                `config.stores.${name}.key`,
+            )
+        }
+        storageKeyUsage.set(fingerprint, name)
+    }
 
     const queues: Record<string, QueueConfig> = {}
     for (const name of queueNames) {
@@ -339,6 +499,7 @@ const parseSystemConfigValue = (
             root.queues[name],
             `config.queues.${name}`,
             storeNames,
+            storeStrategies,
             { allowJs: options.allowJs },
         )
     }
@@ -358,6 +519,16 @@ const parseSystemConfigValue = (
             )
         }
         storeUsage.set(storeName, queueName)
+    }
+
+    for (const storeName of storeNames) {
+        if (!storeUsage.has(storeName)) {
+            return configError(
+                'UNUSED_STORE',
+                `Store "${storeName}" is defined in config.stores but not referenced by any queue.persist.store`,
+                `config.stores.${storeName}`,
+            )
+        }
     }
 
     const config: SystemConfig = { queues }

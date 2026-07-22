@@ -108,7 +108,7 @@ Named adapters. Queues reference them with `persist.store`.
 | Kind | Shape | Notes |
 | --- | --- | --- |
 | Built-in | `{ adapter, strategy, key? }` | Library constructs the store |
-| Custom (JS only) | `{ strategy, impl }` | Your `SnapshotStore` / `RowStore` instance |
+| Custom (JS only) | `{ strategy, impl }` | Your `SnapshotStore` / `RowStore` instance (plain object or class) |
 
 | Field | Values | Notes |
 | --- | --- | --- |
@@ -116,6 +116,8 @@ Named adapters. Queues reference them with `persist.store`.
 | `strategy` | `'snapshot'` \| `'row'` | Required |
 | `key` | `string` | Required for web adapters |
 | `impl` | store instance | JS only — no JSON |
+| `codec` | `JsonCodec` | Snapshot + web adapters only (JS) |
+| `itemCodec` | `JsonCodec` | Row + web adapters only (JS) |
 
 ```ts
 stores: {
@@ -125,14 +127,14 @@ stores: {
 }
 ```
 
-Each named store may back **at most one** queue (shared store definitions are rejected at validation).
+Each named store must back **exactly one** queue (shared or unused store names are rejected). Web stores must use unique `adapter`+`key` pairs.
 
 ### `queues`
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `maxSize` | `number` | Safe integer ≥ 1; same as `buildQueue({ maxSize })` |
-| `persist` | `{ store, autoSave?, autoSaveDebounceMs? }` | `store` = name in `stores`; `autoSave` / `autoSaveDebounceMs` snapshot-only (`autoSave` default `true`, debounce default microtask/`0`) |
+| `persist` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` | `store` = name in `stores`; `autoSave` / `autoSaveDebounceMs` **snapshot-only**; `createId` **row-only** (JS) |
 | `worker` | `WorkerFn` or `{ run, concurrency?, autoStart? }` | **JS only** — not available in JSON |
 
 ```ts
@@ -231,8 +233,20 @@ buildFromConfig<T extends SystemConfig>(
 | Option | Type | Notes |
 | --- | --- | --- |
 | `storage` | `WebStorageLike` | Inject Web Storage (tests, Node, mocks) for `localStorage` / `sessionStorage` adapters |
+| `skipValidate` | `boolean` | Skip re-validation when config was already validated (`defineConfig` / parse) |
 
 Validates, resolves stores, builds queues (persist → worker), applies router bindings, optionally hydrates.
+
+### `buildFromConfigSync`
+
+```ts
+buildFromConfigSync<T extends SystemConfig>(
+  config: T,
+  options?: BuildFromConfigOptions,
+): ConfiguredSystem<T>
+```
+
+Same wiring as `buildFromConfig`, but **synchronous**. Throws `ASYNC_REQUIRED` if hydrate would run — pass `hydrate: false` or use the async builder when queues have `persist` and you want auto-hydrate.
 
 ### `buildFromJson`
 
@@ -290,18 +304,19 @@ Returned by `buildFromConfig` / `buildFromJson`:
 
 | Property / method | Description |
 | --- | --- |
-| `queues` | Map of configured queues (worker/persist methods present when configured) |
+| `queues` | Map of configured queues (worker/persist methods required in types when configured) |
 | `stores` | Resolved store instances by name |
 | `router` | Present when `router` was set in config |
 | `hydrateAll()` | Hydrate every queue that exposes `hydrate` |
-| `flushAll()` | Flush every queue that exposes `flush` |
+| `flushAll()` | Drain pending auto-saves / write chains (`flush`) |
+| `persistAll()` | Explicit snapshot `persist()` on every queue that has it |
 | `config` | Nested plain data frozen; worker functions and store `impl` refs preserved |
 
 **`ConfiguredQueue`** — base `Queue` plus, when configured:
 
 | Method | When |
 | --- | --- |
-| `start` / `stop` / `isRunning` / … | Worker attached |
+| `start` / `stop` / `isRunning` / `activeCount` / … | Worker attached |
 | `hydrate` / `flush` / `persist?` / `rowIds?` | Persist attached |
 
 ### Config types
@@ -310,13 +325,14 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | --- | --- |
 | `SystemConfig` | Top-level config |
 | `StoreDefinition` | Built-in or custom store entry |
-| `PersistConfig` | `{ store, autoSave?, autoSaveDebounceMs? }` on a queue |
+| `PersistConfig` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` on a queue |
 | `QueueConfig` | `maxSize`, `persist`, `worker` |
 | `WorkerConfig` | Function or `{ run, concurrency?, autoStart? }` |
 | `RouterConfig` / `BindingConfig` | Router section |
-| `BuildFromConfigOptions` | `{ storage? }` |
+| `BuildFromConfigOptions` | `{ storage?, skipValidate? }` |
 | `BuiltinStoreAdapter` | `'memory' \| 'localStorage' \| 'sessionStorage'` |
 | `ResolvedStore` | `SnapshotStore \| RowStore` after build |
+| `ConfiguredQueueFor` | Precise queue type from one `QueueConfig` entry |
 | `ConfigErrorCode` | Union of validation error codes |
 | `ConfigValidationError` | Typed error class (see above) |
 

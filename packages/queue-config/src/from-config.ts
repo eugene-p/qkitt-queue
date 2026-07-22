@@ -1,12 +1,12 @@
 import {
     buildQueue,
     buildRouter,
-    isRowStore,
-    isSnapshotStore,
     withPersist,
     withWorker,
     type RouteTarget,
     type Router,
+    type RowStore,
+    type SnapshotStore,
     type WithWorkerOptions,
     type WorkerFn,
 } from '@qkitt/queue'
@@ -51,6 +51,64 @@ const resolveWorker = (
 const asRouteTarget = <T>(queue: ConfiguredQueue<T>): RouteTarget =>
     queue as unknown as RouteTarget
 
+type SnapshotStoreWithOptions<T> = SnapshotStore<T> & {
+    persistOptions?: {
+        autoSave?: boolean
+        autoSaveDebounceMs?: number
+    }
+}
+
+type RowStoreWithOptions<T> = RowStore<T> & {
+    persistOptions?: {
+        createId?: () => string
+    }
+}
+
+/**
+ * Merge queue-level persist options onto a store without clobbering
+ * options already set on the store instance (e.g. factory defaults).
+ */
+const withSnapshotPersistOptions = <T>(
+    store: SnapshotStoreWithOptions<T>,
+    persist: {
+        autoSave?: boolean
+        autoSaveDebounceMs?: number
+    },
+): SnapshotStoreWithOptions<T> => {
+    const hasQueueOpts =
+        persist.autoSave !== undefined ||
+        persist.autoSaveDebounceMs !== undefined
+    if (!hasQueueOpts) return store
+
+    return {
+        ...store,
+        persistOptions: {
+            ...store.persistOptions,
+            ...(persist.autoSave !== undefined
+                ? { autoSave: persist.autoSave }
+                : {}),
+            ...(persist.autoSaveDebounceMs !== undefined
+                ? { autoSaveDebounceMs: persist.autoSaveDebounceMs }
+                : {}),
+        },
+    }
+}
+
+const withRowPersistOptions = <T>(
+    store: RowStoreWithOptions<T>,
+    persist: { createId?: () => string },
+): RowStoreWithOptions<T> => {
+    if (persist.createId === undefined) return store
+
+    return {
+        ...store,
+        persistOptions: {
+            ...store.persistOptions,
+            createId: persist.createId,
+        },
+    }
+}
+
 const buildQueueFromConfig = <T>(
     queueName: string,
     queueConfig: QueueConfig,
@@ -78,30 +136,21 @@ const buildQueueFromConfig = <T>(
         }
 
         if (definition.strategy === 'snapshot') {
-            if (!isSnapshotStore<T>(store)) {
-                return configError(
-                    'INVALID_IMPL',
-                    `config.stores.${storeName} is not a SnapshotStore`,
-                    `config.stores.${storeName}`,
-                )
-            }
-            const storeWithOptions = {
-                ...store,
-                persistOptions: {
-                    autoSave: queueConfig.persist.autoSave,
-                    autoSaveDebounceMs: queueConfig.persist.autoSaveDebounceMs,
-                },
-            }
-            queue = withPersist(queue, storeWithOptions)
+            queue = withPersist(
+                queue,
+                withSnapshotPersistOptions(
+                    store as SnapshotStoreWithOptions<T>,
+                    queueConfig.persist,
+                ),
+            )
         } else {
-            if (!isRowStore<T>(store)) {
-                return configError(
-                    'INVALID_IMPL',
-                    `config.stores.${storeName} is not a RowStore`,
-                    `config.stores.${storeName}`,
-                )
-            }
-            queue = withPersist(queue, store)
+            queue = withPersist(
+                queue,
+                withRowPersistOptions(
+                    store as RowStoreWithOptions<T>,
+                    queueConfig.persist,
+                ),
+            )
         }
     }
 
@@ -167,7 +216,7 @@ const buildConfiguredRouter = <T>(
     return built
 }
 
-type QueueLifecycleMethod = 'hydrate' | 'flush'
+type QueueLifecycleMethod = 'hydrate' | 'flush' | 'persist'
 
 /** Run a lifecycle method on every queue that exposes it. */
 const runOnQueues = async <T>(
@@ -189,10 +238,46 @@ const createSystemLifecycle = <T>(
 ): {
     hydrateAll: () => Promise<void>
     flushAll: () => Promise<void>
+    persistAll: () => Promise<void>
 } => ({
     hydrateAll: () => runOnQueues(queues, 'hydrate'),
     flushAll: () => runOnQueues(queues, 'flush'),
+    persistAll: () => runOnQueues(queues, 'persist'),
 })
+
+const shouldHydrateConfig = (validated: SystemConfig): boolean =>
+    validated.hydrate ??
+    Object.values(validated.queues).some((q) => q.persist !== undefined)
+
+/**
+ * Assemble a configured system from an already-validated config.
+ * Does not re-validate or hydrate.
+ */
+const assembleSystem = <TConfig extends SystemConfig, T>(
+    validated: TConfig,
+    options: BuildFromConfigOptions,
+): ConfiguredSystem<TConfig, T> => {
+    const resolvedStores = resolveAllStores<T>(validated.stores, options)
+    const queues = buildQueues<TConfig, T>(validated, resolvedStores)
+
+    const queueMap = queues as Record<string, ConfiguredQueue<T>>
+    const router = validated.router
+        ? buildConfiguredRouter(validated.router, queueMap)
+        : undefined
+
+    const { hydrateAll, flushAll, persistAll } =
+        createSystemLifecycle(queueMap)
+
+    return {
+        queues,
+        stores: resolvedStores as ConfiguredSystem<TConfig, T>['stores'],
+        router: router as ConfiguredSystem<TConfig, T>['router'],
+        hydrateAll,
+        flushAll,
+        persistAll,
+        config: freezeConfig(validated),
+    } satisfies ConfiguredSystem<TConfig, T>
+}
 
 /**
  * Build named stores, queues, optional workers, and an optional topic router
@@ -225,34 +310,46 @@ export const buildFromConfig = async <
     config: TConfig,
     options: BuildFromConfigOptions = {},
 ): Promise<ConfiguredSystem<TConfig, T>> => {
-    const validated = validateJsConfig(config)
+    const validated = options.skipValidate
+        ? config
+        : validateJsConfig(config)
 
-    const resolvedStores = resolveAllStores<T>(validated.stores, options)
-    const queues = buildQueues<TConfig, T>(validated, resolvedStores)
+    const system = assembleSystem<TConfig, T>(validated, options)
 
-    const queueMap = queues as Record<string, ConfiguredQueue<T>>
-    const router = validated.router
-        ? buildConfiguredRouter(validated.router, queueMap)
-        : undefined
-
-    const { hydrateAll, flushAll } = createSystemLifecycle(queueMap)
-
-    const shouldHydrate =
-        validated.hydrate ??
-        Object.values(validated.queues).some((q) => q.persist !== undefined)
-
-    if (shouldHydrate) {
-        await hydrateAll()
+    if (shouldHydrateConfig(validated)) {
+        await system.hydrateAll()
     }
 
-    return {
-        queues,
-        stores: resolvedStores as ConfiguredSystem<TConfig, T>['stores'],
-        router: router as ConfiguredSystem<TConfig, T>['router'],
-        hydrateAll,
-        flushAll,
-        config: freezeConfig(validated),
-    } satisfies ConfiguredSystem<TConfig, T>
+    return system
+}
+
+/**
+ * Synchronous build when no hydrate is required.
+ *
+ * Use when `hydrate: false`, or when no queue has `persist` (nothing to load).
+ * Throws {@link ConfigValidationError} with code `ASYNC_REQUIRED` if hydrate
+ * would run — use {@link buildFromConfig} instead.
+ */
+export const buildFromConfigSync = <
+    TConfig extends SystemConfig,
+    T = unknown,
+>(
+    config: TConfig,
+    options: BuildFromConfigOptions = {},
+): ConfiguredSystem<TConfig, T> => {
+    const validated = options.skipValidate
+        ? config
+        : validateJsConfig(config)
+
+    if (shouldHydrateConfig(validated)) {
+        return configError(
+            'ASYNC_REQUIRED',
+            'buildFromConfigSync cannot hydrate persisted queues; ' +
+                'pass hydrate: false or use await buildFromConfig(...)',
+        )
+    }
+
+    return assembleSystem<TConfig, T>(validated, options)
 }
 
 /**
@@ -265,5 +362,6 @@ export const buildFromJson = async <T = unknown>(
     options: BuildFromConfigOptions = {},
 ): Promise<ConfiguredSystem<SystemConfig, T>> => {
     const parsed = parseSystemConfig(json)
-    return buildFromConfig(parsed, options)
+    // Already validated (data-only); skip second full walk.
+    return buildFromConfig(parsed, { ...options, skipValidate: true })
 }

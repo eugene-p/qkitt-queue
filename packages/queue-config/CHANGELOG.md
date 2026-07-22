@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-22
+
+### Breaking
+
+- Every named store must be referenced by exactly one queue (`UNUSED_STORE`); orphan store entries are rejected
+- Duplicate web `adapter`+`key` pairs are rejected (`DUPLICATE_STORAGE_KEY`)
+- Snapshot-only fields (`autoSave`, `autoSaveDebounceMs`) on row persist configs are rejected (`INVALID_FIELD`); previously ignored
+- `createId` on snapshot persist configs is rejected (`INVALID_FIELD`)
+
+### Added
+
+- `buildFromConfigSync` for systems that do not hydrate (no persist, or `hydrate: false`)
+- `system.persistAll()` — explicit snapshot writes across queues (use when `autoSave` is false)
+- `PersistConfig.createId` (row stores, JS only) — passed through to row `persistOptions`
+- Web store `codec` / `itemCodec` on built-in `localStorage` / `sessionStorage` entries (JS only)
+- Validation codes: `UNUSED_STORE`, `DUPLICATE_STORAGE_KEY`, `INVALID_FIELD`, `ASYNC_REQUIRED`
+- `BuildFromConfigOptions.skipValidate` for pre-validated configs
+- Precise queue types: `ConfiguredQueueFor`, required worker/persist methods when configured
+- `scripts/prune-dts.mjs` — publish only declaration files reachable from the package entry
+
+### Fixed
+
+- Custom store `impl` accepts class instances (no longer requires a plain object)
+- Queue-level snapshot persist options merge into store `persistOptions` instead of replacing them (preserves store defaults such as `autoSave: false`)
+- `buildFromJson` no longer double-validates after parse
+
+### Changed
+
+- Built-in web adapters resolve via `createWeb*` + injected/lazy storage (fewer named factory imports)
+- Package build prunes unreachable `.d.ts` files from `dist/`
+
 ## [0.3.0] — 2026-07-22
 
 ### Breaking
@@ -79,6 +110,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.4.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.0
 [0.3.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.3.0
 [0.2.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.2
 [0.2.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.1

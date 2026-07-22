@@ -1,6 +1,6 @@
 {
   "name": "@qkitt/queue-config",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Declarative system config builder for @qkitt/queue",
   "license": "ISC",
@@ -54,7 +54,7 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build": "tsup && tsc -p tsconfig.build.json",
+    "build": "tsup && tsc -p tsconfig.build.json && node scripts/prune-dts.mjs",
     "pack:check": "npm pack --dry-run",
     "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check"
   }

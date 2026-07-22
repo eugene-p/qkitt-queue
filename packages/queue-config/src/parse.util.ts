@@ -23,6 +23,15 @@ export const isPlainObject = (
     return proto === Object.prototype || proto === null
 }
 
+/**
+ * True for any non-null object that is not an array (includes class instances).
+ * Used for custom store `impl` so class-based backends are accepted.
+ */
+export const isObjectLike = (
+    value: unknown,
+): value is object =>
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+
 export const expectString = (value: unknown, path: string): string => {
     if (typeof value !== 'string' || value.length === 0) {
         return configError(
@@ -85,13 +94,13 @@ export const parseAdapter = (
     return value as BuiltinStoreAdapter
 }
 
-/** Parse-time duck check: plain object with snapshot methods. */
+/** Parse-time duck check for SnapshotStore (plain objects and class instances). */
 export const isSnapshotStoreLike = (value: unknown): boolean =>
-    isPlainObject(value) && isSnapshotStore(value)
+    isObjectLike(value) && isSnapshotStore(value)
 
-/** Parse-time duck check: plain object with row methods. */
+/** Parse-time duck check for RowStore (plain objects and class instances). */
 export const isRowStoreLike = (value: unknown): boolean =>
-    isPlainObject(value) && isRowStore(value)
+    isObjectLike(value) && isRowStore(value)
 
 export const parseStrategy = (
     value: unknown,
@@ -125,3 +134,9 @@ export const assertWebStorageKey = (
     }
     return key
 }
+
+/** True when value looks like a JsonCodec (`serialize` + `deserialize` functions). */
+export const isJsonCodecLike = (value: unknown): boolean =>
+    isObjectLike(value) &&
+    typeof (value as { serialize?: unknown }).serialize === 'function' &&
+    typeof (value as { deserialize?: unknown }).deserialize === 'function'

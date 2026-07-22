@@ -1,5 +1,6 @@
 export {
     buildFromConfig,
+    buildFromConfigSync,
     buildFromJson,
 } from './from-config'
 
@@ -19,8 +20,11 @@ export type {
     BindingConfig,
     BuildFromConfigOptions,
     BuiltinStoreAdapter,
+    ConfiguredPersistMethods,
     ConfiguredQueue,
+    ConfiguredQueueFor,
     ConfiguredSystem,
+    ConfiguredSystemQueues,
     PersistConfig,
     QueueConfig,
     ResolvedStore,
