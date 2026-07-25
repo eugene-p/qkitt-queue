@@ -11,6 +11,8 @@ npx tsx examples/persist-restart/main.ts
 npx tsx examples/fs-snapshot-store/main.ts
 npx tsx examples/router-topics/main.ts
 npx tsx examples/with-config/main.ts
+npx tsx examples/with-loop/main.ts
+npx tsx examples/with-dlq/main.ts
 
 # or all:
 npm run examples
@@ -24,5 +26,7 @@ npm run examples
 | [`fs-snapshot-store`](./fs-snapshot-store/main.ts) | File snapshot store | custom `SnapshotStore` + `withPersist` |
 | [`router-topics`](./router-topics/main.ts) | Topic fan-out | `buildRouter` + worker queues |
 | [`with-config`](./with-config/main.ts) | Declarative multi-queue | `@qkitt/queue-config` |
+| [`with-loop`](./with-loop/main.ts) | Same-queue re-entry + hop cap | `buildQueue({ name })` → `withWorker` → `withLoop` |
+| [`with-dlq`](./with-dlq/main.ts) | Poison → distinct sink | `withWorker` → `withDeadLetter` / `withDlq` |
 
 Task index and composition patterns: [Recipes](../packages/queue/README.md#recipes) · [Waiting for drain](../packages/queue/README.md#waiting-for-drain)

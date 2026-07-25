@@ -6,6 +6,7 @@ import {
 import { createSubscriptionCounts } from '../../events/subscription-counts'
 import { isIntegerInRange } from '../../util/number.util'
 import { markQueueMaxSize } from './queue-max-size.util'
+import { markQueueName } from './queue-name.util'
 
 export type QueueEvents<T> = {
     /** Fired after an item is added to the tail. */
@@ -88,6 +89,12 @@ export type BuildQueueOptions = {
      * `enqueue` / `replaceAll` throw {@link QueueFullError} when exceeded.
      */
     maxSize?: number
+    /**
+     * Logical queue id for hop meta, tracking, and layers that require identity
+     * (e.g. {@link import('../loop/with-loop').withLoop}).
+     * Trimmed; must be non-empty when provided. Read with {@link import('./queue-name.util').getQueueName}.
+     */
+    name?: string
 }
 
 /** Thrown when enqueue/replaceAll would exceed {@link BuildQueueOptions.maxSize}. */
@@ -114,6 +121,17 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     const maxSize = options.maxSize
     if (maxSize !== undefined && !isIntegerInRange(maxSize, 1)) {
         throw new InvalidQueueOptionError('maxSize must be a safe integer >= 1')
+    }
+
+    let name: string | undefined
+    if (options.name !== undefined) {
+        const trimmed = options.name.trim()
+        if (trimmed === '') {
+            throw new InvalidQueueOptionError(
+                'name must be a non-empty string',
+            )
+        }
+        name = trimmed
     }
 
     // Two-stack FIFO: O(1) amortized enqueue/dequeue without splice shifting.
@@ -258,5 +276,5 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
         emit: emitter.emit,
     }
 
-    return markQueueMaxSize(api, maxSize)
+    return markQueueName(markQueueMaxSize(api, maxSize), name)
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildQueue, InvalidQueueOptionError, QueueFullError } from './queue'
+import { getQueueName } from './queue-name.util'
 
 describe('buildQueue', () => {
     it('enqueues and dequeues in FIFO order', () => {
@@ -173,6 +174,17 @@ describe('buildQueue', () => {
         )
         expect(() => buildQueue({ maxSize: -1 })).toThrow(InvalidQueueOptionError)
         expect(() => buildQueue({ maxSize: 1.5 })).toThrow(InvalidQueueOptionError)
+    })
+
+    it('stores optional logical name (trimmed)', () => {
+        expect(getQueueName(buildQueue())).toBeUndefined()
+        expect(getQueueName(buildQueue({ name: 'jobs' }))).toBe('jobs')
+        expect(getQueueName(buildQueue({ name: '  orders  ' }))).toBe('orders')
+    })
+
+    it('rejects blank name', () => {
+        expect(() => buildQueue({ name: '' })).toThrow(InvalidQueueOptionError)
+        expect(() => buildQueue({ name: '   ' })).toThrow(InvalidQueueOptionError)
     })
 
     it('preserves order after many dequeues', () => {

@@ -85,7 +85,7 @@ const run = retryWorker(
 const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 ```
 
-Failed items are **not** re-queued. Use `retryWorker` for in-call retries, or handle `worker:failed` and re-enqueue yourself if you need a dead-letter path.
+Failed items are **not** re-queued. Use `retryWorker` for in-call retries, `withDeadLetter` / `withDlq` for a separate sink, or `withLoop` to re-enter the same queue with hop meta.
 
 **Persist lifecycle** (when using `withPersist`):
 
@@ -118,6 +118,8 @@ const system = await buildFromConfig(
 | [`fs-snapshot-store`](./examples/fs-snapshot-store/main.ts) | Custom file snapshot store |
 | [`router-topics`](./examples/router-topics/main.ts) | Topic publish → queues |
 | [`with-config`](./examples/with-config/main.ts) | Same idea via config |
+| [`with-loop`](./examples/with-loop/main.ts) | Same-queue failure loop + hop cap |
+| [`with-dlq`](./examples/with-dlq/main.ts) | Dead-letter to a distinct sink |
 
 ```bash
 npm run build
@@ -135,6 +137,7 @@ In-process, queue toolkit. Start bare, add a layer as requirements change:
 - **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
 - **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Built-in memory and Web Storage; custom stores if you implement `SnapshotStore` / `RowStore`.
 - **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
+- **Failure routing** — re-enter the same queue with hop meta (`withLoop`) or forward poison to a dead-letter sink (`withDeadLetter` / `withDlq`).
 - **Declarative config** — stand up a multi-queue system from one object (`@qkitt/queue-config`).
 
 Out of scope: work that spans machines or processes.

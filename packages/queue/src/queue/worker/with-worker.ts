@@ -89,7 +89,8 @@ const isThenable = (value: unknown): value is PromiseLike<unknown> =>
  * Listens for `queue:enqueued` and pumps work up to `concurrency`.
  *
  * Failed items are **not** re-queued. Use `retryWorker` for in-call retries,
- * or handle `worker:failed` and re-enqueue yourself.
+ * `withDeadLetter` / `withDlq` for a separate sink, `withLoop` to re-enter the
+ * same queue with hop meta, or handle `worker:failed` yourself.
  *
  * **Composition (required when using persist):** worker must be the **outer**
  * decorator so `dequeue` hits the persist override:

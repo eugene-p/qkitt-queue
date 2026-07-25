@@ -36,7 +36,7 @@ import {
 
 Subpath exports are available by area: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/events`. See [Package layout](#package-layout) for what each subpath exports.
 
-Runnable scenarios (worker, retry, persist, router): [`examples/`](../../examples) in the monorepo.
+Runnable scenarios (worker, retry, persist, router, loop, DLQ): [`examples/`](../../examples) in the monorepo.
 
 ## Recipes
 
@@ -108,7 +108,7 @@ queue.stop()  // no new items; in-flight finish
 queue.start()
 ```
 
-**Failed items are not re-queued.** Use [`retryWorker`](#4-worker-helpers) for in-call retries, or handle `worker:failed` and re-enqueue yourself if you need a dead-letter path.
+**Failed items are not re-queued.** Use [`retryWorker`](#4-worker-helpers) for in-call retries, [`withDeadLetter`](#withdeadletter--withdlq) / `withDlq` for a separate sink, or [`withLoop`](#withloop) to re-enter the same queue with hop meta.
 
 ### 3. Add persistence
 
@@ -511,6 +511,8 @@ Every layer is typed. `on` returns an unsubscribe function. The emitter also wor
 | --- | --- |
 | Queue | `queue:enqueued`, `queue:dequeued`, `queue:emptied`, `queue:cleared` |
 | Worker | `worker:started`, `worker:completed`, `worker:failed`, `worker:idle`, `worker:pump-error` |
+| Dead letter | `dlq:enqueued`, `dlq:error` |
+| Loop | `loop:enqueued`, `loop:meta-override`, `loop:error` |
 | Router | `router:bound`, `router:unbound`, `router:published`, `router:unmatched`, `router:error` |
 | Snapshot | `persist:loaded`, `persist:saved`, `persist:error` |
 | Row | `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error` |
@@ -577,7 +579,7 @@ q.dequeue()       // undefined — the item, or an empty queue?
 q.tryDequeue()    // { value: undefined } — item present; undefined means empty
 ```
 
-**Failed items are not re-queued.** Use `retryWorker` or handle the event:
+**Failed items are not re-queued.** Prefer [`withDeadLetter`](#withdeadletter--withdlq) / `withDlq`, [`withLoop`](#withloop), or handle `worker:failed` yourself:
 
 ```ts
 queue.on('worker:failed', ({ item, error }) => {
@@ -619,7 +621,7 @@ Relative numbers (Node 22.23.1, Windows laptop, 2026-07-22). YMMV.
 
 The sections above show composition patterns; the reference below covers every public signature.
 
-**Primary (most apps):** `buildQueue`, `withWorker`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
+**Primary (most apps):** `buildQueue`, `withWorker`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
 
 Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`) is for specialized use — see individual entries below.
 
@@ -632,6 +634,7 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | Option | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `maxSize` | `number` | — | Safe integer ≥ 1. `enqueue` / `replaceAll` throw `QueueFullError` when full. |
+| `name` | `string` | — | Logical id (trimmed, non-empty). Used by `withLoop` hop meta and tracking (`getQueueName`). |
 
 **Methods**
 
@@ -705,6 +708,104 @@ Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the
 The pump uses `tryDequeue` so nullish payloads are processed. While a stacked persist layer is hydrating, `tryDequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate kick. Other unexpected dequeue failures emit `worker:pump-error` and stop the worker — call `start()` after fixing the cause.
 
 **Errors:** `InvalidWorkerOptionError` for invalid `concurrency`.
+
+---
+
+### `withDeadLetter` / `withDlq`
+
+Forward `worker:failed` items to a **distinct** destination with `enqueue`. Apply **after** the worker:
+
+```ts
+import {
+  buildQueue,
+  withWorker,
+  withDeadLetter,
+  withDlq,
+} from '@qkitt/queue'
+
+const failed = buildQueue<Job>()
+const jobs = withDlq(
+  withWorker(buildQueue<Job>(), async (job) => handle(job)),
+  failed,
+  // optional: { map: (item, error) => ({ item, error }), filter }
+)
+```
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `map` | `(item, error) => U` | identity | Remap before enqueue |
+| `filter` | `(item, error) => boolean` | always true | Skip enqueue when false |
+
+**Stack:** `buildQueue` → `withPersist?` → `withWorker` → `withDeadLetter`.
+
+**Same queue is rejected.** `withDeadLetter(q, q)` throws — use [`withLoop`](#withloop) for same-queue re-entry with hop meta.
+
+**Not the same as router unmatched.** Router `unmatchedTarget` / config `unmatchedQueue` is for publishes with no binding. Dead letter is for **worker processing failures** after dequeue.
+
+**Full destination is misconfiguration.** A bounded dead-letter sink that throws `QueueFullError` is not an overflow strategy: size it for worst-case poison volume, leave it unbounded, or **drain** it. Destination `enqueue` / `map` / `filter` failures emit `dlq:error` with `DeadLetterEnqueueError` (cause preserved) and **do not** rethrow. **Subscribe to `dlq:error` in production** if the sink can throw — the source item is already gone, and ignoring this event loses the failure quietly.
+
+**Events**
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `dlq:enqueued` | `{ item, error, deadLetterItem }` | Destination accepted the item |
+| `dlq:error` | `{ item, error, cause }` | `filter`, `map`, or destination `enqueue` threw (`cause` is `DeadLetterEnqueueError`) |
+
+**Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidDeadLetterOptionError` (destination is the same reference as source); `DeadLetterEnqueueError` on the `dlq:error` path.
+
+`withDlq` is an alias of `withDeadLetter`. Stacking multiple dead-letter layers registers multiple handlers (each destination receives the failure).
+
+---
+
+### `withLoop`
+
+On `worker:failed`, re-enqueue onto the **same** worker queue. Requires a **named** queue (`buildQueue({ name: 'jobs' })`). Library hop bookkeeping lives under the reserved key `__qkittQueue` (`QKITT_QUEUE_KEY`):
+
+```ts
+job.__qkittQueue.loop.jobs.hops // 1, 2, …
+```
+
+```ts
+import {
+  buildQueue,
+  withWorker,
+  withLoop,
+  getLoopHops,
+  getQueueName,
+  QKITT_QUEUE_KEY,
+} from '@qkitt/queue'
+
+const q = withLoop(
+  withWorker(buildQueue<Job>({ name: 'jobs' }), run),
+  // optional: { map, filter }
+)
+// getQueueName(q) → 'jobs'
+// getLoopHops(job, 'jobs')
+// Non-plain objects become { value, __qkittQueue: { loop: { jobs: { hops } } } }.
+```
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `map` | `(item, error, ctx) => U` | identity | Runs on the **original** item; library always re-stamps `__qkittQueue` |
+| `filter` | `(item, error, ctx) => boolean` | always true | Skip re-enqueue when false (e.g. max hops) |
+
+Hop key is the queue’s `name` (not an option). `map` / `filter` receive `ctx: { name, previousHops, hops }`.
+
+**Stack:** `buildQueue({ name })` → `withPersist?` → `withWorker` → `withLoop`.
+
+`__qkittQueue` is **library-owned**. If `map` returns a payload whose `__qkittQueue` differs from the original, the library emits `loop:meta-override` and **overwrites** with the correct hop stamp (re-enqueue still happens). Unchanged bag (e.g. `return item`) is fine.
+
+A worker that always throws can spin forever — stop the worker or `filter` on `getLoopHops`. This is **not** a dead-letter sink; use `withDeadLetter` for a separate queue.
+
+**Events**
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `loop:enqueued` | `{ item, error, loopItem }` | Re-enqueue succeeded |
+| `loop:meta-override` | `{ item, error, name, attempted, applied }` | `map` changed `__qkittQueue`; library stamp still applied |
+| `loop:error` | `{ item, error, cause }` | `filter`, `map`, or re-enqueue threw (`cause` is `LoopEnqueueError`) |
+
+**Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidLoopOptionError` (queue has no `name`); `LoopEnqueueError` on the `loop:error` path.
 
 ---
 
@@ -865,7 +966,7 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | Subpath | Exports | Does *not* contain |
 | --- | --- | --- |
 | `@qkitt/queue` | Everything | — |
-| `@qkitt/queue/queue` | `buildQueue`, `withWorker`, queue + worker types | Persist, stores |
+| `@qkitt/queue/queue` | `buildQueue`, `getQueueName`, `withWorker`, `withDeadLetter` / `withDlq`, `withLoop`, queue + worker types | Persist, stores |
 | `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
 | `@qkitt/queue/router` | `buildRouter`, router types | — |
 | `@qkitt/queue/persist` | `withPersist`, stores, contracts, event types, `QueueHydratingError` | `buildQueue`, `withWorker` |

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-07-25
+
+### Added
+
+- `buildQueue({ name })` — optional logical queue id; read with `getQueueName` (survives decorator layers)
+- `withDeadLetter` / `withDlq` — forward `worker:failed` items to a **distinct** destination (`map` / `filter`; same reference throws)
+- `withLoop` — re-enqueue failures onto the same worker queue; hop meta under `__qkittQueue.loop[name].hops` (`getLoopHops`, `QKITT_QUEUE_KEY`); **requires** a named queue
+- Optional `map` runs on the original item with hop context; library always re-stamps `__qkittQueue`. If map changes that bag → `loop:meta-override` then library override
+- Errors: `DeadLetterEnqueueError`, `InvalidDeadLetterOptionError`, `LoopEnqueueError`, `InvalidLoopOptionError`
+- Events: `dlq:enqueued` / `dlq:error`, `loop:enqueued` / `loop:meta-override` / `loop:error`
+- Examples: `examples/with-loop`, `examples/with-dlq`
+
 ## [0.6.3] — 2026-07-24
 
 ### Breaking
@@ -289,6 +301,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.6.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.4
 [0.6.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.3
 [0.6.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.2
 [0.6.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.1

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { decorateQueue } from './forward.util'
 import {
+    DLQ_LAYER,
     hasQueueLayer,
+    LOOP_LAYER,
     markQueueLayer,
     PERSIST_LAYER,
     WORKER_LAYER,
@@ -52,12 +54,20 @@ describe('decorateQueue', () => {
     it('reapplies non-enumerable layer brands from the inner queue', () => {
         const base = buildQueue<number>()
         const branded = markQueueLayer(
-            markQueueLayer(base, PERSIST_LAYER),
-            WORKER_LAYER,
+            markQueueLayer(
+                markQueueLayer(
+                    markQueueLayer(base, PERSIST_LAYER),
+                    WORKER_LAYER,
+                ),
+                DLQ_LAYER,
+            ),
+            LOOP_LAYER,
         )
         const outer = decorateQueue(branded, { start: () => undefined })
 
         expect(hasQueueLayer(outer, PERSIST_LAYER)).toBe(true)
         expect(hasQueueLayer(outer, WORKER_LAYER)).toBe(true)
+        expect(hasQueueLayer(outer, DLQ_LAYER)).toBe(true)
+        expect(hasQueueLayer(outer, LOOP_LAYER)).toBe(true)
     })
 })
