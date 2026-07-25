@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-07-25
+
 ### Added
 
 - `whenIdle(queue, { timeoutMs? })` — promise that resolves when the worker queue is empty and nothing is in flight
@@ -308,6 +310,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.6.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.5
 [0.6.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.4
 [0.6.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.3
 [0.6.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.2
