@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import {
     createMemoryRowStore,
     createMemorySnapshotStore,
+    getLoopHops,
+    getQueueName,
     InvalidRoutePatternError,
     QueueFullError,
     type JsonCodec,
@@ -22,7 +24,7 @@ import {
     validateJsConfig,
     validateSystemConfig,
 } from './validate'
-import type { SystemConfig } from './types'
+import type { ConfiguredQueue, SystemConfig } from './types'
 
 const createMemoryWebStorage = (): WebStorageLike => {
     const map = new Map<string, string>()
@@ -737,6 +739,231 @@ describe('buildFromConfig', () => {
             queues: { jobs: { worker: handle } },
         })
         expect(system.config.queues.jobs.worker).toBe(handle)
+    })
+
+    it('rejects loop without worker', () => {
+        expectConfigError(
+            () =>
+                validateJsConfig({
+                    queues: { jobs: { loop: true } },
+                }),
+            'INVALID_FIELD',
+            /loop requires worker/,
+        )
+    })
+
+    it('rejects dlq without worker', () => {
+        expectConfigError(
+            () =>
+                validateJsConfig({
+                    queues: {
+                        jobs: { dlq: 'failed' },
+                        failed: {},
+                    },
+                }),
+            'INVALID_FIELD',
+            /dlq requires worker/,
+        )
+    })
+
+    it('rejects dlq target that is not a queue', () => {
+        expectConfigError(
+            () =>
+                validateJsConfig({
+                    queues: {
+                        jobs: {
+                            worker: async () => undefined,
+                            dlq: 'missing',
+                        },
+                    },
+                }),
+            'UNKNOWN_QUEUE',
+            /dlq/,
+        )
+    })
+
+    it('rejects self-referential dlq', () => {
+        expectConfigError(
+            () =>
+                validateJsConfig({
+                    queues: {
+                        jobs: {
+                            worker: async () => undefined,
+                            dlq: 'jobs',
+                        },
+                    },
+                }),
+            'INVALID_FIELD',
+            /must differ from the source queue/,
+        )
+    })
+
+    it('rejects loop map/filter in data-only config', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    queues: {
+                        jobs: {
+                            loop: {
+                                filter: () => true,
+                            },
+                        },
+                    },
+                }),
+            'JS_ONLY_FIELD',
+            /loop\.filter/,
+        )
+    })
+
+    it('rejects dlq map/filter in data-only config', () => {
+        expectConfigError(
+            () =>
+                validateSystemConfig({
+                    queues: {
+                        jobs: {
+                            dlq: {
+                                queue: 'failed',
+                                map: (item: unknown) => item,
+                            },
+                        },
+                        failed: {},
+                    },
+                }),
+            'JS_ONLY_FIELD',
+            /dlq\.map/,
+        )
+    })
+
+    it('accepts loop true and dlq string in JS config with worker', () => {
+        const config = validateJsConfig({
+            queues: {
+                jobs: {
+                    worker: async () => undefined,
+                    loop: true,
+                    dlq: 'failed',
+                },
+                failed: {},
+            },
+        })
+        expect(config.queues.jobs.loop).toBe(true)
+        expect(config.queues.jobs.dlq).toBe('failed')
+    })
+
+    it('names every queue from its config key', async () => {
+        const system = await buildFromConfig({
+            queues: {
+                jobs: { worker: async () => undefined },
+                plain: {},
+            },
+        })
+        expect(getQueueName(system.queues.jobs)).toBe('jobs')
+        expect(getQueueName(system.queues.plain)).toBe('plain')
+    })
+
+    it('applies withLoop so failed items re-enter with hop meta', async () => {
+        const system = await buildFromConfig({
+            queues: {
+                jobs: {
+                    worker: {
+                        run: async (job: { id: string }) => {
+                            if ((getLoopHops(job, 'jobs') ?? 0) < 1) {
+                                throw new Error('retry-me')
+                            }
+                        },
+                        concurrency: 1,
+                    },
+                    loop: true,
+                },
+            },
+        })
+
+        const completed: string[] = []
+        // Loop/worker event maps are not on ConfiguredQueue's static type.
+        const jobs = system.queues.jobs as ConfiguredQueue & {
+            on(
+                event: 'worker:completed',
+                cb: (payload: { item: unknown }) => void,
+            ): () => void
+        }
+        jobs.on('worker:completed', ({ item }) => {
+            completed.push((item as { id: string }).id)
+        })
+
+        jobs.enqueue({ id: 'a' })
+        await vi.waitFor(() => {
+            expect(completed).toEqual(['a'])
+        })
+    })
+
+    it('applies withDlq so failed items land on the destination queue', async () => {
+        const system = await buildFromConfig({
+            queues: {
+                jobs: {
+                    worker: {
+                        run: async () => {
+                            throw new Error('poison')
+                        },
+                        concurrency: 1,
+                    },
+                    dlq: 'failed',
+                },
+                failed: {},
+            },
+        })
+
+        system.queues.jobs.enqueue({ id: 'bad' })
+        await vi.waitFor(() => {
+            expect(system.queues.failed.size()).toBe(1)
+        })
+        expect(system.queues.failed.toArray()).toEqual([{ id: 'bad' }])
+    })
+
+    it('chains loop then dlq with complementary filters (no DLQ duplicate while looping)', async () => {
+        const MAX = 2
+        const system = await buildFromConfig({
+            queues: {
+                jobs: {
+                    worker: {
+                        run: async () => {
+                            throw new Error('always')
+                        },
+                        concurrency: 1,
+                    },
+                    loop: {
+                        filter: (_item, _error, ctx) =>
+                            (ctx.previousHops ?? 0) < MAX,
+                    },
+                    dlq: {
+                        queue: 'failed',
+                        filter: (item) =>
+                            (getLoopHops(item, 'jobs') ?? 0) >= MAX,
+                    },
+                },
+                failed: {},
+            },
+        })
+
+        let looped = 0
+        let deadLettered = 0
+        const jobs = system.queues.jobs as ConfiguredQueue & {
+            on(event: 'loop:enqueued' | 'dlq:enqueued', cb: () => void): () => void
+        }
+        jobs.on('loop:enqueued', () => {
+            looped += 1
+        })
+        jobs.on('dlq:enqueued', () => {
+            deadLettered += 1
+        })
+
+        jobs.enqueue({ id: 'x' })
+        await vi.waitFor(() => {
+            expect(deadLettered).toBe(1)
+        })
+        expect(looped).toBe(MAX)
+        expect(system.queues.failed.size()).toBe(1)
+        expect(getLoopHops(system.queues.failed.toArray()[0], 'jobs')).toBe(
+            MAX,
+        )
     })
 })
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-25
+
+### Added
+
+- `QueueConfig.loop` — `withLoop` after worker (`true` or `{ map?, filter? }`; map/filter JS only)
+- `QueueConfig.dlq` — `withDlq` after worker/loop (queue name string or `{ queue, map?, filter? }`; map/filter JS only)
+- Exported types `LoopConfig`, `DlqConfig`
+- Build always passes the config queue key as `buildQueue({ name })` (required for loop hop meta)
+
+### Changed
+
+- Peer dependency `@qkitt/queue` is now `^0.6.4` (requires core `withLoop` / `withDlq`)
+- Build order: persist → worker → loop → dlq → router
+
 ## [0.4.1] — 2026-07-24
 
 ### Changed
@@ -116,6 +130,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.5.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.0
 [0.4.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.1
 [0.4.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.0
 [0.3.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.3.0

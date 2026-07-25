@@ -1,5 +1,6 @@
 import type {
     JsonCodec,
+    LoopMapContext,
     Queue,
     Router,
     RowStore,
@@ -116,6 +117,40 @@ export type WorkerConfig =
           run: WorkerFn<any, any>
       } & WithWorkerOptions)
 
+/**
+ * Same-queue failure re-entry via `withLoop` (requires `worker`).
+ * `true` / `{}` use library defaults. `map` / `filter` are JS-only.
+ *
+ * Both `loop` and `dlq` fire on every `worker:failed` independently.
+ * Chain with complementary filters (see package README).
+ */
+export type LoopConfig =
+    | true
+    | {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          map?: (item: any, error: unknown, ctx: LoopMapContext) => any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          filter?: (item: any, error: unknown, ctx: LoopMapContext) => boolean
+      }
+
+/**
+ * Distinct dead-letter destination via `withDlq` (requires `worker`).
+ * String form is the target queue name under `queues`.
+ * `map` / `filter` are JS-only.
+ *
+ * Destination must differ from the source queue (use `loop` for same-queue).
+ */
+export type DlqConfig =
+    | string
+    | {
+          /** Name of a queue under `queues` (must not be the source). */
+          queue: string
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          map?: (item: any, error: unknown) => any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          filter?: (item: any, error: unknown) => boolean
+      }
+
 export type QueueConfig = {
     /**
      * Maximum items in the in-memory queue (backpressure).
@@ -130,6 +165,16 @@ export type QueueConfig = {
      * Import the function from your app and pass it here.
      */
     worker?: WorkerConfig
+    /**
+     * Re-enqueue worker failures onto this queue (`withLoop`).
+     * Requires `worker`. Queue key is passed as `buildQueue({ name })`.
+     */
+    loop?: LoopConfig
+    /**
+     * Forward worker failures to another named queue (`withDlq`).
+     * Requires `worker`. Destination must exist and differ from this queue.
+     */
+    dlq?: DlqConfig
 }
 
 export type BindingConfig = {

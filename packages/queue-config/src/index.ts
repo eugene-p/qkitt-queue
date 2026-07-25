@@ -25,6 +25,8 @@ export type {
     ConfiguredQueueFor,
     ConfiguredSystem,
     ConfiguredSystemQueues,
+    DlqConfig,
+    LoopConfig,
     PersistConfig,
     QueueConfig,
     ResolvedStore,

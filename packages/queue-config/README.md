@@ -5,11 +5,11 @@
 [![License: ISC](https://img.shields.io/npm/l/@qkitt/queue-config.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue-config.svg)](https://nodejs.org)
 
-Declarative setup for [`@qkitt/queue`](../queue): named stores, queues, workers, and optional topic-router bindings in one object.
+Declarative setup for [`@qkitt/queue`](../queue): named stores, queues, workers, optional loop / dead-letter, and topic-router bindings in one object.
 
-Builds the same stack as hand-written composition (`queue → persist → worker → router`) from a config object. Optional; most apps only need `@qkitt/queue`.
+Builds the same stack as hand-written composition (`queue → persist → worker → loop → dlq → router`) from a config object. Optional; most apps only need `@qkitt/queue`.
 
-**Peer dependency:** `@qkitt/queue` `^0.6.3`. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
+**Peer dependency:** `@qkitt/queue` `^0.6.4`. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.2` → `0.3`). Check the changelog on minor upgrades.
 
@@ -73,7 +73,7 @@ export default defineConfig({
 })
 ```
 
-Build order: stores → queue → persist → worker → router → hydrate (same stack rule: persist inside, worker outside).
+Build order: stores → queue(+name) → persist → worker → loop → dlq → router → hydrate (same stack rule: persist inside, worker outside; loop/dlq outside worker).
 
 ```ts
 // app.ts
@@ -136,6 +136,10 @@ Each named store must back **exactly one** queue (shared or unused store names a
 | `maxSize` | `number` | Safe integer ≥ 1; same as `buildQueue({ maxSize })` |
 | `persist` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` | `store` = name in `stores`; `autoSave` / `autoSaveDebounceMs` **snapshot-only**; `createId` **row-only** (JS) |
 | `worker` | `WorkerFn` or `{ run, concurrency?, autoStart? }` | **JS only** — not available in JSON |
+| `loop` | `true` or `{ map?, filter? }` | `withLoop` after worker; requires `worker`. Queue config key is `buildQueue({ name })`. `map` / `filter` **JS only** |
+| `dlq` | `string` or `{ queue, map?, filter? }` | `withDlq` after worker/loop; requires `worker`. Target must be another named queue. `map` / `filter` **JS only** |
+
+Every queue is built with `name` equal to its key under `queues` (for hop meta and `getQueueName`).
 
 ```ts
 queues: {
@@ -144,9 +148,46 @@ queues: {
     maxSize: 500,
     persist: { store: 'disk', autoSave: true },
     worker: { run: handleJob, concurrency: 4, autoStart: true },
+    loop: true,
+    dlq: 'failed',
   },
+  failed: { maxSize: 10_000 },
 }
 ```
+
+#### `loop` + `dlq` together
+
+Both attach to `worker:failed` **independently** — not “loop until filter fails, then DLQ.”
+
+| Setup | Result |
+| --- | --- |
+| `loop: true` and `dlq: 'failed'` (default filters) | **Duplicates:** every failure re-enters *and* is dead-lettered |
+| Complementary `filter`s | Chain: re-enter while under a hop cap; DLQ only when the cap is hit |
+
+```ts
+import { getLoopHops } from '@qkitt/queue'
+import { defineConfig } from '@qkitt/queue-config'
+
+const MAX = 3
+
+export default defineConfig({
+  queues: {
+    jobs: {
+      worker: handleJob,
+      loop: {
+        filter: (_item, _error, ctx) => (ctx.previousHops ?? 0) < MAX,
+      },
+      dlq: {
+        queue: 'failed',
+        filter: (item) => (getLoopHops(item, 'jobs') ?? 0) >= MAX,
+      },
+    },
+    failed: {},
+  },
+})
+```
+
+Runnable: [`examples/with-config-loop-dlq`](../../examples/with-config-loop-dlq). Hand composition: [`examples/loop-and-dlq`](../../examples/loop-and-dlq) and core [Chaining withLoop + withDlq](../queue/README.md#chaining-withloop--withdlq).
 
 ### `router`
 
@@ -172,9 +213,11 @@ Load all persisted queues after build (and after workers attach, so restored ite
 ### Build rules
 
 - Persist wraps the bare queue; worker is outer (**persist inside, worker outside** — same as hand composition).
+- Optional `loop` then `dlq` wrap the worker queue (both require `worker`).
 - One persist layer per queue.
 - One store → one queue.
-- JSON cannot carry workers or custom `impl`.
+- `dlq` target must exist under `queues` and must not be the source (use `loop` for same-queue).
+- JSON cannot carry workers, custom `impl`, or `map` / `filter` functions.
 
 ## JSON mode
 
@@ -235,7 +278,7 @@ buildFromConfig<T extends SystemConfig>(
 | `storage` | `WebStorageLike` | Inject Web Storage (tests, Node, mocks) for `localStorage` / `sessionStorage` adapters |
 | `skipValidate` | `boolean` | Skip re-validation when config was already validated (`defineConfig` / parse) |
 
-Validates, resolves stores, builds queues (persist → worker), applies router bindings, optionally hydrates.
+Validates, resolves stores, builds queues (persist → worker → loop → dlq), applies router bindings, optionally hydrates.
 
 ### `buildFromConfigSync`
 
@@ -326,8 +369,10 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `SystemConfig` | Top-level config |
 | `StoreDefinition` | Built-in or custom store entry |
 | `PersistConfig` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` on a queue |
-| `QueueConfig` | `maxSize`, `persist`, `worker` |
+| `QueueConfig` | `maxSize`, `persist`, `worker`, `loop`, `dlq` |
 | `WorkerConfig` | Function or `{ run, concurrency?, autoStart? }` |
+| `LoopConfig` | `true` or `{ map?, filter? }` for `withLoop` |
+| `DlqConfig` | Target queue name string or `{ queue, map?, filter? }` for `withDlq` |
 | `RouterConfig` / `BindingConfig` | Router section |
 | `BuildFromConfigOptions` | `{ storage?, skipValidate? }` |
 | `BuiltinStoreAdapter` | `'memory' \| 'localStorage' \| 'sessionStorage'` |

@@ -1,4 +1,10 @@
-import type { PersistConfig, QueueConfig, WorkerConfig } from '../types'
+import type {
+    DlqConfig,
+    LoopConfig,
+    PersistConfig,
+    QueueConfig,
+    WorkerConfig,
+} from '../types'
 import { configError } from '../errors'
 import {
     expectBoolean,
@@ -128,6 +134,126 @@ export const parseWorkerConfig = (value: unknown, path: string): WorkerConfig =>
     }
 }
 
+export const parseLoopConfig = (
+    value: unknown,
+    path: string,
+    ctx: ParseCtx,
+): LoopConfig => {
+    if (value === true) return true
+
+    if (!isPlainObject(value)) {
+        return configError(
+            'INVALID_TYPE',
+            `${path} must be true or { map?, filter? }`,
+            path,
+        )
+    }
+
+    const loop: Exclude<LoopConfig, true> = {}
+
+    if (value.map !== undefined) {
+        if (!ctx.allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.map is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.map`,
+            )
+        }
+        if (typeof value.map !== 'function') {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.map must be a function`,
+                `${path}.map`,
+            )
+        }
+        loop.map = value.map as Exclude<LoopConfig, true>['map']
+    }
+
+    if (value.filter !== undefined) {
+        if (!ctx.allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.filter is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.filter`,
+            )
+        }
+        if (typeof value.filter !== 'function') {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.filter must be a function`,
+                `${path}.filter`,
+            )
+        }
+        loop.filter = value.filter as Exclude<LoopConfig, true>['filter']
+    }
+
+    return loop
+}
+
+export const parseDlqConfig = (
+    value: unknown,
+    path: string,
+    ctx: ParseCtx,
+): DlqConfig => {
+    if (typeof value === 'string') {
+        const queue = expectString(value, path)
+        return queue
+    }
+
+    if (!isPlainObject(value)) {
+        return configError(
+            'INVALID_TYPE',
+            `${path} must be a queue name string or { queue, map?, filter? }`,
+            path,
+        )
+    }
+
+    const queue = expectString(value.queue, `${path}.queue`)
+    const dlq: Exclude<DlqConfig, string> = { queue }
+
+    if (value.map !== undefined) {
+        if (!ctx.allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.map is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.map`,
+            )
+        }
+        if (typeof value.map !== 'function') {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.map must be a function`,
+                `${path}.map`,
+            )
+        }
+        dlq.map = value.map as Exclude<DlqConfig, string>['map']
+    }
+
+    if (value.filter !== undefined) {
+        if (!ctx.allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.filter is only valid in JS config (functions cannot be expressed in JSON)`,
+                `${path}.filter`,
+            )
+        }
+        if (typeof value.filter !== 'function') {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.filter must be a function`,
+                `${path}.filter`,
+            )
+        }
+        dlq.filter = value.filter as Exclude<DlqConfig, string>['filter']
+    }
+
+    return dlq
+}
+
+/** Target queue name for a parsed {@link DlqConfig}. */
+export const dlqTargetName = (dlq: DlqConfig): string =>
+    typeof dlq === 'string' ? dlq : dlq.queue
+
 export const parseQueueConfig = (
     value: unknown,
     path: string,
@@ -153,6 +279,28 @@ export const parseQueueConfig = (
             )
         }
         queue.worker = parseWorkerConfig(obj.worker, `${path}.worker`)
+    }
+
+    if (obj.loop !== undefined) {
+        queue.loop = parseLoopConfig(obj.loop, `${path}.loop`, ctx)
+        if (queue.worker === undefined) {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.loop requires worker on the same queue`,
+                `${path}.loop`,
+            )
+        }
+    }
+
+    if (obj.dlq !== undefined) {
+        queue.dlq = parseDlqConfig(obj.dlq, `${path}.dlq`, ctx)
+        if (queue.worker === undefined) {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.dlq requires worker on the same queue`,
+                `${path}.dlq`,
+            )
+        }
     }
 
     return queue

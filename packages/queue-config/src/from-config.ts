@@ -1,12 +1,16 @@
 import {
     buildQueue,
     buildRouter,
+    withDlq,
+    withLoop,
     withPersist,
     withWorker,
     type RouteTarget,
     type Router,
     type RowStore,
     type SnapshotStore,
+    type WithDeadLetterOptions,
+    type WithLoopOptions,
     type WithWorkerOptions,
     type WorkerFn,
 } from '@qkitt/queue'
@@ -17,6 +21,8 @@ import type {
     BuildFromConfigOptions,
     ConfiguredQueue,
     ConfiguredSystem,
+    DlqConfig,
+    LoopConfig,
     QueueConfig,
     ResolvedStore,
     StoreDefinition,
@@ -24,6 +30,7 @@ import type {
     WorkerConfig,
 } from './types'
 import { parseSystemConfig, validateJsConfig } from './validate'
+import { dlqTargetName } from './validate/queue'
 
 const resolveWorker = (
     worker: WorkerConfig,
@@ -109,16 +116,42 @@ const withRowPersistOptions = <T>(
     }
 }
 
+const resolveLoopOptions = <T>(
+    loop: LoopConfig,
+): WithLoopOptions<T, T> => {
+    if (loop === true) return {}
+    return {
+        ...(loop.map !== undefined ? { map: loop.map } : {}),
+        ...(loop.filter !== undefined ? { filter: loop.filter } : {}),
+    }
+}
+
+const resolveDlqOptions = <T>(
+    dlq: DlqConfig,
+): WithDeadLetterOptions<T, T> => {
+    if (typeof dlq === 'string') return {}
+    return {
+        ...(dlq.map !== undefined ? { map: dlq.map } : {}),
+        ...(dlq.filter !== undefined ? { filter: dlq.filter } : {}),
+    }
+}
+
+/**
+ * Build one queue through persist → worker → loop.
+ * Dead-letter is applied in a second pass so targets can resolve.
+ */
 const buildQueueFromConfig = <T>(
     queueName: string,
     queueConfig: QueueConfig,
     storeDefs: Record<string, StoreDefinition> | undefined,
     resolvedStores: Record<string, ResolvedStore<T>>,
 ): ConfiguredQueue<T> => {
-    const buildOptions =
-        queueConfig.maxSize !== undefined
-            ? { maxSize: queueConfig.maxSize }
-            : {}
+    const buildOptions: { name: string; maxSize?: number } = {
+        name: queueName,
+    }
+    if (queueConfig.maxSize !== undefined) {
+        buildOptions.maxSize = queueConfig.maxSize
+    }
 
     let queue: ConfiguredQueue<T> = buildQueue<T>(buildOptions)
 
@@ -159,7 +192,43 @@ const buildQueueFromConfig = <T>(
         queue = withWorker(queue, run as WorkerFn<T, unknown>, workerOptions)
     }
 
+    if (queueConfig.loop !== undefined) {
+        // Layer wrappers are generic over payload T; config queues stay untyped at edges.
+        queue = withLoop(
+            queue as never,
+            resolveLoopOptions(queueConfig.loop),
+        ) as ConfiguredQueue<T>
+    }
+
     return queue
+}
+
+const applyDlqLayers = <T>(
+    validated: SystemConfig,
+    queues: Record<string, ConfiguredQueue<T>>,
+): void => {
+    for (const [name, queueConfig] of Object.entries(validated.queues)) {
+        if (queueConfig.dlq === undefined) continue
+
+        const targetName = dlqTargetName(queueConfig.dlq)
+        const source = queues[name]
+        const target = queues[targetName]
+        if (!source || !target) {
+            return configError(
+                'UNKNOWN_QUEUE',
+                `config.queues.${name}.dlq "${targetName}" is not defined in config.queues`,
+                typeof queueConfig.dlq === 'string'
+                    ? `config.queues.${name}.dlq`
+                    : `config.queues.${name}.dlq.queue`,
+            )
+        }
+
+        queues[name] = withDlq(
+            source as never,
+            target,
+            resolveDlqOptions(queueConfig.dlq),
+        ) as ConfiguredQueue<T>
+    }
 }
 
 const buildQueues = <TConfig extends SystemConfig, T>(
@@ -167,16 +236,18 @@ const buildQueues = <TConfig extends SystemConfig, T>(
     resolvedStores: Record<string, ResolvedStore<T>>,
 ): ConfiguredSystem<TConfig, T>['queues'] => {
     const queues = {} as ConfiguredSystem<TConfig, T>['queues']
+    const queueMap = queues as Record<string, ConfiguredQueue<T>>
 
     for (const [name, queueConfig] of Object.entries(validated.queues)) {
-        ;(queues as Record<string, ConfiguredQueue<T>>)[name] =
-            buildQueueFromConfig(
-                name,
-                queueConfig,
-                validated.stores,
-                resolvedStores,
-            )
+        queueMap[name] = buildQueueFromConfig(
+            name,
+            queueConfig,
+            validated.stores,
+            resolvedStores,
+        )
     }
+
+    applyDlqLayers(validated, queueMap)
 
     return queues
 }
@@ -301,7 +372,8 @@ const assembleSystem = <TConfig extends SystemConfig, T>(
  * const system = await buildFromConfig(config)
  * ```
  *
- * Order: resolve stores → queue → persist → worker → router bind → hydrate.
+ * Order: resolve stores → queue(+name) → persist → worker → loop → dlq →
+ * router bind → hydrate.
  */
 export const buildFromConfig = async <
     TConfig extends SystemConfig,

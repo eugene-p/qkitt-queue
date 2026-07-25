@@ -755,6 +755,8 @@ const jobs = withDlq(
 
 `withDlq` is an alias of `withDeadLetter`. Stacking multiple dead-letter layers registers multiple handlers (each destination receives the failure).
 
+Stacking **withLoop + withDlq** also registers two handlers on the same failure — see [Chaining withLoop + withDlq](#chaining-withloop--withdlq). Defaults on both sides dead-letter **and** re-enqueue every failure (duplicates in the sink).
+
 ---
 
 ### `withLoop`
@@ -806,6 +808,43 @@ A worker that always throws can spin forever — stop the worker or `filter` on 
 | `loop:error` | `{ item, error, cause }` | `filter`, `map`, or re-enqueue threw (`cause` is `LoopEnqueueError`) |
 
 **Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidLoopOptionError` (queue has no `name`); `LoopEnqueueError` on the `loop:error` path.
+
+#### Chaining `withLoop` + `withDlq`
+
+Both layers subscribe to the **same** `worker:failed` event. They do **not** run as “loop until filter fails, then DLQ.” On every failure, **each** layer’s `filter` runs independently.
+
+| Setup | Result |
+| --- | --- |
+| Both with default filters | **Duplicates:** re-enqueue *and* dead-letter on every failure |
+| Complementary filters | Hop via loop while under the cap; dead-letter only when the cap is hit |
+
+```ts
+import {
+  buildQueue,
+  getLoopHops,
+  withDlq,
+  withLoop,
+  withWorker,
+} from '@qkitt/queue'
+
+const MAX = 3
+const failed = buildQueue<Job>({ name: 'failed' })
+
+const jobs = withDlq(
+  withLoop(
+    withWorker(buildQueue<Job>({ name: 'jobs' }), run),
+    {
+      filter: (_item, _error, ctx) => (ctx.previousHops ?? 0) < MAX,
+    },
+  ),
+  failed,
+  {
+    filter: (item) => (getLoopHops(item, 'jobs') ?? 0) >= MAX,
+  },
+)
+```
+
+Runnable demo: [`examples/loop-and-dlq`](../../examples/loop-and-dlq). Declarative form: [`@qkitt/queue-config`](../queue-config) (`loop` + `dlq` on a queue) and [`examples/with-config-loop-dlq`](../../examples/with-config-loop-dlq).
 
 ---
 

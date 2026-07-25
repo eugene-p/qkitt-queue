@@ -1,5 +1,7 @@
 import type {
     BindingConfig,
+    DlqConfig,
+    LoopConfig,
     PersistConfig,
     QueueConfig,
     RouterConfig,
@@ -38,6 +40,18 @@ const freezeWorker = (worker: WorkerConfig): WorkerConfig => {
     return Object.freeze({ ...worker })
 }
 
+const freezeLoop = (loop: LoopConfig): LoopConfig => {
+    if (loop === true) return true
+    // Shallow-freeze; keep map/filter as live function references.
+    return Object.freeze({ ...loop })
+}
+
+const freezeDlq = (dlq: DlqConfig): DlqConfig => {
+    if (typeof dlq === 'string') return dlq
+    // Shallow-freeze; keep map/filter as live function references.
+    return Object.freeze({ ...dlq })
+}
+
 const freezeQueueConfig = (queue: QueueConfig): Readonly<QueueConfig> => {
     const next: QueueConfig = { ...queue }
     if (queue.persist !== undefined) {
@@ -45,6 +59,12 @@ const freezeQueueConfig = (queue: QueueConfig): Readonly<QueueConfig> => {
     }
     if (queue.worker !== undefined) {
         next.worker = freezeWorker(queue.worker)
+    }
+    if (queue.loop !== undefined) {
+        next.loop = freezeLoop(queue.loop)
+    }
+    if (queue.dlq !== undefined) {
+        next.dlq = freezeDlq(queue.dlq)
     }
     return Object.freeze(next)
 }

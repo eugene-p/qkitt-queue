@@ -3,7 +3,7 @@ import { configError } from '../errors'
 import { expectBoolean, isPlainObject } from '../parse.util'
 import type { ParseCtx, ParseJsOptions } from './ctx'
 import { expectPlainObject } from './expect'
-import { parseQueueConfig } from './queue'
+import { dlqTargetName, parseQueueConfig } from './queue'
 import { parseRouterConfig } from './router'
 import { parseStoreDefinition } from './store'
 
@@ -167,6 +167,30 @@ export const parseSystemConfigValue = (
                 'UNKNOWN_QUEUE',
                 `config.router.unmatchedQueue "${config.router.unmatchedQueue}" is not defined in config.queues`,
                 'config.router.unmatchedQueue',
+            )
+        }
+    }
+
+    for (const [queueName, queueConfig] of Object.entries(queues)) {
+        if (queueConfig.dlq === undefined) continue
+        const target = dlqTargetName(queueConfig.dlq)
+        const path =
+            typeof queueConfig.dlq === 'string'
+                ? `config.queues.${queueName}.dlq`
+                : `config.queues.${queueName}.dlq.queue`
+
+        if (!(target in queues)) {
+            return configError(
+                'UNKNOWN_QUEUE',
+                `config.queues.${queueName}.dlq "${target}" is not defined in config.queues`,
+                path,
+            )
+        }
+        if (target === queueName) {
+            return configError(
+                'INVALID_FIELD',
+                `config.queues.${queueName}.dlq must differ from the source queue; use loop for same-queue re-entry`,
+                path,
             )
         }
     }
