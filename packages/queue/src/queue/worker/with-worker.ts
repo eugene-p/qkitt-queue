@@ -6,16 +6,22 @@ import {
 import { createSubscriptionCounts } from '../../events/subscription-counts'
 import { isIntegerInRange } from '../../util/number.util'
 import type { WorkerFn } from '../../worker/types'
-import { decorateQueue } from '../core/forward.util'
+import {
+    decorateQueue,
+    type PreserveQueueExtras,
+} from '../core/forward.util'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 import { QueueHydratingError } from '../../persist/hydrate-gate.util'
 
-/** Non-core keys from an inner queue (e.g. persist `flush` / `hydrate`). */
-type PreserveQueueExtras<TQueue extends object> = Omit<
-    TQueue,
-    keyof Queue<unknown, EventMap>
->
+/** Thrown when {@link WithWorkerOptions} values are invalid. */
+export class InvalidWorkerOptionError extends Error {
+    override readonly name = 'InvalidWorkerOptionError'
+
+    constructor(message: string) {
+        super(message)
+    }
+}
 
 export type WorkerEvents<T, R = unknown> = {
     /** Fired just before the worker runs an item. */
@@ -67,7 +73,9 @@ export type QueueWithWorker<
 const resolveConcurrency = (value: number | undefined): number => {
     const concurrency = value ?? 1
     if (!isIntegerInRange(concurrency, 1)) {
-        throw new Error('concurrency must be a safe integer >= 1')
+        throw new InvalidWorkerOptionError(
+            'concurrency must be a safe integer >= 1',
+        )
     }
     return concurrency
 }

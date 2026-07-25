@@ -3,6 +3,7 @@ import {
     createMemorySnapshotStore,
     createWebRowStore,
     createWebSnapshotStore,
+    StorageUnavailableError,
     type JsonCodec,
     type RowStore,
     type SnapshotStore,
@@ -33,9 +34,7 @@ const lazyGlobalStorage = (
             globalThis as unknown as Record<string, WebStorageLike | undefined>
         )[name]
         if (!storage) {
-            throw new Error(
-                `${name} is not available; pass an explicit \`storage\` option`,
-            )
+            throw new StorageUnavailableError(name)
         }
         cached = storage
         return cached

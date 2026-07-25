@@ -7,9 +7,20 @@ export type {
     SnapshotStore,
 } from './contracts'
 
+export {
+    DuplicateRowIdError,
+    InvalidPersistOptionError,
+    InvalidQueueCompositionError,
+    InvalidRowIdError,
+    InvalidStoreError,
+} from './errors'
+
 export { withPersist } from './with-persist'
 
-export { QueueHydratingError } from './hydrate-gate.util'
+export {
+    HydrateInProgressError,
+    QueueHydratingError,
+} from './hydrate-gate.util'
 
 export { isRowStore, isSnapshotStore } from './store-guards.util'
 
@@ -30,6 +41,7 @@ export {
     createWebRowStore,
     createWebSnapshotStore,
     StorageCodecError,
+    StorageUnavailableError,
     type JsonCodec,
     type WebRowStoreOptions,
     type WebSnapshotStoreOptions,

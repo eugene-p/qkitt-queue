@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { retryWorker } from './retry'
 import {
+    InvalidPipelineError,
     pipelineDone,
     pipelineWorker,
     PipelineStepError,
@@ -8,9 +9,7 @@ import {
 
 describe('pipelineWorker', () => {
     it('rejects an empty step list', () => {
-        expect(() => pipelineWorker([])).toThrow(
-            'pipelineWorker requires at least one step',
-        )
+        expect(() => pipelineWorker([])).toThrow(InvalidPipelineError)
     })
 
     it('passes each step result to the next (bare functions)', async () => {
@@ -171,12 +170,12 @@ describe('pipelineWorker', () => {
     it('rejects invalid step entries at construction', () => {
         expect(() =>
             pipelineWorker([{ name: '', fn: async (n: number) => n }] as never),
-        ).toThrow(/non-empty name/)
+        ).toThrow(InvalidPipelineError)
         expect(() => pipelineWorker([null as never])).toThrow(
-            /must be a function or \{ name, fn/,
+            InvalidPipelineError,
         )
         expect(() => pipelineWorker([{ name: 'x' } as never])).toThrow(
-            /must be a function or \{ name, fn/,
+            InvalidPipelineError,
         )
     })
 

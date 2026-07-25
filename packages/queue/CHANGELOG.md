@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-07-24
+
+### Breaking
+
+- Option / construction failures and several persist/router failures throw **named** `Error` subclasses instead of plain `Error`, `TypeError`, or `RangeError`. Messages are unchanged; catch with `instanceof` (or keep matching messages).
+  - Queue / worker / options: `InvalidQueueOptionError`, `InvalidWorkerOptionError`, `InvalidRetryOptionError`, `InvalidPipelineError`, `InvalidPersistOptionError`
+  - Persist composition / stores / rows: `InvalidQueueCompositionError`, `InvalidStoreError`, `InvalidRowIdError`, `DuplicateRowIdError`, `HydrateInProgressError`
+  - Router: `InvalidRoutePatternError`, `InvalidTopicError`
+  - Web storage: `StorageUnavailableError`
+- `withPersist` bad-store cases throw `InvalidStoreError` (was `TypeError`)
+
+### Added
+
+- Named error classes above are exported from the root barrel and relevant subpaths (`@qkitt/queue/persist`, `@qkitt/queue/queue`, `@qkitt/queue/worker`, `@qkitt/queue/router`, store subpaths for storage errors)
+
 ## [0.6.2] — 2026-07-22
 
 ### Performance
@@ -274,6 +289,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.6.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.3
 [0.6.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.2
 [0.6.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.1
 [0.6.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.0

@@ -30,6 +30,15 @@ type NormalizedStep = {
     metadata: unknown
 }
 
+/** Thrown when pipeline construction or step shape is invalid. */
+export class InvalidPipelineError extends Error {
+    override readonly name = 'InvalidPipelineError'
+
+    constructor(message: string) {
+        super(message)
+    }
+}
+
 const isStepObject = (step: unknown): step is PipelineStepObject =>
     typeof step === 'object' &&
     step !== null &&
@@ -46,7 +55,7 @@ const normalizeStep = (step: PipelineStep, index: number): NormalizedStep => {
 
     if (isStepObject(step)) {
         if (typeof step.name !== 'string' || step.name.length === 0) {
-            throw new Error(
+            throw new InvalidPipelineError(
                 `pipeline step at index ${index} requires a non-empty name`,
             )
         }
@@ -57,7 +66,7 @@ const normalizeStep = (step: PipelineStep, index: number): NormalizedStep => {
         }
     }
 
-    throw new Error(
+    throw new InvalidPipelineError(
         `pipeline step at index ${index} must be a function or { name, fn, metadata? }`,
     )
 }
@@ -154,7 +163,9 @@ export function pipelineWorker<T, R = unknown>(
     steps: readonly PipelineStep[],
 ): WorkerFn<T, R> {
     if (steps.length === 0) {
-        throw new Error('pipelineWorker requires at least one step')
+        throw new InvalidPipelineError(
+            'pipelineWorker requires at least one step',
+        )
     }
 
     const normalized = steps.map(normalizeStep)

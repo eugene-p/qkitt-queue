@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-07-24
+
+### Changed
+
+- Peer dependency `@qkitt/queue` is now `^0.6.3` (requires named `StorageUnavailableError` and router error types from core)
+
 ## [0.4.0] — 2026-07-22
 
 ### Breaking
@@ -110,6 +116,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.4.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.1
 [0.4.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.0
 [0.3.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.3.0
 [0.2.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.2.2

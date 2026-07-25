@@ -17,6 +17,7 @@ import type {
     SnapshotPersistOptions,
     SnapshotStore,
 } from '../contracts'
+import { InvalidPersistOptionError } from '../errors'
 import { assertNotHydrating } from '../hydrate-gate.util'
 import { createPersistenceLifecycle } from './lifecycle.util'
 
@@ -48,7 +49,9 @@ const cancelTimeout = (handle: TimerHandle): void => {
 const resolveAutoSaveDebounceMs = (value: number | undefined): number => {
     const ms = value ?? 0
     if (!isIntegerInRange(ms, 0)) {
-        throw new Error('autoSaveDebounceMs must be a safe integer >= 0')
+        throw new InvalidPersistOptionError(
+            'autoSaveDebounceMs must be a safe integer >= 0',
+        )
     }
     return ms
 }
@@ -59,7 +62,7 @@ const resolveAutoSaveDebounceMs = (value: number | undefined): number => {
  * Uses silent hydrate rebuild + a post-gate `queue:enqueued` kick so stacked
  * workers process restored items only after auto-save is allowed again.
  * Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
- * A second concurrent `hydrate()` rejects with "hydrate already in progress".
+ * A second concurrent `hydrate()` rejects with {@link HydrateInProgressError}.
  *
  * Auto-save coalesces burst mutations (microtask by default, or
  * {@link SnapshotPersistOptions.autoSaveDebounceMs}). Prefer `flush()` before

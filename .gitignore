@@ -46,6 +46,8 @@ tmp/
 temp/
 .docs/
 agent-tools/
+.grok/
+mcps/
 
 # Example runtime data (e.g. fs snapshot demo)
 examples/**/.data/

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildQueue, QueueFullError } from './queue'
+import { buildQueue, InvalidQueueOptionError, QueueFullError } from './queue'
 
 describe('buildQueue', () => {
     it('enqueues and dequeues in FIFO order', () => {
@@ -166,11 +166,13 @@ describe('buildQueue', () => {
     })
 
     it('rejects invalid maxSize', () => {
-        expect(() => buildQueue({ maxSize: 0 })).toThrow(/maxSize/)
-        expect(() => buildQueue({ maxSize: NaN })).toThrow(/maxSize/)
-        expect(() => buildQueue({ maxSize: Infinity })).toThrow(/maxSize/)
-        expect(() => buildQueue({ maxSize: -1 })).toThrow(/maxSize/)
-        expect(() => buildQueue({ maxSize: 1.5 })).toThrow(/maxSize/)
+        expect(() => buildQueue({ maxSize: 0 })).toThrow(InvalidQueueOptionError)
+        expect(() => buildQueue({ maxSize: NaN })).toThrow(InvalidQueueOptionError)
+        expect(() => buildQueue({ maxSize: Infinity })).toThrow(
+            InvalidQueueOptionError,
+        )
+        expect(() => buildQueue({ maxSize: -1 })).toThrow(InvalidQueueOptionError)
+        expect(() => buildQueue({ maxSize: 1.5 })).toThrow(InvalidQueueOptionError)
     })
 
     it('preserves order after many dequeues', () => {

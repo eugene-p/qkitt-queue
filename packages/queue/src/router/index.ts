@@ -1,5 +1,7 @@
 export {
     buildRouter,
+    InvalidRoutePatternError,
+    InvalidTopicError,
     type Binding,
     type BuildRouterOptions,
     type RouteMessage,

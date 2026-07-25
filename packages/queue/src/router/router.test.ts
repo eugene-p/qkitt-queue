@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildQueue } from '../queue/core/queue'
-import { buildRouter, type RouteMessage } from './router'
+import {
+    buildRouter,
+    InvalidRoutePatternError,
+    InvalidTopicError,
+    type RouteMessage,
+} from './router'
 
 describe('buildRouter', () => {
     it('routes an exact topic into a bound queue', () => {
@@ -235,8 +240,10 @@ describe('buildRouter', () => {
         const onError = vi.fn()
         router.on('router:error', onError)
 
-        expect(() => router.bind('a.#.b', buildQueue())).toThrow(/Invalid route pattern/)
-        expect(() => router.publish('a.*', 1)).toThrow(/Invalid publish topic/)
+        expect(() => router.bind('a.#.b', buildQueue())).toThrow(
+            InvalidRoutePatternError,
+        )
+        expect(() => router.publish('a.*', 1)).toThrow(InvalidTopicError)
         expect(onError).toHaveBeenCalled()
     })
 

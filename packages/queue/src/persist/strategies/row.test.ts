@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildQueue, QueueFullError } from '../../queue/core/queue'
+import {
+    DuplicateRowIdError,
+    InvalidQueueCompositionError,
+    InvalidRowIdError,
+    InvalidStoreError,
+} from '../errors'
+import { HydrateInProgressError, QueueHydratingError } from '../hydrate-gate.util'
 import type { RowRecord, RowStore } from '../contracts'
 import { withPersist } from '../with-persist'
 
@@ -335,9 +342,9 @@ describe('withPersist (row)', () => {
         const pending = queue.hydrate()
 
         await Promise.resolve()
-        expect(() => queue.enqueue('x')).toThrow(/hydrate/)
-        expect(() => queue.dequeue()).toThrow(/hydrate/)
-        expect(() => queue.clear()).toThrow(/hydrate/)
+        expect(() => queue.enqueue('x')).toThrow(QueueHydratingError)
+        expect(() => queue.dequeue()).toThrow(QueueHydratingError)
+        expect(() => queue.clear()).toThrow(QueueHydratingError)
 
         releaseLoad()
         await pending
@@ -364,11 +371,9 @@ describe('withPersist (row)', () => {
         const first = queue.hydrate()
 
         await Promise.resolve()
-        await expect(queue.hydrate()).rejects.toThrow(
-            /hydrate already in progress/,
-        )
+        await expect(queue.hydrate()).rejects.toThrow(HydrateInProgressError)
         // Gate still owned by first hydrate — mutations remain blocked.
-        expect(() => queue.enqueue('x')).toThrow(/hydrate/)
+        expect(() => queue.enqueue('x')).toThrow(QueueHydratingError)
         expect(loadCount).toBe(1)
 
         releaseLoad()
@@ -394,7 +399,7 @@ describe('withPersist (row)', () => {
         await queue.flush()
         expect(insert).toHaveBeenCalledTimes(1)
 
-        expect(() => queue.enqueue('b')).toThrow(/duplicate row id/)
+        expect(() => queue.enqueue('b')).toThrow(DuplicateRowIdError)
         expect(queue.toArray()).toEqual(['a'])
         await queue.flush()
         expect(insert).toHaveBeenCalledTimes(1)
@@ -447,7 +452,7 @@ describe('withPersist (row)', () => {
                 persistOptions: { createId: () => badId },
             }
             const queue = withPersist(buildQueue<string>(), store)
-            expect(() => queue.enqueue('a')).toThrow(/non-empty/)
+            expect(() => queue.enqueue('a')).toThrow(InvalidRowIdError)
             expect(queue.isEmpty()).toBe(true)
             await queue.flush()
             expect(insert).not.toHaveBeenCalled()
@@ -471,7 +476,7 @@ describe('withPersist (row)', () => {
         const onError = vi.fn()
         queue.on('persist:error', onError)
 
-        await expect(queue.hydrate()).rejects.toThrow(/duplicate row id/)
+        await expect(queue.hydrate()).rejects.toThrow(DuplicateRowIdError)
         expect(onError).toHaveBeenCalledWith(
             expect.objectContaining({ operation: 'load' }),
         )
@@ -489,7 +494,7 @@ describe('withPersist (row)', () => {
             }
             const queue = withPersist(buildQueue<string>(), store)
 
-            await expect(queue.hydrate()).rejects.toThrow(/non-empty/)
+            await expect(queue.hydrate()).rejects.toThrow(InvalidRowIdError)
             expect(queue.isEmpty()).toBe(true)
         }
     })
@@ -513,7 +518,7 @@ describe('withPersist (row)', () => {
         }
         const queue = withPersist(buildQueue<string>(), store)
 
-        expect(() => queue.replaceAll(['x', 'y'])).toThrow(/duplicate row id/)
+        expect(() => queue.replaceAll(['x', 'y'])).toThrow(DuplicateRowIdError)
         expect(queue.isEmpty()).toBe(true)
         await queue.flush()
         expect(clear).not.toHaveBeenCalled()
@@ -525,7 +530,7 @@ describe('withPersist (row)', () => {
         const workerQueue = withWorker(buildQueue<string>(), async (s) => s)
         expect(() =>
             withPersist(workerQueue as never, memoryRows()),
-        ).toThrow(/before withWorker/)
+        ).toThrow(InvalidQueueCompositionError)
     })
 
     it('throws when persist is stacked on an already-persisted queue', async () => {
@@ -535,7 +540,7 @@ describe('withPersist (row)', () => {
             createMemorySnapshotStore(),
         )
         expect(() => withPersist(snap as never, memoryRows())).toThrow(
-            /already-persisted/,
+            InvalidQueueCompositionError,
         )
     })
 
@@ -550,7 +555,7 @@ describe('withPersist (row)', () => {
         }
         expect(() =>
             withPersist(buildQueue<string>(), ambiguous as never),
-        ).toThrow(/matches both/)
+        ).toThrow(InvalidStoreError)
     })
 
     it('replaceAll clears store and inserts new rows with fresh ids', async () => {

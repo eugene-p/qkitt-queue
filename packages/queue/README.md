@@ -652,7 +652,7 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 
 `null` / `undefined` are valid payloads. Prefer `tryDequeue` / `tryPeek` when `T` may be nullish so emptiness is structural (`undefined` return) rather than inferred from the value.
 
-**Errors:** `QueueFullError` (`maxSize`).
+**Errors:** `QueueFullError` (`maxSize`); `InvalidQueueOptionError` for invalid `maxSize`.
 
 **Events**
 
@@ -704,6 +704,8 @@ Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the
 
 The pump uses `tryDequeue` so nullish payloads are processed. While a stacked persist layer is hydrating, `tryDequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate kick. Other unexpected dequeue failures emit `worker:pump-error` and stop the worker — call `start()` after fixing the cause.
 
+**Errors:** `InvalidWorkerOptionError` for invalid `concurrency`.
+
 ---
 
 ### `withPersist`
@@ -742,7 +744,7 @@ When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules 
 
 **Row events:** `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error`.
 
-**Errors:** `QueueHydratingError` on concurrent mutation during hydrate. Throws if a worker is already attached (wrong stack order) or if the store matches both shapes.
+**Errors:** `QueueHydratingError` on concurrent mutation during hydrate; `HydrateInProgressError` if a second `hydrate()` starts while one is running; `InvalidQueueCompositionError` for wrong stack order or double persist; `InvalidStoreError` if the store matches both shapes or neither; `InvalidPersistOptionError` for bad snapshot options; `InvalidRowIdError` / `DuplicateRowIdError` for bad or colliding row ids.
 
 ---
 
@@ -763,7 +765,7 @@ retryWorker<T, R>(
 
 Passing a number is shorthand for `{ retries: n }`.
 
-**Errors:** `RetryExhaustedError` (`attempts`, `cause`).
+**Errors:** `RetryExhaustedError` (`attempts`, `cause`); `InvalidRetryOptionError` for invalid `retries` / `delay`.
 
 ---
 
@@ -778,7 +780,7 @@ Each step is `StepFn` or `{ name, fn, metadata? }`. Bare functions get names lik
 
 **Early exit:** `return pipelineDone(value)` from a step — remaining steps are skipped; the worker **resolves** with `value` (marker is unwrapped). Not a failure; `retryWorker` will not retry.
 
-**Errors:** `PipelineStepError` (`stepName`, `stepIndex`, `metadata`, `cause`). Empty `steps` throws at construction.
+**Errors:** `PipelineStepError` (`stepName`, `stepIndex`, `metadata`, `cause`); `InvalidPipelineError` for empty steps or invalid step entries.
 
 ---
 
@@ -804,6 +806,8 @@ buildRouter(options?: BuildRouterOptions): Router
 | `router:unmatched` | `{ topic, data, delivered }` |
 | `router:error` | `{ operation, error, topic?, pattern? }` |
 
+**Errors:** `InvalidRoutePatternError` on bad bind patterns; `InvalidTopicError` on bad publish topics (also emitted on `router:error` before throw).
+
 ---
 
 ### Stores
@@ -818,7 +822,7 @@ buildRouter(options?: BuildRouterOptions): Router
 | `createSessionStorageRowStore(key, options?)` | Row |
 | `createWebSnapshotStore` / `createWebRowStore` | Custom `WebStorageLike` |
 
-**Errors:** `StorageCodecError` on bad JSON in web stores.
+**Errors:** `StorageCodecError` on bad JSON in web stores; `StorageUnavailableError` when `localStorage` / `sessionStorage` is missing and no explicit `storage` was passed.
 
 ---
 

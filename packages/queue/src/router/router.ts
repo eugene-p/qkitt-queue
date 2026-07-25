@@ -71,6 +71,28 @@ export type Binding<T = unknown> = {
     target: RouteTarget<T>
 }
 
+/** Thrown when a bind pattern fails validation. */
+export class InvalidRoutePatternError extends Error {
+    override readonly name = 'InvalidRoutePatternError'
+    readonly pattern: string
+
+    constructor(pattern: string) {
+        super(`Invalid route pattern: ${pattern}`)
+        this.pattern = pattern
+    }
+}
+
+/** Thrown when a publish topic fails validation. */
+export class InvalidTopicError extends Error {
+    override readonly name = 'InvalidTopicError'
+    readonly topic: string
+
+    constructor(topic: string) {
+        super(`Invalid publish topic: ${topic}`)
+        this.topic = topic
+    }
+}
+
 export type Router<TEvents extends EventMap = RouterEvents> = {
     /**
      * Bind a queue (or any `enqueue` target) to a topic pattern.
@@ -142,7 +164,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         target: RouteTarget<T>,
     ): (() => void) => {
         if (!isValidPattern(pattern)) {
-            const error = new Error(`Invalid route pattern: ${pattern}`)
+            const error = new InvalidRoutePatternError(pattern)
             emitRouter('router:error', { operation: 'bind', error, pattern })
             throw error
         }
@@ -218,7 +240,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         // Split once: validate parts and match without a second split.
         const topicParts = topic.split(TOPIC_SEPARATOR)
         if (!isValidTopicParts(topicParts)) {
-            const error = new Error(`Invalid publish topic: ${topic}`)
+            const error = new InvalidTopicError(topic)
             emitRouter('router:error', { operation: 'publish', error, topic })
             throw error
         }

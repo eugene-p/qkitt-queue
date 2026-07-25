@@ -8,8 +8,11 @@ import type { Queue, QueueEvents } from '../queue/core/queue'
 import type {
     QueueWithPersist,
     RowStore,
+    RowStoreHandle,
     SnapshotStore,
+    SnapshotStoreHandle,
 } from './contracts'
+import { InvalidStoreError } from './errors'
 import { isRowStore, isSnapshotStore } from './store-guards.util'
 import { assertBareQueueForPersist } from './strategies/support'
 import { attachRowPersist } from './strategies/row'
@@ -27,8 +30,8 @@ import { attachSnapshotPersist } from './strategies/snapshot'
  * **Composition (required):** wrap the bare queue, then the worker:
  * `withWorker(withPersist(buildQueue(), store), worker)`.
  *
- * @throws {TypeError} if the store matches both shapes or neither.
- * @throws {Error} if the queue already has a worker or persist layer.
+ * @throws {InvalidStoreError} if the store matches both shapes or neither.
+ * @throws {InvalidQueueCompositionError} if the queue already has a worker or persist layer.
  */
 export function withPersist<
     T,
@@ -59,15 +62,14 @@ export function withPersist<
     const isRow = isRowStore<T>(store)
 
     if (isSnap && isRow) {
-        throw new TypeError(
+        throw new InvalidStoreError(
             'withPersist: store matches both SnapshotStore and RowStore',
         )
     }
 
     if (isSnap) {
         const options =
-            (store as { persistOptions?: Record<string, unknown> })
-                .persistOptions ?? {}
+            (store as SnapshotStoreHandle<T>).persistOptions ?? {}
         return attachSnapshotPersist(
             queue,
             store,
@@ -76,9 +78,7 @@ export function withPersist<
     }
 
     if (isRow) {
-        const options =
-            (store as { persistOptions?: Record<string, unknown> })
-                .persistOptions ?? {}
+        const options = (store as RowStoreHandle<T>).persistOptions ?? {}
         return attachRowPersist(
             queue,
             store,
@@ -86,7 +86,7 @@ export function withPersist<
         ) as QueueWithPersist<T, 'snapshot' | 'row', TEvents>
     }
 
-    throw new TypeError(
+    throw new InvalidStoreError(
         'withPersist: store must implement SnapshotStore or RowStore',
     )
 }

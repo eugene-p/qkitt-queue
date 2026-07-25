@@ -3,15 +3,18 @@
  * memory or store mutation. Duplicate ids corrupt durable row semantics
  * (stores upsert by id).
  */
+
+import { DuplicateRowIdError, InvalidRowIdError } from '../errors'
+
 export const assertUniqueRowId = (
     id: unknown,
     existingIds: ReadonlySet<string>,
 ): string => {
     if (typeof id !== 'string' || id.trim().length === 0) {
-        throw new Error('row id must be a non-empty string')
+        throw new InvalidRowIdError()
     }
     if (existingIds.has(id)) {
-        throw new Error(`duplicate row id: ${id}`)
+        throw new DuplicateRowIdError(id)
     }
     return id
 }

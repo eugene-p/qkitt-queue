@@ -13,12 +13,21 @@ export class QueueHydratingError extends Error {
     }
 }
 
+/** Thrown when a second `hydrate()` starts while one is already running. */
+export class HydrateInProgressError extends Error {
+    override readonly name = 'HydrateInProgressError'
+
+    constructor(message = 'hydrate already in progress') {
+        super(message)
+    }
+}
+
 /** Suppress side effects while restoring from the store. Exclusive: one run at a time. */
 export type HydrateGate = {
     isSuppressing: () => boolean
     /**
      * Run `fn` with the gate closed. Rejects immediately if another hydrate
-     * is already in progress (`hydrate already in progress`).
+     * is already in progress ({@link HydrateInProgressError}).
      */
     run: <R>(fn: () => Promise<R>) => Promise<R>
 }
@@ -30,7 +39,7 @@ export const createHydrateGate = (): HydrateGate => {
         isSuppressing: () => active,
         run: async <R>(fn: () => Promise<R>): Promise<R> => {
             if (active) {
-                throw new Error('hydrate already in progress')
+                throw new HydrateInProgressError()
             }
             active = true
             try {

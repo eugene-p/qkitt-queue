@@ -19,7 +19,10 @@ import {
 } from './web-storage-access.util'
 
 export { StorageCodecError, type JsonCodec } from './json-codec.util'
-export type { WebStorageLike } from './web-storage-access.util'
+export {
+    StorageUnavailableError,
+    type WebStorageLike,
+} from './web-storage-access.util'
 
 export type WebSnapshotStoreOptions<T> = {
     /** Storage key for the full JSON array snapshot. */

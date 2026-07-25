@@ -31,6 +31,7 @@ import type {
 import { createId } from '../create-id.util'
 import { assertNotHydrating } from '../hydrate-gate.util'
 import { createPersistenceLifecycle } from './lifecycle.util'
+import { createRowIdSet } from './row-id-set.util'
 import { assertUniqueRowId, assertUniqueRowIds } from './row-id.util'
 
 type RowQueueEvents<T, TEvents extends EventMap> = MergeEventMaps<
@@ -53,7 +54,7 @@ type RowQueueEvents<T, TEvents extends EventMap> = MergeEventMaps<
  * - `hydrate` uses a silent rebuild (no mid-hydrate worker drain of the store),
  *   then emits one `queue:enqueued` so stacked workers pump after the gate opens.
  * - Concurrent mutations during `hydrate` throw {@link QueueHydratingError}.
- * - A second concurrent `hydrate()` rejects with "hydrate already in progress".
+ * - A second concurrent `hydrate()` rejects with {@link HydrateInProgressError}.
  * - Row ids from `createId` / `loadAll` must be unique and non-empty (not whitespace-only).
  * - Call `flush()` to await pending writes.
  */
@@ -78,15 +79,7 @@ export const attachRowPersist = <
         emitter.emit as (eventName: string, data: unknown) => void,
     )
 
-    // Incremental id set: O(1) uniqueness checks (avoids toArray+Set per enqueue).
-    const idSet = new Set<string>()
-
-    const rebuildIdSet = (rows: readonly RowRecord<T>[]): void => {
-        idSet.clear()
-        for (let i = 0; i < rows.length; i += 1) {
-            idSet.add(rows[i]!.id)
-        }
-    }
+    const idSet = createRowIdSet()
 
     const { counts: subs, wrapOn } = createSubscriptionCounts({
         enqueued: 'queue:enqueued',
@@ -132,7 +125,7 @@ export const attachRowPersist = <
             // Silent rebuild: no queue:enqueued during gate (workers must
             // not dequeue while store removes are suppressed).
             inner.replaceAll(rows)
-            rebuildIdSet(rows)
+            idSet.rebuild(rows)
             emitPersist('persist:loaded', { size: inner.size() })
         },
         onLoadError: (error) => {
@@ -169,7 +162,7 @@ export const attachRowPersist = <
     const enqueue = (item: T): void => {
         assertNotHydrating(gate)
 
-        const id = assertUniqueRowId(nextId(), idSet)
+        const id = assertUniqueRowId(nextId(), idSet.set)
         const record = { id, item }
 
         // Reserve id before enqueue so nested enqueue (from queue:enqueued
@@ -270,7 +263,7 @@ export const attachRowPersist = <
         })
 
         inner.replaceAll(records)
-        rebuildIdSet(records)
+        idSet.rebuild(records)
 
         scheduleStore(async () => {
             try {

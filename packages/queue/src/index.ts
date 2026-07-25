@@ -9,6 +9,12 @@ export {
 
 // Persist core (withPersist + strategy runtime) — separate from store factories.
 export {
+    DuplicateRowIdError,
+    HydrateInProgressError,
+    InvalidPersistOptionError,
+    InvalidQueueCompositionError,
+    InvalidRowIdError,
+    InvalidStoreError,
     isRowStore,
     isSnapshotStore,
     QueueHydratingError,
@@ -37,6 +43,7 @@ export {
     createWebRowStore,
     createWebSnapshotStore,
     StorageCodecError,
+    StorageUnavailableError,
     type JsonCodec,
     type WebRowStoreOptions,
     type WebSnapshotStoreOptions,
@@ -45,6 +52,8 @@ export {
 
 export {
     buildQueue,
+    InvalidQueueOptionError,
+    InvalidWorkerOptionError,
     QueueFullError,
     withWorker,
     type BuildQueueOptions,
@@ -59,6 +68,8 @@ export {
 
 export {
     buildRouter,
+    InvalidRoutePatternError,
+    InvalidTopicError,
     type Binding,
     type BuildRouterOptions,
     type RouteMessage,
@@ -69,6 +80,8 @@ export {
 } from './router'
 
 export {
+    InvalidPipelineError,
+    InvalidRetryOptionError,
     pipelineWorker,
     pipelineDone,
     PipelineStepError,

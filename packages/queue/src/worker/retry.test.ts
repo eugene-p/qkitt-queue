@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RetryExhaustedError, retryWorker } from './retry'
+import {
+    InvalidRetryOptionError,
+    RetryExhaustedError,
+    retryWorker,
+} from './retry'
 
 describe('retryWorker', () => {
     it('returns on first success without retrying', async () => {
@@ -127,23 +131,25 @@ describe('retryWorker', () => {
 
     it('rejects invalid retries at wrap time', () => {
         const inner = vi.fn(async (n: number) => n)
-        expect(() => retryWorker(inner, NaN)).toThrow(/retries/)
-        expect(() => retryWorker(inner, -1)).toThrow(/retries/)
-        expect(() => retryWorker(inner, 1.5)).toThrow(/retries/)
-        expect(() => retryWorker(inner, { retries: Infinity })).toThrow(/retries/)
+        expect(() => retryWorker(inner, NaN)).toThrow(InvalidRetryOptionError)
+        expect(() => retryWorker(inner, -1)).toThrow(InvalidRetryOptionError)
+        expect(() => retryWorker(inner, 1.5)).toThrow(InvalidRetryOptionError)
+        expect(() => retryWorker(inner, { retries: Infinity })).toThrow(
+            InvalidRetryOptionError,
+        )
     })
 
     it('rejects invalid static delay at wrap time', () => {
         const inner = vi.fn(async (n: number) => n)
         expect(() => retryWorker(inner, { retries: 1, delay: -1 })).toThrow(
-            /delay/,
+            InvalidRetryOptionError,
         )
         expect(() => retryWorker(inner, { retries: 1, delay: NaN })).toThrow(
-            /delay/,
+            InvalidRetryOptionError,
         )
         expect(() =>
             retryWorker(inner, { retries: 1, delay: Infinity }),
-        ).toThrow(/delay/)
+        ).toThrow(InvalidRetryOptionError)
     })
 
     it('throws when delay callback returns an invalid duration', async () => {
@@ -156,7 +162,7 @@ describe('retryWorker', () => {
             delay: () => -1,
         })
 
-        await expect(worker(1)).rejects.toThrow(/delay/)
+        await expect(worker(1)).rejects.toThrow(InvalidRetryOptionError)
         // Delay validation runs after the first failure, before retry 2.
         expect(inner).toHaveBeenCalledTimes(1)
     })

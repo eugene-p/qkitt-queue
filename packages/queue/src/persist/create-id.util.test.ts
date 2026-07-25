@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createId } from './create-id.util'
+import { createId, InvalidIdSizeError } from './create-id.util'
 
 const URL_SAFE = /^[A-Za-z0-9_-]+$/
 
@@ -24,8 +24,8 @@ describe('createId', () => {
     })
 
     it('rejects non-positive sizes', () => {
-        expect(() => createId(0)).toThrow(RangeError)
-        expect(() => createId(-1)).toThrow(RangeError)
-        expect(() => createId(1.5)).toThrow(RangeError)
+        expect(() => createId(0)).toThrow(InvalidIdSizeError)
+        expect(() => createId(-1)).toThrow(InvalidIdSizeError)
+        expect(() => createId(1.5)).toThrow(InvalidIdSizeError)
     })
 })

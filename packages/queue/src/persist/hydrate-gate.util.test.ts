@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
     assertNotHydrating,
     createHydrateGate,
+    HydrateInProgressError,
     QueueHydratingError,
 } from './hydrate-gate.util'
 
@@ -45,7 +46,7 @@ describe('createHydrateGate', () => {
         expect(gate.isSuppressing()).toBe(true)
 
         await expect(gate.run(async () => 'nope')).rejects.toThrow(
-            /hydrate already in progress/,
+            HydrateInProgressError,
         )
         // First invocation still owns the gate.
         expect(gate.isSuppressing()).toBe(true)

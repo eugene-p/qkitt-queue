@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildQueue } from '../../queue/core/queue'
 import type { SnapshotStore } from '../contracts'
+import { InvalidPersistOptionError } from '../errors'
+import { HydrateInProgressError, QueueHydratingError } from '../hydrate-gate.util'
 import { withPersist } from '../with-persist'
 
 const memorySnapshot = <T>(
@@ -146,14 +148,14 @@ describe('withPersist (snapshot)', () => {
         })
         expect(() =>
             withPersist(buildQueue<string>(), store),
-        ).toThrow(/autoSaveDebounceMs/)
+        ).toThrow(InvalidPersistOptionError)
 
         const store2 = memorySnapshot<string>([], {
             autoSaveDebounceMs: 1.5,
         })
         expect(() =>
             withPersist(buildQueue<string>(), store2),
-        ).toThrow(/autoSaveDebounceMs/)
+        ).toThrow(InvalidPersistOptionError)
     })
 
     it('auto-saves after dequeuing an undefined payload', async () => {
@@ -277,7 +279,7 @@ describe('withPersist (snapshot)', () => {
         const pending = queue.hydrate()
 
         await Promise.resolve()
-        expect(() => queue.enqueue('x')).toThrow(/hydrate/)
+        expect(() => queue.enqueue('x')).toThrow(QueueHydratingError)
 
         releaseLoad()
         await pending
@@ -303,10 +305,8 @@ describe('withPersist (snapshot)', () => {
         const first = queue.hydrate()
 
         await Promise.resolve()
-        await expect(queue.hydrate()).rejects.toThrow(
-            /hydrate already in progress/,
-        )
-        expect(() => queue.enqueue('x')).toThrow(/hydrate/)
+        await expect(queue.hydrate()).rejects.toThrow(HydrateInProgressError)
+        expect(() => queue.enqueue('x')).toThrow(QueueHydratingError)
         expect(loadCount).toBe(1)
 
         releaseLoad()

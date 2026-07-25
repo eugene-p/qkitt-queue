@@ -1,5 +1,6 @@
 export {
     buildQueue,
+    InvalidQueueOptionError,
     QueueFullError,
     type BuildQueueOptions,
     type Queue,
@@ -8,6 +9,7 @@ export {
 } from './core/queue'
 
 export {
+    InvalidWorkerOptionError,
     withWorker,
     type QueueWithWorker,
     type WithWorkerOptions,

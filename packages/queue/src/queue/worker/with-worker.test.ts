@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildQueue } from '../core/queue'
-import { withWorker } from './with-worker'
+import { InvalidWorkerOptionError, withWorker } from './with-worker'
 
 const flush = async (times = 1) => {
     for (let i = 0; i < times; i += 1) {
@@ -301,27 +301,27 @@ describe('withWorker', () => {
             withWorker(buildQueue<number>(), async (n) => n, {
                 concurrency: NaN,
             }),
-        ).toThrow(/concurrency/)
+        ).toThrow(InvalidWorkerOptionError)
         expect(() =>
             withWorker(buildQueue<number>(), async (n) => n, {
                 concurrency: 0,
             }),
-        ).toThrow(/concurrency/)
+        ).toThrow(InvalidWorkerOptionError)
         expect(() =>
             withWorker(buildQueue<number>(), async (n) => n, {
                 concurrency: 1.5,
             }),
-        ).toThrow(/concurrency/)
+        ).toThrow(InvalidWorkerOptionError)
         expect(() =>
             withWorker(buildQueue<number>(), async (n) => n, {
                 concurrency: Infinity,
             }),
-        ).toThrow(/concurrency/)
+        ).toThrow(InvalidWorkerOptionError)
         expect(() =>
             withWorker(buildQueue<number>(), async (n) => n, {
                 concurrency: -1,
             }),
-        ).toThrow(/concurrency/)
+        ).toThrow(InvalidWorkerOptionError)
     })
 
     it('waits on QueueHydratingError without stopping or emitting pump-error', async () => {

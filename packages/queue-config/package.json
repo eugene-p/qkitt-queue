@@ -1,6 +1,6 @@
 {
   "name": "@qkitt/queue-config",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "Declarative system config builder for @qkitt/queue",
   "license": "ISC",
@@ -46,7 +46,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@qkitt/queue": "^0.6.0"
+    "@qkitt/queue": "^0.6.3"
   },
   "devDependencies": {
     "@qkitt/queue": "file:../queue"

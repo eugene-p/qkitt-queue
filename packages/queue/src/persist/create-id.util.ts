@@ -3,6 +3,15 @@
  * Used as the default row id factory for row persist.
  */
 
+/** Thrown when {@link createId} is called with a non-positive size. */
+export class InvalidIdSizeError extends Error {
+    override readonly name = 'InvalidIdSizeError'
+
+    constructor(size: number) {
+        super(`createId size must be a positive integer, got ${size}`)
+    }
+}
+
 /** 64 URL-safe chars; power-of-two size keeps `byte & 63` unbiased. */
 const ALPHABET =
     'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-'
@@ -50,7 +59,7 @@ const fillRandom = (bytes: Uint8Array): void => {
  */
 export const createId = (size: number = DEFAULT_SIZE): string => {
     if (!Number.isInteger(size) || size <= 0) {
-        throw new RangeError(`createId size must be a positive integer, got ${size}`)
+        throw new InvalidIdSizeError(size)
     }
 
     const bytes = new Uint8Array(size)

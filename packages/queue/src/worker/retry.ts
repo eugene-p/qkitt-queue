@@ -21,6 +21,15 @@ export type RetryOptions = {
     shouldRetry?: (error: unknown, failedAttempt: number) => boolean
 }
 
+/** Thrown when {@link RetryOptions} values are invalid. */
+export class InvalidRetryOptionError extends Error {
+    override readonly name = 'InvalidRetryOptionError'
+
+    constructor(message: string) {
+        super(message)
+    }
+}
+
 /** Thrown when all retry attempts are exhausted (or `shouldRetry` returns false). */
 export class RetryExhaustedError extends Error {
     override readonly name = 'RetryExhaustedError'
@@ -53,7 +62,9 @@ const resolveDelay = (
     if (delay === undefined) return 0
     const ms = typeof delay === 'function' ? delay(failedAttempt, error) : delay
     if (!isNonNegativeFinite(ms)) {
-        throw new Error('retry delay must be a finite number >= 0')
+        throw new InvalidRetryOptionError(
+            'retry delay must be a finite number >= 0',
+        )
     }
     return ms
 }
@@ -74,7 +85,9 @@ export const retryWorker = <T, R>(
         typeof options === 'number' ? { retries: options } : options
 
     if (!isIntegerInRange(opts.retries, 0)) {
-        throw new Error('retries must be a safe integer >= 0')
+        throw new InvalidRetryOptionError(
+            'retries must be a safe integer >= 0',
+        )
     }
 
     // Static delay: validate once at wrap time.
@@ -83,7 +96,9 @@ export const retryWorker = <T, R>(
         typeof opts.delay !== 'function' &&
         !isNonNegativeFinite(opts.delay)
     ) {
-        throw new Error('retry delay must be a finite number >= 0')
+        throw new InvalidRetryOptionError(
+            'retry delay must be a finite number >= 0',
+        )
     }
 
     const maxRetries = opts.retries

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
     createMemoryRowStore,
     createMemorySnapshotStore,
+    InvalidRoutePatternError,
     QueueFullError,
     type JsonCodec,
     type RouteMessage,
@@ -652,7 +653,7 @@ describe('buildFromConfig', () => {
                     bindings: [{ pattern: 'bad..pattern', queue: 'a' }],
                 },
             }),
-        ).rejects.toThrow(/Invalid route pattern/)
+        ).rejects.toThrow(InvalidRoutePatternError)
     })
 
     it('attaches workers from JS config (plain function)', async () => {

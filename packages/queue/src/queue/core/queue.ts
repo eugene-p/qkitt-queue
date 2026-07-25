@@ -101,10 +101,19 @@ export class QueueFullError extends Error {
     }
 }
 
+/** Thrown when {@link BuildQueueOptions} values are invalid. */
+export class InvalidQueueOptionError extends Error {
+    override readonly name = 'InvalidQueueOptionError'
+
+    constructor(message: string) {
+        super(message)
+    }
+}
+
 export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     const maxSize = options.maxSize
     if (maxSize !== undefined && !isIntegerInRange(maxSize, 1)) {
-        throw new Error('maxSize must be a safe integer >= 1')
+        throw new InvalidQueueOptionError('maxSize must be a safe integer >= 1')
     }
 
     // Two-stack FIFO: O(1) amortized enqueue/dequeue without splice shifting.

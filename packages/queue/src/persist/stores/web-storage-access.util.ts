@@ -5,6 +5,19 @@ export type WebStorageLike = {
     removeItem: (key: string) => void
 }
 
+/** Thrown when `localStorage` / `sessionStorage` is missing and no mock was passed. */
+export class StorageUnavailableError extends Error {
+    override readonly name = 'StorageUnavailableError'
+    readonly storageName: string
+
+    constructor(storageName: string) {
+        super(
+            `${storageName} is not available; pass an explicit \`storage\` option`,
+        )
+        this.storageName = storageName
+    }
+}
+
 const getGlobalStorage = (
     name: 'localStorage' | 'sessionStorage',
 ): WebStorageLike => {
@@ -12,9 +25,7 @@ const getGlobalStorage = (
         globalThis as unknown as Record<string, WebStorageLike | undefined>
     )[name]
     if (!storage) {
-        throw new Error(
-            `${name} is not available; pass an explicit \`storage\` option`,
-        )
+        throw new StorageUnavailableError(name)
     }
     return storage
 }

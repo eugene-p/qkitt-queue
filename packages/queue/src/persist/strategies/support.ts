@@ -7,6 +7,7 @@ import {
     PERSIST_LAYER,
     WORKER_LAYER,
 } from '../../queue/core/layers.util'
+import { InvalidQueueCompositionError } from '../errors'
 
 /**
  * Fail fast when persist is stacked incorrectly.
@@ -18,14 +19,14 @@ export const assertBareQueueForPersist = (
     wrapperName: string,
 ): void => {
     if (hasQueueLayer(queue, WORKER_LAYER)) {
-        throw new Error(
+        throw new InvalidQueueCompositionError(
             `${wrapperName} must wrap the bare queue before withWorker: ` +
                 `withWorker(${wrapperName}(queue, store), worker)`,
         )
     }
 
     if (hasQueueLayer(queue, PERSIST_LAYER)) {
-        throw new Error(
+        throw new InvalidQueueCompositionError(
             `${wrapperName} cannot wrap an already-persisted queue; ` +
                 `use a single persist layer on the bare queue`,
         )

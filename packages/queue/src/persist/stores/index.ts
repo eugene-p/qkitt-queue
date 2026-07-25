@@ -19,6 +19,7 @@ export {
     createWebRowStore,
     createWebSnapshotStore,
     StorageCodecError,
+    StorageUnavailableError,
     type JsonCodec,
     type WebRowStoreOptions,
     type WebSnapshotStoreOptions,
