@@ -13,7 +13,7 @@ Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
-**[API reference](#api-reference)** · [Recipes](#recipes) · [Composition](#composition) · [Topics & routing](#topics--routing) · [Persistence](#persistence) · [Waiting for drain](#waiting-for-drain) · [Package layout](#package-layout) · [Benchmarks](#benchmark-summary)
+**[API reference](#api-reference)** · [Recipes](#recipes) · [Composition](#composition) · [Topics & routing](#topics--routing) · [Persistence](#persistence) · [Waiting for drain / graceful stop](#waiting-for-drain--graceful-stop) · [Package layout](#package-layout) · [Benchmarks](#benchmark-summary)
 
 ## Install
 
@@ -36,13 +36,13 @@ import {
 
 Subpath exports are available by area: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/events`. See [Package layout](#package-layout) for what each subpath exports.
 
-Runnable scenarios (worker, retry, persist, router, loop, DLQ): [`examples/`](../../examples) in the monorepo.
+Runnable scenarios (worker, lifecycle, retry, persist, router, loop, DLQ): [`examples/`](../../examples) in the monorepo.
 
 ## Recipes
 
 | Task | Jump to |
 | --- | --- |
-| Concurrent jobs | [`buildQueue` + `withWorker`](#2-add-a-worker), [Waiting for drain](#waiting-for-drain) |
+| Concurrent jobs | [`buildQueue` + `withWorker`](#2-add-a-worker), [Waiting for drain / graceful stop](#waiting-for-drain--graceful-stop) |
 | Retries / multi-step | [`retryWorker` + `pipelineWorker`](#4-worker-helpers) |
 | Survive restart (snapshot) | [§3 Add persistence](#3-add-persistence), [Persist lifecycle](#persist-lifecycle) |
 | DB-style row persist | [Row](#row) |
@@ -104,7 +104,8 @@ queue.on('worker:failed', ({ item, error }) => {
 
 queue.enqueue({ id: '1', url: 'https://example.com' })
 
-queue.stop()  // no new items; in-flight finish
+queue.stop()  // no new items; in-flight finish (does not wait)
+// await queue.gracefulStop({ flush: true })  // stop + wait in-flight + optional flush
 queue.start()
 ```
 
@@ -519,34 +520,31 @@ Every layer is typed. `on` returns an unsubscribe function. The emitter also wor
 
 Events cost nothing when nobody is subscribed.
 
-## Waiting for drain
-
-No built-in idle wait — use `worker:idle` directly:
+## Waiting for drain / graceful stop
 
 ```ts
-function whenIdle(queue: {
-  on: (event: 'worker:idle', cb: () => void) => () => void
-  isEmpty: () => boolean
-  isProcessing: () => boolean
-}): Promise<void> {
-  return new Promise((resolve) => {
-    const off = queue.on('worker:idle', () => {
-      off()
-      resolve()
-    })
-    if (queue.isEmpty() && !queue.isProcessing()) {
-      off()
-      resolve()
-    }
-  })
-}
+import { whenIdle, gracefulStop } from '@qkitt/queue'
 
-// usage
 queue.enqueue(job)
-await whenIdle(queue)
+await whenIdle(queue) // empty + nothing in flight
+
+// SIGTERM: finish in-flight, leave remaining items queued
+await gracefulStop(queue)
+// durable exit — also await pending persist writes
+await gracefulStop(queue, { flush: true })
+// same as queue.gracefulStop({ flush: true }) when using withWorker
 ```
 
-Resolves when the queue is empty and nothing is in flight. A later `enqueue` starts work again. Prefer this over busy-polling `isProcessing`.
+| Helper | Waits for | Stops pump? | Flush |
+| --- | --- | --- | --- |
+| `whenIdle(queue, { timeoutMs? })` | Empty + not processing (`worker:idle`) | No | — |
+| `gracefulStop(queue, { flush?, timeoutMs? })` | In-flight only (items may remain) | Yes | Opt-in (`flush: true`) |
+
+`whenIdle` does **not** call `stop()`. Idle also never fires if items remain and the pump is not running (`stop()`, or `autoStart: false` without `start()`) — use `timeoutMs`, `start()`, or drain/clear first.
+
+Both reject with `LifecycleTimeoutError` when `timeoutMs` elapses. The timeout only rejects the promise; it does not cancel in-flight workers or an in-progress `flush`. Prefer these helpers over busy-polling `isProcessing`.
+
+Runnable demo: [`examples/lifecycle`](../../examples/lifecycle).
 
 ## Notes & pitfalls
 
@@ -621,7 +619,7 @@ Relative numbers (Node 22.23.1, Windows laptop, 2026-07-22). YMMV.
 
 The sections above show composition patterns; the reference below covers every public signature.
 
-**Primary (most apps):** `buildQueue`, `withWorker`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
+**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
 
 Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`) is for specialized use — see individual entries below.
 
@@ -688,12 +686,13 @@ withWorker<T, R>(
 | Method | Description |
 | --- | --- |
 | `start()` | Begin taking items |
-| `stop()` | Stop taking new items; in-flight finish |
+| `stop()` | Stop taking new items; in-flight finish (sync; does not wait) |
+| `gracefulStop(options?)` | Stop, await in-flight, optional `flush: true` / `timeoutMs` |
 | `isRunning()` | Whether the pump may take work |
 | `isProcessing()` | Any in-flight items |
 | `activeCount()` | In-flight count |
 
-Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the decorated queue.
+Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the decorated queue. See also standalone [`whenIdle`](#waiting-for-drain--graceful-stop) / `gracefulStop`.
 
 **Events**
 
@@ -707,7 +706,25 @@ Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the
 
 The pump uses `tryDequeue` so nullish payloads are processed. While a stacked persist layer is hydrating, `tryDequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate kick. Other unexpected dequeue failures emit `worker:pump-error` and stop the worker — call `start()` after fixing the cause.
 
-**Errors:** `InvalidWorkerOptionError` for invalid `concurrency`.
+**Errors:** `InvalidWorkerOptionError` for invalid `concurrency` / invalid lifecycle `timeoutMs`; `LifecycleTimeoutError` when `whenIdle` / `gracefulStop` exceed `timeoutMs`.
+
+---
+
+### `whenIdle` / `gracefulStop`
+
+```ts
+whenIdle(queue, options?: { timeoutMs?: number }): Promise<void>
+gracefulStop(queue, options?: { flush?: boolean; timeoutMs?: number }): Promise<void>
+// also: queue.gracefulStop(options?) on QueueWithWorker
+```
+
+| | `whenIdle` | `gracefulStop` |
+| --- | --- | --- |
+| Condition | Queue empty and not processing | Not processing (remainder may stay queued) |
+| Calls `stop()` | No | Yes |
+| `flush` | — | Opt-in (`false` by default) |
+
+Full patterns: [Waiting for drain / graceful stop](#waiting-for-drain--graceful-stop).
 
 ---
 
@@ -989,7 +1006,8 @@ Also: `createTypedEmit`, types `EventEmitter`, `EventMap`, `EventCallback`, `Mer
 | `QueueWithWorker<T, R>` | Queue + worker controls |
 | `QueueWithPersist<T, S>` | Persist-decorated queue (`S` = `'snapshot'` or `'row'`) |
 | `WorkerFn<T, R>` | `(item) => R \| Promise<R>` |
-| `WorkerControls` | `start` / `stop` / … |
+| `WorkerControls` | `start` / `stop` / `gracefulStop` / … |
+| `WhenIdleOptions`, `GracefulStopOptions` | Lifecycle helper options |
 | `WithWorkerOptions`, `BuildQueueOptions` | Options objects |
 | `RowRecord<T>`, `RowStore<T>`, `SnapshotStore<T>` | Persist contracts |
 | `RowPersistEvents<T>`, `SnapshotPersistEvents` | Persist event maps for `.on('persist:…')` |
@@ -1005,7 +1023,7 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | Subpath | Exports | Does *not* contain |
 | --- | --- | --- |
 | `@qkitt/queue` | Everything | — |
-| `@qkitt/queue/queue` | `buildQueue`, `getQueueName`, `withWorker`, `withDeadLetter` / `withDlq`, `withLoop`, queue + worker types | Persist, stores |
+| `@qkitt/queue/queue` | `buildQueue`, `getQueueName`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, queue + worker types | Persist, stores |
 | `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
 | `@qkitt/queue/router` | `buildRouter`, router types | — |
 | `@qkitt/queue/persist` | `withPersist`, stores, contracts, event types, `QueueHydratingError` | `buildQueue`, `withWorker` |

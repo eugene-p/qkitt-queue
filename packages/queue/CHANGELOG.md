@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `whenIdle(queue, { timeoutMs? })` — promise that resolves when the worker queue is empty and nothing is in flight
+- `gracefulStop(queue, { flush?, timeoutMs? })` and `queue.gracefulStop(...)` — stop the pump, wait for in-flight work (remaining items stay queued); `flush: true` is opt-in
+- `LifecycleTimeoutError` when a lifecycle helper exceeds `timeoutMs`
+- Example: `examples/lifecycle` (`whenIdle` vs `gracefulStop` + flush)
+
 ## [0.6.4] — 2026-07-25
 
 ### Added

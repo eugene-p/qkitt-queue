@@ -20,6 +20,19 @@ export {
 } from './worker/with-worker'
 
 export {
+    LifecycleTimeoutError,
+    whenIdle,
+    type IdleWaitable,
+    type WhenIdleOptions,
+} from './worker/when-idle'
+
+export {
+    gracefulStop,
+    type GracefulStopable,
+    type GracefulStopOptions,
+} from './worker/graceful-stop'
+
+export {
     DeadLetterEnqueueError,
     InvalidDeadLetterOptionError,
     withDeadLetter,

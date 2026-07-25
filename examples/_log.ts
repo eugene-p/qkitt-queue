@@ -26,20 +26,7 @@ const sleep = (ms: number): Promise<void> =>
     setTimeout(resolve, ms)
   })
 
-export const waitIdle = (queue: {
-  on: (event: 'worker:idle', cb: () => void) => () => void
-  isProcessing: () => boolean
-  isEmpty: () => boolean
-}): Promise<void> =>
-  new Promise((resolve) => {
-    const off = queue.on('worker:idle', () => {
-      off()
-      resolve()
-    })
-    if (queue.isEmpty() && !queue.isProcessing()) {
-      off()
-      resolve()
-    }
-  })
+/** Prefer importing `whenIdle` from `@qkitt/queue` in new examples. */
+export { whenIdle as waitIdle } from '@qkitt/queue'
 
 export { sleep }

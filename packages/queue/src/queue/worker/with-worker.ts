@@ -13,15 +13,14 @@ import {
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Queue, QueueEvents } from '../core/queue'
 import { QueueHydratingError } from '../../persist/hydrate-gate.util'
+import {
+    gracefulStop as runGracefulStop,
+    type GracefulStopable,
+    type GracefulStopOptions,
+} from './graceful-stop'
+import { InvalidWorkerOptionError } from './invalid-worker-option-error'
 
-/** Thrown when {@link WithWorkerOptions} values are invalid. */
-export class InvalidWorkerOptionError extends Error {
-    override readonly name = 'InvalidWorkerOptionError'
-
-    constructor(message: string) {
-        super(message)
-    }
-}
+export { InvalidWorkerOptionError } from './invalid-worker-option-error'
 
 export type WorkerEvents<T, R = unknown> = {
     /** Fired just before the worker runs an item. */
@@ -56,6 +55,11 @@ export type WorkerControls = {
     start: () => void
     /** Stop taking new items. In-flight work still finishes. */
     stop: () => void
+    /**
+     * Stop taking new items, wait for in-flight work, optionally `flush`.
+     * Remaining queued items are left in place (not a full drain).
+     */
+    gracefulStop: (options?: GracefulStopOptions) => Promise<void>
     /** Whether the worker is allowed to take new items. */
     isRunning: () => boolean
     /** Whether any items are currently being processed. */
@@ -259,13 +263,37 @@ export const withWorker = <
         start()
     }
 
+    const isProcessing = (): boolean => active > 0
+
+    const gracefulStop = (options?: GracefulStopOptions): Promise<void> => {
+        const flush = (inner as { flush?: () => void | PromiseLike<void> })
+            .flush
+        return runGracefulStop(
+            {
+                stop,
+                isProcessing,
+                on: on as GracefulStopable['on'],
+                ...(typeof flush === 'function'
+                    ? {
+                          flush: () =>
+                              (
+                                  flush as () => void | PromiseLike<void>
+                              ).call(inner),
+                      }
+                    : {}),
+            },
+            options,
+        )
+    }
+
     const api = markQueueLayer(
         decorateQueue(inner, {
             on,
             start,
             stop,
+            gracefulStop,
             isRunning: () => running,
-            isProcessing: () => active > 0,
+            isProcessing,
             activeCount: () => active,
         }),
         WORKER_LAYER,

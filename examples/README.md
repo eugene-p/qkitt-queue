@@ -15,6 +15,7 @@ npx tsx examples/with-loop/main.ts
 npx tsx examples/with-dlq/main.ts
 npx tsx examples/loop-and-dlq/main.ts
 npx tsx examples/with-config-loop-dlq/main.ts
+npx tsx examples/lifecycle/main.ts
 
 # or all:
 npm run examples
@@ -23,6 +24,7 @@ npm run examples
 | Example | Task | Layers / package |
 | --- | --- | --- |
 | [`worker-drain`](./worker-drain/main.ts) | Concurrent jobs + drain wait | `buildQueue` → `withWorker` |
+| [`lifecycle`](./lifecycle/main.ts) | `whenIdle` drain vs `gracefulStop` + flush | `withPersist` → `withWorker` |
 | [`retry-pipeline`](./retry-pipeline/main.ts) | Retries / multi-step | `pipelineWorker` + `retryWorker` → `withWorker` |
 | [`persist-restart`](./persist-restart/main.ts) | Survive restart (snapshot) | `withPersist` → `withWorker` |
 | [`fs-snapshot-store`](./fs-snapshot-store/main.ts) | File snapshot store | custom `SnapshotStore` + `withPersist` |
@@ -33,4 +35,4 @@ npm run examples
 | [`loop-and-dlq`](./loop-and-dlq/main.ts) | Hop then poison via filters | `withWorker` → `withLoop` → `withDlq` |
 | [`with-config-loop-dlq`](./with-config-loop-dlq/main.ts) | Same chain from config | `@qkitt/queue-config` `loop` + `dlq` |
 
-Task index and composition patterns: [Recipes](../packages/queue/README.md#recipes) · [Waiting for drain](../packages/queue/README.md#waiting-for-drain)
+Task index and composition patterns: [Recipes](../packages/queue/README.md#recipes) · [Waiting for drain / graceful stop](../packages/queue/README.md#waiting-for-drain--graceful-stop)
