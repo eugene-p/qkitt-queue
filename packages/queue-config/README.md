@@ -5,15 +5,15 @@
 [![License: ISC](https://img.shields.io/npm/l/@qkitt/queue-config.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue-config.svg)](https://nodejs.org)
 
-Declarative setup for [`@qkitt/queue`](../queue): named stores, queues, workers, optional loop / dead-letter, and topic-router bindings in one object.
+Declarative setup for [`@qkitt/queue`](https://www.npmjs.com/package/@qkitt/queue): named stores, queues, workers, optional loop / dead-letter, and topic-router bindings in one object.
 
-Builds the same stack as hand-written composition (`queue → persist → worker → loop → dlq → router`) from a config object. Optional; most apps only need `@qkitt/queue`.
+Builds the same stack as hand-written composition (`queue → persist → worker → loop → dlq → router`) from a config object. Optional; most apps only need `@qkitt/queue`. See the core [composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) and [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) guides for the underlying model.
 
-**Peer dependency:** `@qkitt/queue` `^0.6.4`. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
+**Peer dependency:** `@qkitt/queue` `^0.6.4`. Requires TypeScript **4.7+** with `moduleResolution` `node16` or `nodenext`, or **5.0+** with `bundler`.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.2` → `0.3`). Check the changelog on minor upgrades.
 
-Runnable demo: [`examples/with-config`](../../examples/with-config) in the monorepo.
+Runnable demos: [`examples/with-config`](https://github.com/eugene-p/qkitt-queue/tree/main/examples/with-config), [`examples/with-config-loop-dlq`](https://github.com/eugene-p/qkitt-queue/tree/main/examples/with-config-loop-dlq).
 
 **[API reference](#api-reference)** · [Config reference](#config-reference) · [JSON mode](#json-mode)
 
@@ -187,7 +187,7 @@ export default defineConfig({
 })
 ```
 
-Runnable: [`examples/with-config-loop-dlq`](../../examples/with-config-loop-dlq). Hand composition: [`examples/loop-and-dlq`](../../examples/loop-and-dlq) and core [Chaining withLoop + withDlq](../queue/README.md#chaining-withloop--withdlq).
+Runnable: [`examples/with-config-loop-dlq`](https://github.com/eugene-p/qkitt-queue/tree/main/examples/with-config-loop-dlq). Hand composition: [`examples/loop-and-dlq`](https://github.com/eugene-p/qkitt-queue/tree/main/examples/loop-and-dlq) and core [Chaining withLoop + withDlq](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#chaining-withloop--withdlq).
 
 ### `router`
 

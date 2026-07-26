@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-<h1 align="center" style="padding-bottom:2rem; margin-top:0px">Fast in-process queues for TypeScript</h1>
+<h1 align="center" style="padding-bottom:2rem; margin-top:0px">Composable in-process queues for TypeScript</h1>
 
 [![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
 [![npm @qkitt/queue](https://img.shields.io/npm/v/@qkitt/queue.svg?label=%40qkitt%2Fqueue)](https://www.npmjs.com/package/@qkitt/queue)
@@ -20,13 +20,28 @@
 
 | Package | What it is |
 | --- | --- |
-| [`@qkitt/queue`](./packages/queue) | Queue, worker, persist, router, retry, pipeline |
+| [`@qkitt/queue`](./packages/queue) | Queue, worker, persist, router, retry, pipeline, loop / DLQ |
 | [`@qkitt/queue-config`](./packages/queue-config) | Optional: build a system from a config object |
-| [`@qkitt/queue-bench`](./packages/bench) | Benchmarks against in-process peers (monorepo only) |
+| [`@qkitt/queue-bench`](./packages/bench) | Benchmarks against in-process peers |
 
 Most apps only need `@qkitt/queue` — compose layers in code and reach for `@qkitt/queue-config` when you want a declarative setup instead.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
+
+## When to use this
+
+In-process queue toolkit. Start bare, add a layer as requirements change:
+
+- **FIFO backlog** — hold work in order until something drains it (orders awaiting fulfillment, moderation queue, form submissions waiting for review).
+- **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
+- **Retries** — survive flaky third-party calls (payment capture, carrier API, email or SMS gateway).
+- **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
+- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Built-in memory and Web Storage; custom stores if you implement `SnapshotStore` / `RowStore`.
+- **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
+- **Failure routing** — re-enter the same queue with hop meta (`withLoop`) or forward failed items to a dead-letter sink (`withDeadLetter` / `withDlq`).
+- **Declarative config** — stand up a multi-queue system from one object (`@qkitt/queue-config`).
+
+**Out of scope:** work that spans machines or processes.
 
 ## Install
 
@@ -42,7 +57,25 @@ npm install @qkitt/queue @qkitt/queue-config
 
 ## Quick start
 
-Compose layers from the inside out:
+Minimal concurrent drain:
+
+```ts
+import { buildQueue, withWorker } from '@qkitt/queue'
+
+type Job = { id: string }
+
+const queue = withWorker(
+  buildQueue<Job>(),
+  async (job) => {
+    // handle job
+  },
+  { concurrency: 2 },
+)
+
+queue.enqueue({ id: '1' })
+```
+
+Add persistence when you need it (stack: **bare → persist → worker**):
 
 ```ts
 import {
@@ -52,9 +85,6 @@ import {
   createMemorySnapshotStore,
 } from '@qkitt/queue'
 
-type Job = { id: string }
-
-// bare → persist → worker
 const queue = withWorker(
   withPersist(buildQueue<Job>(), createMemorySnapshotStore()),
   async (job) => {
@@ -65,6 +95,7 @@ const queue = withWorker(
 
 await queue.hydrate()
 queue.enqueue({ id: '1' })
+await queue.flush() // before process exit
 ```
 
 Retries or multi-step workers — compose a worker function, then pass it to `withWorker`:
@@ -87,13 +118,6 @@ const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 
 Failed items are **not** re-queued. Use `retryWorker` for in-call retries, `withDeadLetter` / `withDlq` for a separate sink, or `withLoop` to re-enter the same queue with hop meta.
 
-**Persist lifecycle** (when using `withPersist`):
-
-1. Build stack: bare → persist → worker (**persist inside, worker outside**).
-2. `await queue.hydrate()` before enqueue.
-3. Mutate as usual — `enqueue` / `dequeue` stay sync.
-4. `await queue.flush()` before process exit to promote pending writes.
-
 With config (optional):
 
 ```ts
@@ -112,14 +136,17 @@ const system = await buildFromConfig(
 
 | Example | Use case |
 | --- | --- |
-| [`worker-drain`](./examples/worker-drain/main.ts) | Concurrent backlog drain |
-| [`retry-pipeline`](./examples/retry-pipeline/main.ts) | Multi-step job + flaky retry |
-| [`persist-restart`](./examples/persist-restart/main.ts) | Crash, hydrate, finish work |
-| [`fs-snapshot-store`](./examples/fs-snapshot-store/main.ts) | Custom file snapshot store |
-| [`router-topics`](./examples/router-topics/main.ts) | Topic publish → queues |
-| [`with-config`](./examples/with-config/main.ts) | Same idea via config |
-| [`with-loop`](./examples/with-loop/main.ts) | Same-queue failure loop + hop cap |
-| [`with-dlq`](./examples/with-dlq/main.ts) | Dead-letter to a distinct sink |
+| [`worker-drain`](./examples/worker-drain/main.ts) | Concurrent jobs + drain wait |
+| [`lifecycle`](./examples/lifecycle/main.ts) | `whenIdle` drain vs `gracefulStop` + flush |
+| [`retry-pipeline`](./examples/retry-pipeline/main.ts) | Retries / multi-step |
+| [`persist-restart`](./examples/persist-restart/main.ts) | Survive restart (snapshot) |
+| [`fs-snapshot-store`](./examples/fs-snapshot-store/main.ts) | File snapshot store |
+| [`router-topics`](./examples/router-topics/main.ts) | Topic fan-out |
+| [`with-config`](./examples/with-config/main.ts) | Declarative multi-queue |
+| [`with-loop`](./examples/with-loop/main.ts) | Same-queue re-entry + hop cap |
+| [`with-dlq`](./examples/with-dlq/main.ts) | Failed items → distinct sink |
+| [`loop-and-dlq`](./examples/loop-and-dlq/main.ts) | Hop, then dead-letter via filters |
+| [`with-config-loop-dlq`](./examples/with-config-loop-dlq/main.ts) | Same chain from config |
 
 ```bash
 npm run build
@@ -127,27 +154,20 @@ npx tsx examples/worker-drain/main.ts
 # or all: npm run examples
 ```
 
-## When to use this
-
-In-process, queue toolkit. Start bare, add a layer as requirements change:
-
-- **FIFO backlog** — hold work in order until something drains it (orders awaiting fulfillment, moderation queue, form submissions waiting for review).
-- **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
-- **Retries** — survive flaky third-party calls (payment capture, carrier API, email or SMS gateway).
-- **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
-- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Built-in memory and Web Storage; custom stores if you implement `SnapshotStore` / `RowStore`.
-- **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
-- **Failure routing** — re-enter the same queue with hop meta (`withLoop`) or forward poison to a dead-letter sink (`withDeadLetter` / `withDlq`).
-- **Declarative config** — stand up a multi-queue system from one object (`@qkitt/queue-config`).
-
-Out of scope: work that spans machines or processes.
+Full task index: [`examples/README.md`](./examples/README.md).
 
 ## Docs
 
 | Link | Covers |
 | --- | --- |
-| [`packages/queue`](./packages/queue/README.md) | Composition guide, [Recipes](./packages/queue/README.md#recipes), [API reference](./packages/queue/README.md#api-reference), benchmarks |
-| [`packages/queue-config`](./packages/queue-config/README.md) | Config schema, [API reference](./packages/queue-config/README.md#api-reference) |
+| [`@qkitt/queue`](./packages/queue/README.md) | Install, quick start, recipes, bench summary |
+| [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) | Layers, worker helpers, pitfalls |
+| [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) | Snapshot / row, custom stores |
+| [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) | MQTT-style patterns, unmatched sink |
+| [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) | Loop, DLQ, chaining |
+| [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) | Drain and graceful stop |
+| [API reference](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/api.md) | Public signatures, events, package layout |
+| [`@qkitt/queue-config`](./packages/queue-config/README.md) | Config schema, API |
 | [`packages/bench`](./packages/bench/README.md) | Benchmark harness — how to re-run |
 | [`examples/`](./examples) | Runnable use cases |
 
@@ -164,18 +184,11 @@ npm run bench
 
 ## Benchmarks
 
-Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run bench` · shorter summary in the [queue README](./packages/queue/README.md#benchmark-summary)
+Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run bench` · summary also in the [queue package README](./packages/queue/README.md#benchmark-summary).
 
 > AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 22.23.1 · `tinybench` via `tsx --expose-gc` · 2026-07-22 · YMMV
 
-### Bare queue — 50k enqueue + dequeue
-
-| Library | ops/s (med) | heap Δ |
-| --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 789 | 1.19 MiB |
-| denque | 1,462 | 1.73 MiB |
-| yocto-queue | 2,161 | 1.92 MiB |
-| native `Array` push/shift | 7 | 1.18 MiB |
+**Worker drain is the strength** — high ops/s and low retained memory under a backlog. Bare FIFO is competitive on heap and far faster than `Array#shift`; pure enqueue/dequeue ops trail dedicated structures like denque / yocto-queue.
 
 ### Worker drain — N async no-op jobs, concurrency C
 
@@ -185,6 +198,15 @@ Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run benc
 | fastq | 3,998 | 4,223 | 107 | 100 | 6.80 MiB |
 | async.queue | 2,744 | 2,757 | 195 | 220 | 4.94 MiB |
 | p-queue | 1,063 | 1,286 | 82 | 71 | 11.04 MiB |
+
+### Bare queue — 50k enqueue + dequeue
+
+| Library | ops/s (med) | heap Δ |
+| --- | ---: | ---: |
+| **@qkitt/queue** `buildQueue` | 789 | 1.19 MiB |
+| denque | 1,462 | 1.73 MiB |
+| yocto-queue | 2,161 | 1.92 MiB |
+| native `Array` push/shift | 7 | 1.18 MiB |
 
 Median ops/s, higher is better. Heap Δ = retained memory measured with all items still held (worker paused).
 

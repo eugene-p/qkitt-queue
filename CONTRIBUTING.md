@@ -38,7 +38,7 @@ examples/         Runnable use-case demos
 ## Code style
 
 - ESM-only, zero runtime dependencies on core.
-- Strict TypeScript (`strict: true`, TypeScript 7).
+- Strict TypeScript (`strict: true`).
 - Match existing comment style — TSDoc on public API surfaces.
 - Prefer small, focused diffs. One concern per PR.
 - No `any` in public API types; internal utilities may use narrow casts with a comment.

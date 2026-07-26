@@ -7,13 +7,24 @@
 [![License: ISC](https://img.shields.io/npm/l/@qkitt/queue.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue.svg)](https://nodejs.org)
 
-Fast, composable in-process queues for TypeScript — zero runtime dependencies.
+Composable **in-process** queues for TypeScript — zero runtime dependencies.
 
-Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing. Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript 4.7+ with `moduleResolution` set to `bundler`, `node16`, or `nodenext`.
+Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing, failure routing (loop / dead letter). Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript **4.7+** with `moduleResolution` `node16` or `nodenext`, or **5.0+** with `bundler`.
+
+**Out of scope:** work that spans machines or processes.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
-**[API reference](#api-reference)** · [Recipes](#recipes) · [Composition](#composition) · [Topics & routing](#topics--routing) · [Persistence](#persistence) · [Waiting for drain / graceful stop](#waiting-for-drain--graceful-stop) · [Package layout](#package-layout) · [Benchmarks](#benchmark-summary)
+Guides live on GitHub (not in the npm tarball). Suggested path: [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) → [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) → [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) → [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md). Jump by task via [Recipes](#recipes).
+
+| Guide | Covers |
+| --- | --- |
+| [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) | Bare queue → worker → persist → helpers → config |
+| [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) | Snapshot / row, stores, custom backends |
+| [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) | MQTT-style patterns, unmatched sink |
+| [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) | `withLoop`, `withDlq`, chaining |
+| [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) | `whenIdle`, `gracefulStop` |
+| [API reference](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/api.md) | Public signatures, events, package layout |
 
 ## Install
 
@@ -34,86 +45,29 @@ import {
 } from '@qkitt/queue'
 ```
 
-Subpath exports are available by area: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/events`. See [Package layout](#package-layout) for what each subpath exports.
+Subpath exports: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/persist/stores`, `/events`. See [package layout](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/api.md#package-layout).
 
-Runnable scenarios (worker, lifecycle, retry, persist, router, loop, DLQ): [`examples/`](../../examples) in the monorepo.
+## Quick start
 
-## Recipes
-
-| Task | Jump to |
-| --- | --- |
-| Concurrent jobs | [`buildQueue` + `withWorker`](#2-add-a-worker), [Waiting for drain / graceful stop](#waiting-for-drain--graceful-stop) |
-| Retries / multi-step | [`retryWorker` + `pipelineWorker`](#4-worker-helpers) |
-| Survive restart (snapshot) | [§3 Add persistence](#3-add-persistence), [Persist lifecycle](#persist-lifecycle) |
-| DB-style row persist | [Row](#row) |
-| Custom store (file, etc.) | [Custom stores](#custom-stores) |
-| Topic fan-out | [Topics & routing](#topics--routing) |
-| Declarative multi-queue | [`@qkitt/queue-config`](../queue-config) |
-
-When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](../queue-config) over deep nesting.
-
-## Composition
-
-Add layers as needed.
-
-### 1. Bare queue
-
-```ts
-import { buildQueue, QueueFullError } from '@qkitt/queue'
-
-const queue = buildQueue<{ id: string }>()
-
-queue.enqueue({ id: '1' })
-queue.peek()    // { id: '1' }
-queue.size()    // 1
-queue.dequeue() // { id: '1' }
-queue.clear()
-
-const bounded = buildQueue<number>({ maxSize: 100 })
-try {
-  bounded.enqueue(1)
-} catch (e) {
-  if (e instanceof QueueFullError) {
-    // drop, wait, or reject
-  }
-}
-```
-
-### 2. Add a worker
-
-`withWorker` drains the queue with your async function. Defaults: auto-start, concurrency 1.
+Minimal concurrent drain:
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue'
 
-type Job = { id: string; url: string }
+type Job = { id: string }
 
 const queue = withWorker(
   buildQueue<Job>(),
-  async (job) => fetch(job.url),
-  { concurrency: 4 },
+  async (job) => {
+    // handle job
+  },
+  { concurrency: 2 },
 )
 
-queue.on('worker:completed', ({ item, result }) => {
-  console.log(item.id, result.status)
-})
-
-queue.on('worker:failed', ({ item, error }) => {
-  console.error(item.id, error)
-})
-
-queue.enqueue({ id: '1', url: 'https://example.com' })
-
-queue.stop()  // no new items; in-flight finish (does not wait)
-// await queue.gracefulStop({ flush: true })  // stop + wait in-flight + optional flush
-queue.start()
+queue.enqueue({ id: '1' })
 ```
 
-**Failed items are not re-queued.** Use [`retryWorker`](#4-worker-helpers) for in-call retries, [`withDeadLetter`](#withdeadletter--withdlq) / `withDlq` for a separate sink, or [`withLoop`](#withloop) to re-enter the same queue with hop meta.
-
-### 3. Add persistence
-
-Stack order matters: **persist wraps the bare queue; worker is outermost** so `dequeue` goes through the store.
+Add persistence (stack: **bare → persist → worker**):
 
 ```ts
 import {
@@ -123,475 +77,64 @@ import {
   createMemorySnapshotStore,
 } from '@qkitt/queue'
 
-const store = createMemorySnapshotStore<Job>()
-// Stack: bare → persist → worker (persist inside, worker outside)
 const queue = withWorker(
-  withPersist(buildQueue<Job>(), store),
-  async (job) => handle(job),
+  withPersist(buildQueue<Job>(), createMemorySnapshotStore()),
+  async (job) => {
+    // handle job
+  },
   { concurrency: 2 },
 )
 
-await queue.hydrate() // load from store before accepting work
-queue.enqueue({ id: '1', url: '…' })
-await queue.flush()   // wait for pending saves before exit
-```
-
-Built-ins: memory and Web Storage. For something else, implement `SnapshotStore` or `RowStore` and pass that instance instead ([Custom stores](#custom-stores)).
-
-#### Persist lifecycle
-
-1. Build stack: bare → persist → worker (**persist inside, worker outside**).
-2. `await queue.hydrate()` before enqueue / before expecting workers to process restored items.
-3. Mutate as usual — `enqueue` / `dequeue` stay sync.
-4. `await queue.flush()` before process exit. Snapshot auto-save may debounce; `flush` promotes pending writes.
-
-Row-style persist (insert/remove per item) uses the same stack rule:
-
-```ts
-import {
-  buildQueue,
-  withPersist,
-  withWorker,
-  createMemoryRowStore,
-} from '@qkitt/queue'
-
-const store = createMemoryRowStore<Job>()
-const queue = withWorker(
-  withPersist(buildQueue<Job>(), store),
-  async (job) => handle(job),
-)
-
-await queue.hydrate()
-```
-
-The strategy is inferred from the store's method shape — `load`/`save` selects snapshot; `loadAll`/`insert`/`remove`/`clear` selects row. The public surface is `T` — you enqueue plain jobs; row ids are managed internally.
-
-### 4. Worker helpers
-
-`pipelineWorker` and `retryWorker` return plain worker functions — compose them first, then pass the result to `withWorker`. They do not touch the queue directly.
-
-**Retry**
-
-```ts
-import { retryWorker } from '@qkitt/queue'
-
-const run = retryWorker(
-  async (job: Job) => {
-    const res = await fetch(job.url)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    return res.json()
-  },
-  {
-    retries: 3, // total attempts = retries + 1
-    delay: (attempt) => 100 * 2 ** (attempt - 1),
-    shouldRetry: (error) => !(error instanceof TypeError),
-  },
-)
-
-// shorthand: only a retry count
-const run2 = retryWorker(async (n: number) => callApi(n), 2)
-```
-
-`retries` = retries **after** the first failure. Total attempts = `retries + 1`.
-
-| `retries` | Total attempts |
-| --- | ---: |
-| `0` | 1 |
-| `1` | 2 |
-| `3` | 4 |
-
-After all attempts fail: `RetryExhaustedError` with `attempts` and `cause`.
-
-**Pipeline**
-
-Chain steps — bare functions and/or `{ name, fn, metadata? }`. Each step gets `(input, ctx)` where `ctx` is `{ name, index, metadata }`.
-
-```ts
-import { pipelineWorker } from '@qkitt/queue'
-
-const run = pipelineWorker([
-  async (id: string) => fetchUser(id),
-  async (user) => enrich(user),
-  {
-    name: 'save',
-    metadata: { table: 'users' },
-    fn: async (user, ctx) => save(user, ctx.metadata),
-  },
-])
-```
-
-Empty step lists throw at construction. Step failures throw `PipelineStepError`.
-
-Return `pipelineDone(value)` from a step to **finish successfully early** (later steps are not run; the worker resolves with `value`). This is not an error — safe under `retryWorker` (no retry). Use for guards/filters (already done, nothing to send) without threading a skip flag through every step.
-
-```ts
-import { pipelineWorker, pipelineDone } from '@qkitt/queue'
-
-type EmailJob = { to: string; body: string; dedupeKey: string }
-
-const run = pipelineWorker([
-  async (job: EmailJob) => {
-    if (await alreadySent(job.dedupeKey)) {
-      return pipelineDone({ status: 'duplicate', key: job.dedupeKey })
-    }
-    return job
-  },
-  async (job) => sendEmail(job),
-  async (result) => recordSent(result),
-])
-```
-
-> Heterogeneous step lists often infer as `unknown`. Use `pipelineWorker<In, Out>([…])` when you need a precise result type on `worker:completed`.
-
-```ts
-const run = pipelineWorker<string, number>([
-  async (id) => fetchUser(id),   // string → User
-  async (user) => user.age,      // User → number
-])
-```
-
-**Compose helpers**
-
-```ts
-const run = retryWorker(
-  pipelineWorker([
-    { name: 'validate', fn: async (job: Job) => validate(job) },
-    { name: 'deliver', fn: async (job) => deliver(job) },
-  ]),
-  { retries: 2, delay: 250 },
-)
-```
-
-### 5. Put it on a queue
-
-```ts
-import {
-  buildQueue,
-  withWorker,
-  withPersist,
-  pipelineWorker,
-  retryWorker,
-  createMemoryRowStore,
-} from '@qkitt/queue'
-
-type EmailJob = { to: string; body: string }
-
-const store = createMemoryRowStore<EmailJob>()
-const run = retryWorker(
-  pipelineWorker([
-    {
-      name: 'validate',
-      fn: async (job: EmailJob) => {
-        if (!job.to.includes('@')) throw new Error('bad recipient')
-        return job
-      },
-    },
-    {
-      name: 'send',
-      fn: async (job) => {
-        await sendEmail(job)
-        return job.to
-      },
-    },
-  ]),
-  { retries: 3, delay: (n) => 50 * n },
-)
-
-const queue = withWorker(
-  withPersist(buildQueue<EmailJob>(), store),
-  run,
-  { concurrency: 2 },
-)
-
-await queue.hydrate()
-queue.enqueue({ to: 'you@example.com', body: 'hi' })
-
-queue.on('worker:completed', ({ result }) => console.log('sent to', result))
-queue.on('worker:failed', ({ error }) => console.error(error))
-```
-
-### 6. Optional: drive from config
-
-Prefer a declarative setup? [`@qkitt/queue-config`](../queue-config) builds the same queue → persist → worker stacks from a JS/JSON object:
-
-```ts
-import { defineConfig, buildFromConfig } from '@qkitt/queue-config'
-
-const system = await buildFromConfig(
-  defineConfig({
-    queues: {
-      jobs: { worker: { run: handleJob, concurrency: 2 } },
-    },
-  }),
-)
-```
-
-See that package’s README for schema and API.
-
-## Topics & routing
-
-Publish on topics; bind queues with MQTT/AMQP-style patterns (`*`, `#`).
-
-| Pattern | Matches |
-| --- | --- |
-| `orders.created` | Exact topic |
-| `orders.*` | One segment (`orders.created`, not `orders.a.b`) |
-| `orders.#` | Zero or more trailing segments |
-| `#` | Everything |
-
-Wildcards are only valid as a whole segment (`orders*`, `ord#` are rejected).
-
-```ts
-import { buildQueue, buildRouter, withWorker, type RouteMessage } from '@qkitt/queue'
-
-type Order = { id: number; total: number }
-
-const router = buildRouter()
-const created = buildQueue<RouteMessage<Order>>()
-const allOrders = buildQueue<RouteMessage>()
-
-router.bind('orders.created', created)
-router.bind('orders.#', allOrders)
-
-withWorker(created, async ({ topic, data }) => {
-  console.log(topic, data.id, data.total)
-})
-
-router.publish('orders.created', { id: 1, total: 42 })
-// both queues get { topic, data }
-
-const unbind = router.bind('jobs.*', buildQueue())
-unbind()
-```
-
-**Unmatched** publishes can go to a sink queue. `publish` returns the number of **bindings** that matched — the unmatched sink is not a binding, so the return value stays `0` even when the sink enqueues. Use `router:unmatched` (`delivered`) or the sink queue's `size()` for sink metrics.
-
-Workers on router-bound queues receive `{ topic, data }` (a `RouteMessage`), not the bare payload.
-
-```ts
-const unrouted = buildQueue<RouteMessage>()
-const router = buildRouter({ unmatchedTarget: unrouted })
-
-router.publish('no.binding', { id: 1 })
-router.unmatchedCount()
-router.lastUnmatched()
-router.clearUnmatched() // stats only
-router.setUnmatchedTarget(unrouted) // or undefined to clear
-```
-
-If a matched binding’s `enqueue` throws, `publish` still counts that binding as matched and does not deliver to the unmatched sink (see `router:error`).
-
-## Persistence
-
-Built-in stores: in-memory and browser Web Storage (snapshot or row). You can also use your own store as long as it matches `SnapshotStore` or `RowStore` ([Custom stores](#custom-stores)).
-
-Two strategies:
-
-| | Snapshot | Row |
-| --- | --- | --- |
-| Writes | Full list rewrite | Insert/remove per op |
-| Good for | Simple backends, small queues | DB-style stores |
-| Failed write | `persist:error`; memory unchanged | Failed insert rolls back that row; failed remove/clear error only (hydrate to resync) |
-| Wait | `flush()` or `persist()` | `flush()` |
-
-`enqueue` / `dequeue` / `clear` stay sync; store I/O runs on a serialized write chain. Concurrent mutations during `hydrate` throw `QueueHydratingError`. A second concurrent `hydrate()` rejects.
-
-### Snapshot
-
-```ts
-const store = createMemorySnapshotStore<string>()
-const queue = withPersist(buildQueue<string>(), store)
-
-await queue.hydrate()
-queue.enqueue('a')    // auto-saves by default
-await queue.persist() // manual save
-await queue.flush()
-```
-
-| Call | When |
-| --- | --- |
-| Auto-save (default) | After mutations; coalesced (microtask or `autoSaveDebounceMs`) |
-| `flush()` | Wait until pending auto-saves / in-flight writes settle — **shutdown path** |
-| `persist()` | Explicit full snapshot write **now**; never debounced |
-
-Row has no `persist()`; use `flush()` to await the insert/remove/clear chain.
-
-### Row
-
-```ts
-const store = createMemoryRowStore<string>()
-const queue = withPersist(buildQueue<string>(), store)
-// optional: pass { createId: () => crypto.randomUUID() } as factory second arg
-
-await queue.hydrate()
-queue.enqueue('job-1')
-await queue.flush()
-queue.rowIds()
-queue.replaceAll(['x', 'y']) // clears store and reinserts with fresh ids
-await queue.flush()
-```
-
-Row ids (from the store's id factory or `loadAll`) must be unique non-empty strings (not whitespace-only).
-
-### Browser storage
-
-```ts
-import {
-  withPersist,
-  createLocalStorageSnapshotStore,
-  createLocalStorageRowStore,
-} from '@qkitt/queue'
-
-const snap = withPersist(
-  buildQueue<{ id: string }>(),
-  createLocalStorageSnapshotStore('my-app:queue'),
-)
-await snap.hydrate()
-
-const rows = withPersist(
-  buildQueue<{ id: string }>(),
-  createLocalStorageRowStore('my-app:jobs'),
-)
-await rows.hydrate()
-```
-
-Also: `createSessionStorageSnapshotStore`, `createSessionStorageRowStore`.
-
-Web Storage is not multi-tab safe or transactional. Prefer one owning tab, or a real DB, when durability is shared.
-
-### Custom stores
-
-Same API as the built-ins: implement the interface, pass the object to `withPersist`.
-
-```ts
-import type { SnapshotStore } from '@qkitt/queue'
-import { buildQueue, withPersist } from '@qkitt/queue'
-
-const store: SnapshotStore<Job> = {
-  async load() {
-    // return items head → tail
-    return []
-  },
-  async save(items) {
-    // replace the full snapshot
-  },
-}
-
-const queue = withPersist(buildQueue<Job>(), store)
 await queue.hydrate()
 queue.enqueue({ id: '1' })
-await queue.flush()
+await queue.flush() // before process exit
 ```
+
+Retries or multi-step workers — compose a worker function, then pass it to `withWorker`:
 
 ```ts
-type SnapshotStore<T> = {
-  load: () => readonly T[] | Promise<readonly T[]>
-  save: (items: readonly T[]) => void | Promise<void>
-}
+import {
+  buildQueue,
+  withWorker,
+  retryWorker,
+  pipelineWorker,
+} from '@qkitt/queue'
 
-type RowStore<T> = {
-  loadAll: () => readonly { id: string; item: T }[] | Promise<...>
-  insert: (record: { id: string; item: T }) => void | Promise<void>
-  remove: (id: string) => void | Promise<void>
-  clear: () => void | Promise<void>
-}
+const run = retryWorker(
+  pipelineWorker([validate, deliver]),
+  { retries: 3, delay: 100 },
+)
+
+const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 ```
 
-- `load` / `loadAll` return FIFO order (head first).
-- Row ids must be unique, non-empty strings (not whitespace-only).
-- Optional `persistOptions` on the store object (`autoSave`, `autoSaveDebounceMs`, `createId`) — same as the factories. Omit it for defaults.
-- Queue methods stay sync; store methods may be async.
+Failed items are **not** re-queued. Use `retryWorker` for in-call retries, or [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) (`withLoop` / `withDlq`).
 
-Example (Node file snapshot): [`examples/fs-snapshot-store`](../../examples/fs-snapshot-store/main.ts). With `@qkitt/queue-config`, pass the instance as `{ strategy, impl }` under `stores`.
+When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](https://www.npmjs.com/package/@qkitt/queue-config).
 
-## Events
+## Recipes
 
-Every layer is typed. `on` returns an unsubscribe function. The emitter also works standalone via `buildEventEmitter` (see [API](#api-reference)).
-
-| Layer | Events |
+| Task | Jump to |
 | --- | --- |
-| Queue | `queue:enqueued`, `queue:dequeued`, `queue:emptied`, `queue:cleared` |
-| Worker | `worker:started`, `worker:completed`, `worker:failed`, `worker:idle`, `worker:pump-error` |
-| Dead letter | `dlq:enqueued`, `dlq:error` |
-| Loop | `loop:enqueued`, `loop:meta-override`, `loop:error` |
-| Router | `router:bound`, `router:unbound`, `router:published`, `router:unmatched`, `router:error` |
-| Snapshot | `persist:loaded`, `persist:saved`, `persist:error` |
-| Row | `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error` |
+| Concurrent jobs | [Composition §2](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#2-add-a-worker) |
+| Drain / graceful stop | [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) |
+| Retries / multi-step | [Composition §4](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers) |
+| Survive restart (snapshot) | [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) · [Composition §3](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#3-add-persistence) |
+| DB-style row persist | [Row](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#row) |
+| Custom store (file, etc.) | [Custom stores](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#custom-stores) |
+| Topic fan-out | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) |
+| Same-queue re-entry | [Loop](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop) |
+| Dead-letter sink | [Dead letter](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#dead-letter-withdeadletter--withdlq) |
+| Hop, then dead-letter | [Chaining loop + DLQ](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#chaining-withloop--withdlq) |
+| Declarative multi-queue | [`@qkitt/queue-config`](https://www.npmjs.com/package/@qkitt/queue-config) |
 
-Events cost nothing when nobody is subscribed.
-
-## Waiting for drain / graceful stop
-
-```ts
-import { whenIdle, gracefulStop } from '@qkitt/queue'
-
-queue.enqueue(job)
-await whenIdle(queue) // empty + nothing in flight
-
-// SIGTERM: finish in-flight, leave remaining items queued
-await gracefulStop(queue)
-// durable exit — also await pending persist writes
-await gracefulStop(queue, { flush: true })
-// same as queue.gracefulStop({ flush: true }) when using withWorker
-```
-
-| Helper | Waits for | Stops pump? | Flush |
-| --- | --- | --- | --- |
-| `whenIdle(queue, { timeoutMs? })` | Empty + not processing (`worker:idle`) | No | — |
-| `gracefulStop(queue, { flush?, timeoutMs? })` | In-flight only (items may remain) | Yes | Opt-in (`flush: true`) |
-
-`whenIdle` does **not** call `stop()`. Idle also never fires if items remain and the pump is not running (`stop()`, or `autoStart: false` without `start()`) — use `timeoutMs`, `start()`, or drain/clear first.
-
-Both reject with `LifecycleTimeoutError` when `timeoutMs` elapses. The timeout only rejects the promise; it does not cancel in-flight workers or an in-progress `flush`. Prefer these helpers over busy-polling `isProcessing`.
-
-Runnable demo: [`examples/lifecycle`](../../examples/lifecycle).
-
-## Notes & pitfalls
-
-**Stack order matters.** Persist wraps the bare queue; worker is outermost. **Persist inside, worker outside.**
-
-```ts
-// wrong — withPersist throws (worker already attached)
-withPersist(withWorker(buildQueue<T>(), run), store)
-
-// right
-withWorker(withPersist(buildQueue<T>(), store), run)
-```
-
-**Await `hydrate()` before enqueue** when using persist, or mutations throw `QueueHydratingError`. Call `flush()` before process exit so debounced writes are not lost.
-
-```ts
-const queue = withPersist(buildQueue<T>(), store)
-queue.enqueue(item)      // throws QueueHydratingError
-await queue.hydrate()
-queue.enqueue(item)      // fine
-```
-
-**Nullish payloads need `tryDequeue()` / `tryPeek()`.** Plain `dequeue()` and `peek()` return `undefined` for both "empty" and a queued `undefined` — fine for most types, but use the `try*` variants when `T` includes `null` or `undefined`:
-
-```ts
-const q = buildQueue<string | undefined>()
-q.enqueue(undefined)
-
-q.dequeue()       // undefined — the item, or an empty queue?
-q.tryDequeue()    // { value: undefined } — item present; undefined means empty
-```
-
-**Failed items are not re-queued.** Prefer [`withDeadLetter`](#withdeadletter--withdlq) / `withDlq`, [`withLoop`](#withloop), or handle `worker:failed` yourself:
-
-```ts
-queue.on('worker:failed', ({ item, error }) => {
-  // log, alert, or re-enqueue manually
-})
-```
-
-**Web Storage is not multi-tab safe or transactional.** Prefer one owning tab, or a real DB, when durability is shared.
+Runnable scenarios: [examples/](https://github.com/eugene-p/qkitt-queue/tree/main/examples) in the monorepo.
 
 ## Benchmark summary
 
-In-process peers only. Full tables and setup in the [root README](../../README.md#benchmarks). Re-run: [`packages/bench`](../bench) (`npm run bench` from repo root).
+In-process peers only. Full tables and setup: [root README](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks). Re-run: [`packages/bench`](https://github.com/eugene-p/qkitt-queue/tree/main/packages/bench) (`npm run bench` from repo root).
 
-Worker drain measures concurrent jobs and retained memory under a backlog. Bare `buildQueue` is in the same range as dedicated queue structures with lower retained memory, and beats `Array#shift` by two orders of magnitude.
+**Strength is worker drain** (throughput + low retained backlog memory). Bare `buildQueue` is a solid FIFO with lower heap than typical peer structures; pure enqueue/dequeue ops trail denque / yocto-queue, and beat `Array#shift` by orders of magnitude.
 
 **Worker drain** — 10 000 no-op jobs (ops/s · pending-job heap)
 
@@ -612,429 +155,6 @@ Worker drain measures concurrent jobs and retained memory under a backlog. Bare 
 | native `Array` push/shift | 7 | 1.18 MiB |
 
 Relative numbers (Node 22.23.1, Windows laptop, 2026-07-22). YMMV.
-
----
-
-## API reference
-
-The sections above show composition patterns; the reference below covers every public signature.
-
-**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
-
-Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`) is for specialized use — see individual entries below.
-
-### `buildQueue`
-
-```ts
-buildQueue<T>(options?: BuildQueueOptions): Queue<T>
-```
-
-| Option | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `maxSize` | `number` | — | Safe integer ≥ 1. `enqueue` / `replaceAll` throw `QueueFullError` when full. |
-| `name` | `string` | — | Logical id (trimmed, non-empty). Used by `withLoop` hop meta and tracking (`getQueueName`). |
-
-**Methods**
-
-| Method | Returns | Description |
-| --- | --- | --- |
-| `enqueue(item)` | `void` | Add to tail |
-| `dequeue()` | `T \| undefined` | Remove head (`undefined` if empty; ambiguous when `T` may be `undefined`) |
-| `peek()` | `T \| undefined` | Head without removing (same ambiguity as `dequeue`) |
-| `tryDequeue()` | `QueueSlot<T> \| undefined` | Nullish-safe: `{ value }` or `undefined` if empty |
-| `tryPeek()` | `QueueSlot<T> \| undefined` | Nullish-safe peek |
-| `size()` | `number` | Item count |
-| `isEmpty()` | `boolean` | |
-| `clear()` | `void` | Remove all; emits `queue:cleared` |
-| `replaceAll(items)` | `void` | Silent replace (no queue events). Used by persist hydrate — not a substitute for looping `enqueue`. |
-| `toArray()` | `T[]` | Snapshot head → tail |
-| `on` | `() => void` | Subscribe; returns unsubscribe |
-| `emit` | | Advanced; prefer domain methods so invariants hold |
-
-`null` / `undefined` are valid payloads. Prefer `tryDequeue` / `tryPeek` when `T` may be nullish so emptiness is structural (`undefined` return) rather than inferred from the value.
-
-**Errors:** `QueueFullError` (`maxSize`); `InvalidQueueOptionError` for invalid `maxSize`.
-
-**Events**
-
-| Event | Payload |
-| --- | --- |
-| `queue:enqueued` | `{ item, size }` |
-| `queue:dequeued` | `{ item, size }` |
-| `queue:emptied` | `undefined` |
-| `queue:cleared` | `{ removed }` |
-
----
-
-### `withWorker`
-
-```ts
-withWorker<T, R>(
-  queue: Queue<T>,
-  worker: WorkerFn<T, R>,
-  options?: WithWorkerOptions,
-): QueueWithWorker<T, R>
-```
-
-| Option | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `concurrency` | `number` | `1` | Safe integer ≥ 1 |
-| `autoStart` | `boolean` | `true` | If `false`, no pump until `start()` |
-
-**Controls** (added to the queue)
-
-| Method | Description |
-| --- | --- |
-| `start()` | Begin taking items |
-| `stop()` | Stop taking new items; in-flight finish (sync; does not wait) |
-| `gracefulStop(options?)` | Stop, await in-flight, optional `flush: true` / `timeoutMs` |
-| `isRunning()` | Whether the pump may take work |
-| `isProcessing()` | Any in-flight items |
-| `activeCount()` | In-flight count |
-
-Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the decorated queue. See also standalone [`whenIdle`](#waiting-for-drain--graceful-stop) / `gracefulStop`.
-
-**Events**
-
-| Event | Payload | When |
-| --- | --- | --- |
-| `worker:started` | `{ item }` | Before run |
-| `worker:completed` | `{ item, result }` | Resolved |
-| `worker:failed` | `{ item, error }` | Rejected |
-| `worker:idle` | `undefined` | Empty and nothing in flight |
-| `worker:pump-error` | `{ error }` | Unexpected `tryDequeue` failure (worker stops) |
-
-The pump uses `tryDequeue` so nullish payloads are processed. While a stacked persist layer is hydrating, `tryDequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate kick. Other unexpected dequeue failures emit `worker:pump-error` and stop the worker — call `start()` after fixing the cause.
-
-**Errors:** `InvalidWorkerOptionError` for invalid `concurrency` / invalid lifecycle `timeoutMs`; `LifecycleTimeoutError` when `whenIdle` / `gracefulStop` exceed `timeoutMs`.
-
----
-
-### `whenIdle` / `gracefulStop`
-
-```ts
-whenIdle(queue, options?: { timeoutMs?: number }): Promise<void>
-gracefulStop(queue, options?: { flush?: boolean; timeoutMs?: number }): Promise<void>
-// also: queue.gracefulStop(options?) on QueueWithWorker
-```
-
-| | `whenIdle` | `gracefulStop` |
-| --- | --- | --- |
-| Condition | Queue empty and not processing | Not processing (remainder may stay queued) |
-| Calls `stop()` | No | Yes |
-| `flush` | — | Opt-in (`false` by default) |
-
-Full patterns: [Waiting for drain / graceful stop](#waiting-for-drain--graceful-stop).
-
----
-
-### `withDeadLetter` / `withDlq`
-
-Forward `worker:failed` items to a **distinct** destination with `enqueue`. Apply **after** the worker:
-
-```ts
-import {
-  buildQueue,
-  withWorker,
-  withDeadLetter,
-  withDlq,
-} from '@qkitt/queue'
-
-const failed = buildQueue<Job>()
-const jobs = withDlq(
-  withWorker(buildQueue<Job>(), async (job) => handle(job)),
-  failed,
-  // optional: { map: (item, error) => ({ item, error }), filter }
-)
-```
-
-| Option | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `map` | `(item, error) => U` | identity | Remap before enqueue |
-| `filter` | `(item, error) => boolean` | always true | Skip enqueue when false |
-
-**Stack:** `buildQueue` → `withPersist?` → `withWorker` → `withDeadLetter`.
-
-**Same queue is rejected.** `withDeadLetter(q, q)` throws — use [`withLoop`](#withloop) for same-queue re-entry with hop meta.
-
-**Not the same as router unmatched.** Router `unmatchedTarget` / config `unmatchedQueue` is for publishes with no binding. Dead letter is for **worker processing failures** after dequeue.
-
-**Full destination is misconfiguration.** A bounded dead-letter sink that throws `QueueFullError` is not an overflow strategy: size it for worst-case poison volume, leave it unbounded, or **drain** it. Destination `enqueue` / `map` / `filter` failures emit `dlq:error` with `DeadLetterEnqueueError` (cause preserved) and **do not** rethrow. **Subscribe to `dlq:error` in production** if the sink can throw — the source item is already gone, and ignoring this event loses the failure quietly.
-
-**Events**
-
-| Event | Payload | When |
-| --- | --- | --- |
-| `dlq:enqueued` | `{ item, error, deadLetterItem }` | Destination accepted the item |
-| `dlq:error` | `{ item, error, cause }` | `filter`, `map`, or destination `enqueue` threw (`cause` is `DeadLetterEnqueueError`) |
-
-**Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidDeadLetterOptionError` (destination is the same reference as source); `DeadLetterEnqueueError` on the `dlq:error` path.
-
-`withDlq` is an alias of `withDeadLetter`. Stacking multiple dead-letter layers registers multiple handlers (each destination receives the failure).
-
-Stacking **withLoop + withDlq** also registers two handlers on the same failure — see [Chaining withLoop + withDlq](#chaining-withloop--withdlq). Defaults on both sides dead-letter **and** re-enqueue every failure (duplicates in the sink).
-
----
-
-### `withLoop`
-
-On `worker:failed`, re-enqueue onto the **same** worker queue. Requires a **named** queue (`buildQueue({ name: 'jobs' })`). Library hop bookkeeping lives under the reserved key `__qkittQueue` (`QKITT_QUEUE_KEY`):
-
-```ts
-job.__qkittQueue.loop.jobs.hops // 1, 2, …
-```
-
-```ts
-import {
-  buildQueue,
-  withWorker,
-  withLoop,
-  getLoopHops,
-  getQueueName,
-  QKITT_QUEUE_KEY,
-} from '@qkitt/queue'
-
-const q = withLoop(
-  withWorker(buildQueue<Job>({ name: 'jobs' }), run),
-  // optional: { map, filter }
-)
-// getQueueName(q) → 'jobs'
-// getLoopHops(job, 'jobs')
-// Non-plain objects become { value, __qkittQueue: { loop: { jobs: { hops } } } }.
-```
-
-| Option | Type | Default | Notes |
-| --- | --- | --- | --- |
-| `map` | `(item, error, ctx) => U` | identity | Runs on the **original** item; library always re-stamps `__qkittQueue` |
-| `filter` | `(item, error, ctx) => boolean` | always true | Skip re-enqueue when false (e.g. max hops) |
-
-Hop key is the queue’s `name` (not an option). `map` / `filter` receive `ctx: { name, previousHops, hops }`.
-
-**Stack:** `buildQueue({ name })` → `withPersist?` → `withWorker` → `withLoop`.
-
-`__qkittQueue` is **library-owned**. If `map` returns a payload whose `__qkittQueue` differs from the original, the library emits `loop:meta-override` and **overwrites** with the correct hop stamp (re-enqueue still happens). Unchanged bag (e.g. `return item`) is fine.
-
-A worker that always throws can spin forever — stop the worker or `filter` on `getLoopHops`. This is **not** a dead-letter sink; use `withDeadLetter` for a separate queue.
-
-**Events**
-
-| Event | Payload | When |
-| --- | --- | --- |
-| `loop:enqueued` | `{ item, error, loopItem }` | Re-enqueue succeeded |
-| `loop:meta-override` | `{ item, error, name, attempted, applied }` | `map` changed `__qkittQueue`; library stamp still applied |
-| `loop:error` | `{ item, error, cause }` | `filter`, `map`, or re-enqueue threw (`cause` is `LoopEnqueueError`) |
-
-**Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidLoopOptionError` (queue has no `name`); `LoopEnqueueError` on the `loop:error` path.
-
-#### Chaining `withLoop` + `withDlq`
-
-Both layers subscribe to the **same** `worker:failed` event. They do **not** run as “loop until filter fails, then DLQ.” On every failure, **each** layer’s `filter` runs independently.
-
-| Setup | Result |
-| --- | --- |
-| Both with default filters | **Duplicates:** re-enqueue *and* dead-letter on every failure |
-| Complementary filters | Hop via loop while under the cap; dead-letter only when the cap is hit |
-
-```ts
-import {
-  buildQueue,
-  getLoopHops,
-  withDlq,
-  withLoop,
-  withWorker,
-} from '@qkitt/queue'
-
-const MAX = 3
-const failed = buildQueue<Job>({ name: 'failed' })
-
-const jobs = withDlq(
-  withLoop(
-    withWorker(buildQueue<Job>({ name: 'jobs' }), run),
-    {
-      filter: (_item, _error, ctx) => (ctx.previousHops ?? 0) < MAX,
-    },
-  ),
-  failed,
-  {
-    filter: (item) => (getLoopHops(item, 'jobs') ?? 0) >= MAX,
-  },
-)
-```
-
-Runnable demo: [`examples/loop-and-dlq`](../../examples/loop-and-dlq). Declarative form: [`@qkitt/queue-config`](../queue-config) (`loop` + `dlq` on a queue) and [`examples/with-config-loop-dlq`](../../examples/with-config-loop-dlq).
-
----
-
-### `withPersist`
-
-```ts
-withPersist<T>(queue: Queue<T>, store: SnapshotStore<T>): QueueWithPersist<T, 'snapshot'>
-withPersist<T>(queue: Queue<T>, store: RowStore<T>): QueueWithPersist<T, 'row'>
-```
-
-Strategy is inferred from the store's method shape at runtime:
-- `load` + `save` → snapshot
-- `loadAll` + `insert` + `remove` + `clear` → row
-
-Strategy options are read from `store.persistOptions` (set by factories, or on your store). Omitted options use defaults.
-
-**Snapshot options** (via factory or `persistOptions`):
-
-| Option | Type | Default |
-| --- | --- | --- |
-| `autoSave` | `boolean` | `true` |
-| `autoSaveDebounceMs` | `number` | `0` (microtask coalesce) |
-
-**Row options** (via factory or `persistOptions`):
-
-| Option | Type | Default |
-| --- | --- | --- |
-| `createId` | `() => string` | Library default (nanoid-style) |
-
-When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules one save per microtask; `> 0` waits that many ms after the last mutation.
-
-**Snapshot added methods:** `hydrate()`, `persist()`, `flush()`.
-
-**Row added methods:** `hydrate()`, `flush()`, `rowIds()`.
-
-**Snapshot events:** `persist:loaded`, `persist:saved`, `persist:error` (`operation`: `'load' | 'save'`).
-
-**Row events:** `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error`.
-
-**Errors:** `QueueHydratingError` on concurrent mutation during hydrate; `HydrateInProgressError` if a second `hydrate()` starts while one is running; `InvalidQueueCompositionError` for wrong stack order or double persist; `InvalidStoreError` if the store matches both shapes or neither; `InvalidPersistOptionError` for bad snapshot options; `InvalidRowIdError` / `DuplicateRowIdError` for bad or colliding row ids.
-
----
-
-### `retryWorker`
-
-```ts
-retryWorker<T, R>(
-  worker: WorkerFn<T, R>,
-  options: RetryOptions | number,
-): WorkerFn<T, R>
-```
-
-| Option | Type | Notes |
-| --- | --- | --- |
-| `retries` | `number` | Safe integer ≥ 0; total attempts = `retries + 1` |
-| `delay` | `number \| (attempt, error) => number` | Finite ms ≥ 0; attempt is 1-based |
-| `shouldRetry` | `(error, attempt) => boolean` | Default: always retry |
-
-Passing a number is shorthand for `{ retries: n }`.
-
-**Errors:** `RetryExhaustedError` (`attempts`, `cause`); `InvalidRetryOptionError` for invalid `retries` / `delay`.
-
----
-
-### `pipelineWorker`
-
-```ts
-pipelineWorker<T, R = unknown>(steps: readonly PipelineStep[]): WorkerFn<T, R>
-pipelineDone<T>(value: T): PipelineDone<T>
-```
-
-Each step is `StepFn` or `{ name, fn, metadata? }`. Bare functions get names like `step[0]`.
-
-**Early exit:** `return pipelineDone(value)` from a step — remaining steps are skipped; the worker **resolves** with `value` (marker is unwrapped). Not a failure; `retryWorker` will not retry.
-
-**Errors:** `PipelineStepError` (`stepName`, `stepIndex`, `metadata`, `cause`); `InvalidPipelineError` for empty steps or invalid step entries.
-
----
-
-### `buildRouter`
-
-```ts
-buildRouter(options?: BuildRouterOptions): Router
-```
-
-| Option | Type | Notes |
-| --- | --- | --- |
-| `unmatchedTarget` | `{ enqueue(msg) }` | Sink for unmatched publishes |
-
-**Methods:** `bind(pattern, target)` → unbind fn, `unbind(pattern, target?)`, `publish(topic, data)` → matched binding count (unmatched sink excluded), `unmatchedCount()`, `lastUnmatched()`, `clearUnmatched()`, `setUnmatchedTarget(target?)`, `on` / `emit`.
-
-**Events**
-
-| Event | Payload |
-| --- | --- |
-| `router:bound` | `{ pattern }` |
-| `router:unbound` | `{ pattern, removed }` |
-| `router:published` | `{ topic, data, matched }` |
-| `router:unmatched` | `{ topic, data, delivered }` |
-| `router:error` | `{ operation, error, topic?, pattern? }` |
-
-**Errors:** `InvalidRoutePatternError` on bad bind patterns; `InvalidTopicError` on bad publish topics (also emitted on `router:error` before throw).
-
----
-
-### Stores
-
-| Factory | Strategy |
-| --- | --- |
-| `createMemorySnapshotStore<T>()` | Snapshot |
-| `createMemoryRowStore<T>()` | Row |
-| `createLocalStorageSnapshotStore(key, options?)` | Snapshot |
-| `createLocalStorageRowStore(key, options?)` | Row |
-| `createSessionStorageSnapshotStore(key, options?)` | Snapshot |
-| `createSessionStorageRowStore(key, options?)` | Row |
-| `createWebSnapshotStore` / `createWebRowStore` | Custom `WebStorageLike` |
-
-**Errors:** `StorageCodecError` on bad JSON in web stores; `StorageUnavailableError` when `localStorage` / `sessionStorage` is missing and no explicit `storage` was passed.
-
----
-
-### Events (standalone)
-
-```ts
-import { buildEventEmitter } from '@qkitt/queue'
-// or '@qkitt/queue/events'
-
-const bus = buildEventEmitter<{ 'app:ready': undefined }>()
-bus.on('app:ready', () => {})
-```
-
-Also: `createTypedEmit`, types `EventEmitter`, `EventMap`, `EventCallback`, `MergeEventMaps`.
-
----
-
-### Types (selected)
-
-| Type | Role |
-| --- | --- |
-| `QueueSlot<T>` | `{ value: T }` — structural wrapper for `tryDequeue` / `tryPeek` |
-| `Queue<T>` | Bare queue surface |
-| `QueueWithWorker<T, R>` | Queue + worker controls |
-| `QueueWithPersist<T, S>` | Persist-decorated queue (`S` = `'snapshot'` or `'row'`) |
-| `WorkerFn<T, R>` | `(item) => R \| Promise<R>` |
-| `WorkerControls` | `start` / `stop` / `gracefulStop` / … |
-| `WhenIdleOptions`, `GracefulStopOptions` | Lifecycle helper options |
-| `WithWorkerOptions`, `BuildQueueOptions` | Options objects |
-| `RowRecord<T>`, `RowStore<T>`, `SnapshotStore<T>` | Persist contracts |
-| `RowPersistEvents<T>`, `SnapshotPersistEvents` | Persist event maps for `.on('persist:…')` |
-| `RouteMessage<T>`, `Router`, `Binding` | Router |
-| `RetryOptions`, `PipelineStep`, `PipelineStepContext` | Worker helpers |
-
-Internals (`*.util`, codecs, write chain) are not part of the public contract.
-
-## Package layout
-
-**Default:** import from `@qkitt/queue`. Subpaths are optional for bundle splitting or narrower imports.
-
-| Subpath | Exports | Does *not* contain |
-| --- | --- | --- |
-| `@qkitt/queue` | Everything | — |
-| `@qkitt/queue/queue` | `buildQueue`, `getQueueName`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, queue + worker types | Persist, stores |
-| `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
-| `@qkitt/queue/router` | `buildRouter`, router types | — |
-| `@qkitt/queue/persist` | `withPersist`, stores, contracts, event types, `QueueHydratingError` | `buildQueue`, `withWorker` |
-| `@qkitt/queue/persist/stores` | Memory + web store factories only | `withPersist`, strategy runtime |
-| `@qkitt/queue/persist/stores/memory` | Memory store factories | Web storage |
-| `@qkitt/queue/persist/stores/web-storage` | Web storage factories + `StorageCodecError` | Memory stores |
-| `@qkitt/queue/events` | `buildEventEmitter`, … | — |
-
-Companion: [`@qkitt/queue-config`](../queue-config) — declarative `defineConfig` / `buildFromConfig`.
-
-`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. The persist decorator (`withPersist`) and all store factories live under `@qkitt/queue/persist`. Prefer `@qkitt/queue/persist/stores/*` when you want store factories without pulling strategy code via a narrow subpath (root and `/persist` still re-export stores for convenience; modern bundlers tree-shake unused chunks when `sideEffects` is false).
 
 ## Changelog
 

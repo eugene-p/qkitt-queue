@@ -31,8 +31,8 @@ npm run examples
 | [`router-topics`](./router-topics/main.ts) | Topic fan-out | `buildRouter` + worker queues |
 | [`with-config`](./with-config/main.ts) | Declarative multi-queue | `@qkitt/queue-config` |
 | [`with-loop`](./with-loop/main.ts) | Same-queue re-entry + hop cap | `buildQueue({ name })` → `withWorker` → `withLoop` |
-| [`with-dlq`](./with-dlq/main.ts) | Poison → distinct sink | `withWorker` → `withDeadLetter` / `withDlq` |
-| [`loop-and-dlq`](./loop-and-dlq/main.ts) | Hop then poison via filters | `withWorker` → `withLoop` → `withDlq` |
+| [`with-dlq`](./with-dlq/main.ts) | Failed items → distinct sink | `withWorker` → `withDeadLetter` / `withDlq` |
+| [`loop-and-dlq`](./loop-and-dlq/main.ts) | Hop, then dead-letter via filters | `withWorker` → `withLoop` → `withDlq` |
 | [`with-config-loop-dlq`](./with-config-loop-dlq/main.ts) | Same chain from config | `@qkitt/queue-config` `loop` + `dlq` |
 
-Task index and composition patterns: [Recipes](../packages/queue/README.md#recipes) · [Waiting for drain / graceful stop](../packages/queue/README.md#waiting-for-drain--graceful-stop)
+Task index and guides: [Recipes](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/README.md#recipes) · [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) · [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) · [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md)
