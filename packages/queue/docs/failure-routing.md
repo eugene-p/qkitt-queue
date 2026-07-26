@@ -63,7 +63,7 @@ import {
 
 const q = withLoop(
   withWorker(buildQueue<Job>({ name: 'jobs' }), run),
-  // optional: { map, filter }
+  // optional: { map, filter, delay }
 )
 // getQueueName(q) → 'jobs'
 // getLoopHops(job, 'jobs')
@@ -74,14 +74,26 @@ const q = withLoop(
 | --- | --- | --- | --- |
 | `map` | `(item, error, ctx) => U` | identity | Runs on the **original** item; library always re-stamps `__qkittQueue` |
 | `filter` | `(item, error, ctx) => boolean` | always true | Skip re-enqueue when false (e.g. max hops) |
+| `delay` | `number \| (hops: number) => number` | `0` | Wait this many ms before re-enqueue. Function form gets the 1-based hop count only (e.g. `hops => 100 * 2 ** (hops - 1)`). Same shape as `retryWorker` delay. Static invalid values throw at wrap; invalid function results emit `loop:error`. **Not durable** — see disclaimer below. |
 
-Hop key is the queue’s `name` (not an option). `map` / `filter` receive `ctx: { name, previousHops, hops }`.
+Hop key is the queue’s `name` (not an option). `map` / `filter` receive hop `ctx: { name, previousHops, hops }`.
 
 **Stack:** `buildQueue({ name })` → `withPersist?` → `withWorker` → `withLoop`.
 
 `__qkittQueue` is **library-owned**. If `map` returns a payload whose `__qkittQueue` differs from the original, the library emits `loop:meta-override` and **overwrites** with the correct hop stamp (re-enqueue still happens). Unchanged bag (e.g. `return item`) is fine.
 
-A worker that always throws can spin forever — stop the worker or `filter` on `getLoopHops`. This is **not** a dead-letter sink; use `withDeadLetter` for a separate queue.
+Pending delayed re-entries do not occupy queue slots; `loop:enqueued` fires when the item is actually re-queued. The worker may go idle while a delay is pending. `stop` does not cancel pending delays.
+
+**Disclaimer — restart / crash loses delayed items.** While waiting, the payload is held only in a process-local timer (not in the queue, not in `withPersist`). App restart, crash, or process exit **drops** those items with no recovery. Longer delays widen that window; prefer short delays when loss is unacceptable.
+
+A worker that always throws can spin forever — stop the worker, `filter` on hops, or set `delay`. This is **not** a dead-letter sink; use `withDeadLetter` for a separate queue.
+
+```ts
+const q = withLoop(withWorker(buildQueue<Job>({ name: 'jobs' }), run), {
+  delay: (hops) => 100 * 2 ** (hops - 1), // hop-based backoff
+  filter: (_item, _error, ctx) => ctx.hops <= 5,
+})
+```
 
 Runnable demo: [`examples/with-loop`](../../../examples/with-loop).
 

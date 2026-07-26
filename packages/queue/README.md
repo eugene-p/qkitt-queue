@@ -123,7 +123,7 @@ When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](h
 | DB-style row persist | [Row](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#row) |
 | Custom store (file, etc.) | [Custom stores](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#custom-stores) |
 | Topic fan-out | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) |
-| Same-queue re-entry | [Loop](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop) |
+| Same-queue re-entry / loop delay | [Loop](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop) |
 | Dead-letter sink | [Dead letter](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#dead-letter-withdeadletter--withdlq) |
 | Hop, then dead-letter | [Chaining loop + DLQ](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#chaining-withloop--withdlq) |
 | Declarative multi-queue | [`@qkitt/queue-config`](https://www.npmjs.com/package/@qkitt/queue-config) |

@@ -895,6 +895,49 @@ describe('buildFromConfig', () => {
         })
     })
 
+    it('passes loop.delay through to withLoop', async () => {
+        vi.useFakeTimers()
+        try {
+            const system = await buildFromConfig({
+                queues: {
+                    jobs: {
+                        worker: {
+                            run: async (job: { id: string }) => {
+                                if ((getLoopHops(job, 'jobs') ?? 0) < 1) {
+                                    throw new Error('retry-me')
+                                }
+                            },
+                            concurrency: 1,
+                        },
+                        loop: { delay: 40 },
+                    },
+                },
+            })
+
+            const completed: string[] = []
+            const jobs = system.queues.jobs as ConfiguredQueue & {
+                on(
+                    event: 'worker:completed',
+                    cb: (payload: { item: unknown }) => void,
+                ): () => void
+            }
+            jobs.on('worker:completed', ({ item }) => {
+                completed.push((item as { id: string }).id)
+            })
+
+            jobs.enqueue({ id: 'a' })
+            await vi.advanceTimersByTimeAsync(0)
+            expect(completed).toEqual([])
+
+            await vi.advanceTimersByTimeAsync(40)
+            await vi.waitFor(() => {
+                expect(completed).toEqual(['a'])
+            })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('applies withDlq so failed items land on the destination queue', async () => {
         const system = await buildFromConfig({
             queues: {

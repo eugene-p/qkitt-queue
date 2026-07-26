@@ -373,4 +373,218 @@ describe('withLoop', () => {
 
         expect(sawName).toBe('orders')
     })
+
+    it('rejects invalid static delay at wrap time', () => {
+        const inner = withWorker(named<number>('jobs'), async () => {
+            throw new Error('x')
+        })
+        expect(() => withLoop(inner, { delay: -1 })).toThrow(
+            InvalidLoopOptionError,
+        )
+        expect(() => withLoop(inner, { delay: NaN })).toThrow(
+            InvalidLoopOptionError,
+        )
+        expect(() => withLoop(inner, { delay: Infinity })).toThrow(
+            InvalidLoopOptionError,
+        )
+    })
+
+    it('waits static delay before re-enqueue', async () => {
+        vi.useFakeTimers()
+        try {
+            const run = vi.fn(async (job: { id: string }) => {
+                if (getLoopHops(job, 'jobs') === undefined) {
+                    throw new Error('fail')
+                }
+            })
+            const enqueued = vi.fn()
+            const queue = withLoop(withWorker(named<{ id: string }>('jobs'), run), {
+                delay: 50,
+            })
+            queue.on('loop:enqueued', enqueued)
+
+            queue.enqueue({ id: 'a' })
+            await vi.advanceTimersByTimeAsync(0)
+            await flush(4)
+
+            expect(run).toHaveBeenCalledOnce()
+            expect(enqueued).not.toHaveBeenCalled()
+            expect(queue.isEmpty()).toBe(true)
+
+            await vi.advanceTimersByTimeAsync(49)
+            expect(enqueued).not.toHaveBeenCalled()
+
+            await vi.advanceTimersByTimeAsync(1)
+            await flush(6)
+
+            expect(enqueued).toHaveBeenCalledOnce()
+            expect(run.mock.calls.length).toBeGreaterThanOrEqual(2)
+            expect(getLoopHops(run.mock.calls.at(-1)?.[0], 'jobs')).toBe(1)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('supports function delay with hop count', async () => {
+        vi.useFakeTimers()
+        try {
+            const delayFn = vi.fn((hops: number) => 10 * hops)
+            const run = vi.fn(async (job: { id: string }) => {
+                const hops = getLoopHops(job, 'jobs')
+                if (hops === undefined || hops < 2) {
+                    throw new Error(`fail-${hops ?? 0}`)
+                }
+            })
+            const queue = withLoop(withWorker(named<{ id: string }>('jobs'), run), {
+                delay: delayFn,
+            })
+
+            queue.enqueue({ id: 'a' })
+            await vi.advanceTimersByTimeAsync(0)
+            await flush(4)
+
+            expect(delayFn).toHaveBeenCalledOnce()
+            expect(delayFn.mock.calls[0]?.[0]).toBe(1)
+            expect(run).toHaveBeenCalledOnce()
+
+            await vi.advanceTimersByTimeAsync(10)
+            await flush(6)
+            expect(run.mock.calls.length).toBe(2)
+            expect(delayFn).toHaveBeenCalledTimes(2)
+            expect(delayFn.mock.calls[1]?.[0]).toBe(2)
+
+            await vi.advanceTimersByTimeAsync(20)
+            await flush(6)
+            expect(run.mock.calls.length).toBe(3)
+            expect(getLoopHops(run.mock.calls.at(-1)?.[0], 'jobs')).toBe(2)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('re-enqueues immediately when delay is 0', async () => {
+        const enqueued = vi.fn()
+        const queue = withLoop(
+            withWorker(named<{ id: string }>('jobs'), async (job) => {
+                if (getLoopHops(job, 'jobs') === undefined) {
+                    throw new Error('fail')
+                }
+            }),
+            { delay: 0 },
+        )
+        queue.on('loop:enqueued', enqueued)
+
+        const idle = waitForIdle(queue)
+        queue.enqueue({ id: 'a' })
+        await idle
+        await flush(4)
+
+        expect(enqueued).toHaveBeenCalledOnce()
+    })
+
+    it('emits loop:error when delay callback returns invalid duration', async () => {
+        const onError = vi.fn()
+        const queue = withLoop(
+            withWorker(named<number>('jobs'), async () => {
+                throw new Error('worker')
+            }),
+            {
+                delay: () => -1,
+            },
+        )
+        queue.on('loop:error', onError)
+
+        const idle = waitForIdle(queue)
+        queue.enqueue(1)
+        await idle
+
+        const cause = onError.mock.calls[0]?.[0].cause as LoopEnqueueError
+        expect(cause).toBeInstanceOf(LoopEnqueueError)
+        expect(cause.cause).toBeInstanceOf(InvalidLoopOptionError)
+    })
+
+    it('does not schedule delay when filter returns false', async () => {
+        vi.useFakeTimers()
+        try {
+            const delay = vi.fn(() => 100)
+            const run = vi.fn(async () => {
+                throw new Error('fail')
+            })
+            const queue = withLoop(withWorker(named<number>('n'), run), {
+                filter: () => false,
+                delay,
+            })
+
+            queue.enqueue(1)
+            await vi.advanceTimersByTimeAsync(0)
+            await flush(2)
+
+            expect(run).toHaveBeenCalledOnce()
+            expect(delay).not.toHaveBeenCalled()
+            expect(queue.isEmpty()).toBe(true)
+
+            await vi.advanceTimersByTimeAsync(200)
+            expect(run).toHaveBeenCalledOnce()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('emits loop:error when delay callback throws', async () => {
+        const delayErr = new Error('delay-boom')
+        const onError = vi.fn()
+        const queue = withLoop(
+            withWorker(named<number>('jobs'), async () => {
+                throw new Error('worker')
+            }),
+            {
+                delay: () => {
+                    throw delayErr
+                },
+            },
+        )
+        queue.on('loop:error', onError)
+
+        const idle = waitForIdle(queue)
+        queue.enqueue(1)
+        await idle
+
+        const cause = onError.mock.calls[0]?.[0].cause as LoopEnqueueError
+        expect(cause).toBeInstanceOf(LoopEnqueueError)
+        expect(cause.cause).toBe(delayErr)
+    })
+
+    it('emits loop:error when map throws after delay', async () => {
+        vi.useFakeTimers()
+        try {
+            const mapErr = new Error('map-late')
+            const onError = vi.fn()
+            const queue = withLoop(
+                withWorker(named<number>('jobs'), async () => {
+                    throw new Error('worker')
+                }),
+                {
+                    delay: 25,
+                    map: () => {
+                        throw mapErr
+                    },
+                },
+            )
+            queue.on('loop:error', onError)
+
+            queue.enqueue(1)
+            await vi.advanceTimersByTimeAsync(0)
+            await flush(2)
+            expect(onError).not.toHaveBeenCalled()
+
+            await vi.advanceTimersByTimeAsync(25)
+            await flush(2)
+
+            const cause = onError.mock.calls[0]?.[0].cause as LoopEnqueueError
+            expect(cause).toBeInstanceOf(LoopEnqueueError)
+            expect(cause.cause).toBe(mapErr)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
 })

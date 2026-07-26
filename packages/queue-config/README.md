@@ -136,7 +136,7 @@ Each named store must back **exactly one** queue (shared or unused store names a
 | `maxSize` | `number` | Safe integer ≥ 1; same as `buildQueue({ maxSize })` |
 | `persist` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` | `store` = name in `stores`; `autoSave` / `autoSaveDebounceMs` **snapshot-only**; `createId` **row-only** (JS) |
 | `worker` | `WorkerFn` or `{ run, concurrency?, autoStart? }` | **JS only** — not available in JSON |
-| `loop` | `true` or `{ map?, filter? }` | `withLoop` after worker; requires `worker`. Queue config key is `buildQueue({ name })`. `map` / `filter` **JS only** |
+| `loop` | `true` or `{ map?, filter?, delay? }` | `withLoop` after worker; requires `worker`. Queue config key is `buildQueue({ name })`. `map` / `filter` / function `delay` **JS only**; static `delay` ms allowed in JSON. **Delay is not durable** — restart/crash drops pending delayed re-entries (see core [loop delay disclaimer](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop)) |
 | `dlq` | `string` or `{ queue, map?, filter? }` | `withDlq` after worker/loop; requires `worker`. Target must be another named queue. `map` / `filter` **JS only** |
 
 Every queue is built with `name` equal to its key under `queues` (for hop meta and `getQueueName`).
@@ -175,6 +175,7 @@ export default defineConfig({
     jobs: {
       worker: handleJob,
       loop: {
+        delay: (hops) => 50 * hops, // 1-based hop count only
         filter: (_item, _error, ctx) => (ctx.previousHops ?? 0) < MAX,
       },
       dlq: {
@@ -371,7 +372,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `PersistConfig` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` on a queue |
 | `QueueConfig` | `maxSize`, `persist`, `worker`, `loop`, `dlq` |
 | `WorkerConfig` | Function or `{ run, concurrency?, autoStart? }` |
-| `LoopConfig` | `true` or `{ map?, filter? }` for `withLoop` |
+| `LoopConfig` | `true` or `{ map?, filter?, delay? }` for `withLoop` |
 | `DlqConfig` | Target queue name string or `{ queue, map?, filter? }` for `withDlq` |
 | `RouterConfig` / `BindingConfig` | Router section |
 | `BuildFromConfigOptions` | `{ storage?, skipValidate? }` |

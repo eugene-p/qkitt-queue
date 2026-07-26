@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-07-25
+
+### Added
+
+- `LoopConfig.delay` — static ms or `(hops) => ms` passed through to `withLoop` (function form JS-only; static ok in JSON)
+
+### Changed
+
+- Peer dependency `@qkitt/queue` is now `^0.7.0` (requires core `withLoop` delay / `DelayPolicy`)
+
 ## [0.5.0] — 2026-07-25
 
 ### Added
@@ -130,6 +140,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.5.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.1
 [0.5.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.0
 [0.4.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.1
 [0.4.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.0

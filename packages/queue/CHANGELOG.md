@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-25
+
+### Added
+
+- `withLoop` option `delay`: static ms or `(hops) => ms` before re-enqueue (process-local timers; restart/crash drops pending delayed items)
+- Shared `DelayPolicy` type (`number | (attempt: number) => number`) for retry and loop delay (exported)
+
+### Changed
+
+- **Breaking:** `retryWorker` `delay` function is `(failedAttempt: number) => number` only (no longer receives `error`)
+
 ## [0.6.5] — 2026-07-25
 
 ### Added
@@ -310,6 +321,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.7.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.7.0
 [0.6.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.5
 [0.6.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.4
 [0.6.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.3

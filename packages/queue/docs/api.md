@@ -157,6 +157,7 @@ Requires a **named** queue (`buildQueue({ name })`). Hop bookkeeping under `__qk
 | --- | --- | --- | --- |
 | `map` | `(item, error, ctx) => U` | identity | Runs on the **original** item; library always re-stamps `__qkittQueue` |
 | `filter` | `(item, error, ctx) => boolean` | always true | Skip re-enqueue when false (e.g. max hops) |
+| `delay` | `number \| (hops: number) => number` | `0` | Finite ms ≥ 0 before re-enqueue; function receives 1-based hop count only. **Not durable:** restart/crash drops pending delayed items (timer-only; not in queue/persist). Prefer short delays. |
 
 `ctx` (`LoopMapContext`): `{ name, previousHops, hops }`. Hop key is the queue’s `name`. Patterns, meta-override behavior, and spin risk: [Failure routing — loop](./failure-routing.md#loop-withloop).
 
@@ -164,11 +165,11 @@ Requires a **named** queue (`buildQueue({ name })`). Hop bookkeeping under `__qk
 
 | Event | Payload | When |
 | --- | --- | --- |
-| `loop:enqueued` | `{ item, error, loopItem }` | Re-enqueue succeeded |
+| `loop:enqueued` | `{ item, error, loopItem }` | Re-enqueue succeeded (after any `delay`) |
 | `loop:meta-override` | `{ item, error, name, attempted, applied }` | `map` changed `__qkittQueue`; library stamp still applied |
-| `loop:error` | `{ item, error, cause }` | `filter`, `map`, or re-enqueue threw (`cause` is `LoopEnqueueError`) |
+| `loop:error` | `{ item, error, cause }` | `filter`, `map`, `delay`, or re-enqueue threw (`cause` is `LoopEnqueueError`) |
 
-**Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidLoopOptionError` (queue has no `name`); `LoopEnqueueError` on the `loop:error` path.
+**Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidLoopOptionError` at wrap (no `name`, or invalid static `delay`). Invalid function `delay` results and `map` / re-enqueue failures emit `loop:error` with `LoopEnqueueError` (`cause` may be `InvalidLoopOptionError`).
 
 ### Chaining `withLoop` + `withDlq`
 
@@ -230,7 +231,7 @@ retryWorker<T, R>(
 | Option | Type | Notes |
 | --- | --- | --- |
 | `retries` | `number` | Safe integer ≥ 0; total attempts = `retries + 1` |
-| `delay` | `number \| (failedAttempt: number, error: unknown) => number` | Finite ms ≥ 0; `failedAttempt` is 1-based |
+| `delay` | `number \| (failedAttempt: number) => number` | Finite ms ≥ 0; `failedAttempt` is 1-based (attempt only — not the error) |
 | `shouldRetry` | `(error: unknown, failedAttempt: number) => boolean` | Default: always retry |
 
 Passing a number is shorthand for `{ retries: n }`.
@@ -329,6 +330,7 @@ Also: `createTypedEmit`, types `EventEmitter`, `EventMap`, `EventCallback`, `Mer
 | `RouteMessage<T>`, `Router`, `Binding` | Router |
 | `DeadLetterTarget<U>`, `WithDeadLetterOptions<T, U>` | Dead-letter destination / options |
 | `LoopMapContext`, `WithLoopOptions<T, U>` | Loop hop context / options |
+| `DelayPolicy` | `number \| (attempt: number) => number` — shared by `retryWorker` and `withLoop` delay |
 | `RetryOptions`, `PipelineStep`, `PipelineStepContext` | Worker helpers |
 
 Internals (`*.util`, codecs, write chain) are not part of the public contract.

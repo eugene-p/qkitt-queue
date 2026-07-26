@@ -104,6 +104,8 @@ export {
     type UnmatchedRecord,
 } from './router'
 
+export type { DelayPolicy } from './util/delay-policy.util'
+
 export {
     InvalidPipelineError,
     InvalidRetryOptionError,

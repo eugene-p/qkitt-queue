@@ -102,7 +102,7 @@ describe('retryWorker', () => {
 
     it('supports function delay', async () => {
         vi.useFakeTimers()
-        const seen: Array<{ attempt: number; error: unknown }> = []
+        const seen: number[] = []
         const inner = vi
             .fn()
             .mockRejectedValueOnce(new Error('1'))
@@ -110,8 +110,8 @@ describe('retryWorker', () => {
 
         const worker = retryWorker(inner, {
             retries: 1,
-            delay: (attempt, error) => {
-                seen.push({ attempt, error })
+            delay: (attempt) => {
+                seen.push(attempt)
                 return 10
             },
         })
@@ -122,9 +122,7 @@ describe('retryWorker', () => {
         await vi.advanceTimersByTimeAsync(10)
         await expect(pending).resolves.toBe('ok')
         expect(inner).toHaveBeenCalledTimes(2)
-        expect(seen).toHaveLength(1)
-        expect(seen[0]!.attempt).toBe(1)
-        expect(seen[0]!.error).toBeInstanceOf(Error)
+        expect(seen).toEqual([1])
 
         vi.useRealTimers()
     })

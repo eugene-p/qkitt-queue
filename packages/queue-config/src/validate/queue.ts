@@ -144,7 +144,7 @@ export const parseLoopConfig = (
     if (!isPlainObject(value)) {
         return configError(
             'INVALID_TYPE',
-            `${path} must be true or { map?, filter? }`,
+            `${path} must be true or { map?, filter?, delay? }`,
             path,
         )
     }
@@ -185,6 +185,31 @@ export const parseLoopConfig = (
             )
         }
         loop.filter = value.filter as Exclude<LoopConfig, true>['filter']
+    }
+
+    if (value.delay !== undefined) {
+        if (typeof value.delay === 'function') {
+            if (!ctx.allowJs) {
+                return configError(
+                    'JS_ONLY_FIELD',
+                    `${path}.delay as a function is only valid in JS config`,
+                    `${path}.delay`,
+                )
+            }
+            loop.delay = value.delay as Exclude<LoopConfig, true>['delay']
+        } else if (
+            typeof value.delay === 'number' &&
+            Number.isFinite(value.delay) &&
+            value.delay >= 0
+        ) {
+            loop.delay = value.delay
+        } else {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.delay must be a finite number >= 0 or a function (hops) => ms`,
+                `${path}.delay`,
+            )
+        }
     }
 
     return loop

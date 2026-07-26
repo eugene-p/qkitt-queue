@@ -143,7 +143,7 @@ const system = await buildFromConfig(
 | [`fs-snapshot-store`](./examples/fs-snapshot-store/main.ts) | File snapshot store |
 | [`router-topics`](./examples/router-topics/main.ts) | Topic fan-out |
 | [`with-config`](./examples/with-config/main.ts) | Declarative multi-queue |
-| [`with-loop`](./examples/with-loop/main.ts) | Same-queue re-entry + hop cap |
+| [`with-loop`](./examples/with-loop/main.ts) | Same-queue re-entry, hop cap, hop-based `delay` |
 | [`with-dlq`](./examples/with-dlq/main.ts) | Failed items → distinct sink |
 | [`loop-and-dlq`](./examples/loop-and-dlq/main.ts) | Hop, then dead-letter via filters |
 | [`with-config-loop-dlq`](./examples/with-config-loop-dlq/main.ts) | Same chain from config |

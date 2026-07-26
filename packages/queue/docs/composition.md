@@ -143,6 +143,7 @@ const run = retryWorker(
   },
   {
     retries: 3, // total attempts = retries + 1
+    // delay is ms or (attempt) => ms — 1-based attempt only (not the error)
     delay: (attempt) => 100 * 2 ** (attempt - 1),
     shouldRetry: (error) => !(error instanceof TypeError),
   },
@@ -153,6 +154,8 @@ const run2 = retryWorker(async (n: number) => callApi(n), 2)
 ```
 
 `retries` = retries **after** the first failure. Total attempts = `retries + 1`.
+
+`delay` uses the shared `DelayPolicy` shape (`number | (attempt: number) => number`). Same shape for [`withLoop` delay](./failure-routing.md#loop-withloop) (hop count instead of attempt). Loop delay is process-local only: restart or crash loses items still waiting to re-enqueue (see that guide’s disclaimer).
 
 | `retries` | Total attempts |
 | --- | ---: |

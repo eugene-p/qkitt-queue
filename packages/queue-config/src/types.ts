@@ -119,7 +119,8 @@ export type WorkerConfig =
 
 /**
  * Same-queue failure re-entry via `withLoop` (requires `worker`).
- * `true` / `{}` use library defaults. `map` / `filter` are JS-only.
+ * `true` / `{}` use library defaults. `map` / `filter` / function `delay` are JS-only.
+ * Static numeric `delay` (ms) is valid in JSON.
  *
  * Both `loop` and `dlq` fire on every `worker:failed` independently.
  * Chain with complementary filters (see package README).
@@ -131,6 +132,12 @@ export type LoopConfig =
           map?: (item: any, error: unknown, ctx: LoopMapContext) => any
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           filter?: (item: any, error: unknown, ctx: LoopMapContext) => boolean
+          /**
+           * Delay before re-enqueue: static ms, or `(hops) => ms` (1-based hop
+           * count only). Function form is JS-only.
+           * Not durable — restart/crash drops items still waiting on the timer.
+           */
+          delay?: number | ((hops: number) => number)
       }
 
 /**

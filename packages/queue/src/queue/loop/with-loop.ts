@@ -1,6 +1,13 @@
 import type { EventCallback, EventMap, MergeEventMaps } from '../../events'
 import { InvalidQueueCompositionError } from '../../persist/errors'
 import {
+    type DelayPolicy,
+    isInvalidStaticDelay,
+    resolveDelayMs,
+} from '../../util/delay-policy.util'
+import { isNonNegativeFinite } from '../../util/number.util'
+import { scheduleTimeout } from '../../util/schedule-timeout.util'
+import {
     decorateQueue,
     type PreserveQueueExtras,
 } from '../core/forward.util'
@@ -40,6 +47,17 @@ export type WithLoopOptions<T, U = T> = {
     map?: (item: T, error: unknown, ctx: LoopMapContext) => U
     /** Skip re-enqueue when false. Default: always re-enqueue. */
     filter?: (item: T, error: unknown, ctx: LoopMapContext) => boolean
+    /**
+     * Delay in ms before re-enqueue after a failure. Number or function of
+     * the 1-based hop count only (same shape as {@link import('../../worker/retry').RetryOptions.delay}).
+     * Must resolve to a finite number ≥ 0. Default: immediate.
+     *
+     * **Not durable:** the payload sits only in a process-local timer until
+     * re-enqueue. App restart, crash, or process exit **drops** pending delayed
+     * items (they are not in the queue and not written by `withPersist`). Prefer
+     * short delays; long waits raise the risk of silent loss.
+     */
+    delay?: DelayPolicy
 }
 
 export type LoopEvents<T, U = T> = {
@@ -57,7 +75,7 @@ export type LoopEvents<T, U = T> = {
         applied: { hops: number }
     }
     /**
-     * Fired when `filter`, `map`, or re-enqueue throws.
+     * Fired when `filter`, `map`, `delay`, or re-enqueue throws.
      * {@link LoopEnqueueError} wraps the original failure as `cause`.
      */
     'loop:error': { item: T; error: unknown; cause: LoopEnqueueError }
@@ -100,6 +118,19 @@ export class LoopEnqueueError extends Error {
     }
 }
 
+const requireLoopDelayMs = (
+    delay: DelayPolicy | undefined,
+    hops: number,
+): number => {
+    const ms = resolveDelayMs(delay, hops)
+    if (!isNonNegativeFinite(ms)) {
+        throw new InvalidLoopOptionError(
+            'loop delay must be a finite number >= 0',
+        )
+    }
+    return ms
+}
+
 /**
  * On `worker:failed`, re-enqueue onto the **same** worker queue (failure loop).
  *
@@ -109,6 +140,14 @@ export class LoopEnqueueError extends Error {
  * always re-stamps `__qkittQueue`. If map changes that bag, emits
  * `loop:meta-override` and overwrites.
  *
+ * Optional `delay` (static ms or `(hops) => ms`) waits before re-enqueue.
+ * Pending delays do not occupy queue slots; `loop:enqueued` fires after the item
+ * is re-queued. `stop` does not cancel pending delays.
+ *
+ * **Disclaimer — data loss on exit:** delayed items live only in memory (timer
+ * closure), not in the queue and not in persist. Restart, crash, or process exit
+ * loses them with no flush/recovery. Long delays increase that window of risk.
+ *
  * Non-plain payloads become `{ value, __qkittQueue: { loop: { [name]: { hops } } } }`.
  *
  * **Not a dead letter.** For a separate sink use
@@ -116,10 +155,11 @@ export class LoopEnqueueError extends Error {
  *
  * **Composition:** `withLoop(withWorker(buildQueue({ name: 'jobs' }), run))`.
  *
- * A always-failing worker can spin forever — use `filter` on hops, or stop the worker.
+ * An always-failing worker can spin forever — use `filter` on hops, `delay`, or stop the worker.
  *
  * @throws {InvalidQueueCompositionError} if `queue` has no worker layer
  * @throws {InvalidLoopOptionError} if the queue has no {@link import('../core/queue').BuildQueueOptions.name}
+ *   or static `delay` is invalid
  */
 export const withLoop = <
     T,
@@ -149,8 +189,15 @@ export const withLoop = <
         )
     }
 
+    if (isInvalidStaticDelay(options.delay)) {
+        throw new InvalidLoopOptionError(
+            'loop delay must be a finite number >= 0',
+        )
+    }
+
     const userMap = options.map
     const filter = options.filter ?? (() => true)
+    const delayOpt = options.delay
 
     const inner = queue
     const emitInner = inner.emit as (
@@ -171,28 +218,53 @@ export const withLoop = <
 
             if (!filter(item, error, ctx)) return
 
-            const mapped: unknown = userMap
-                ? userMap(item, error, ctx)
-                : item
+            const wait = requireLoopDelayMs(delayOpt, hops)
 
-            const originalMeta = isPlainQueueMeta(item)
-            const attempted = readMappedQueueMeta(mapped)
-            if (
-                attempted !== undefined &&
-                !queueMetaEqual(attempted, originalMeta)
-            ) {
-                emitInner('loop:meta-override', {
-                    item,
-                    error,
-                    name,
-                    attempted,
-                    applied: { hops },
-                })
+            const reEnqueue = (): void => {
+                const mapped: unknown = userMap
+                    ? userMap(item, error, ctx)
+                    : item
+
+                const originalMeta = isPlainQueueMeta(item)
+                const attempted = readMappedQueueMeta(mapped)
+                if (
+                    attempted !== undefined &&
+                    !queueMetaEqual(attempted, originalMeta)
+                ) {
+                    emitInner('loop:meta-override', {
+                        item,
+                        error,
+                        name,
+                        attempted,
+                        applied: { hops },
+                    })
+                }
+
+                const loopItem = stampLoopHops(mapped, item, name, hops) as U
+                inner.enqueue(loopItem as unknown as T)
+                emitInner('loop:enqueued', { item, error, loopItem })
             }
 
-            const loopItem = stampLoopHops(mapped, item, name, hops) as U
-            inner.enqueue(loopItem as unknown as T)
-            emitInner('loop:enqueued', { item, error, loopItem })
+            if (wait > 0) {
+                scheduleTimeout(() => {
+                    try {
+                        reEnqueue()
+                    } catch (cause) {
+                        const wrapped = new LoopEnqueueError(
+                            'withLoop: failed to re-enqueue item',
+                            { cause, item, workerError: error },
+                        )
+                        emitInner('loop:error', {
+                            item,
+                            error,
+                            cause: wrapped,
+                        })
+                    }
+                }, wait)
+                return
+            }
+
+            reEnqueue()
         } catch (cause) {
             const wrapped = new LoopEnqueueError(
                 'withLoop: failed to re-enqueue item',

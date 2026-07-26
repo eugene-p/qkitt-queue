@@ -123,6 +123,7 @@ const resolveLoopOptions = <T>(
     return {
         ...(loop.map !== undefined ? { map: loop.map } : {}),
         ...(loop.filter !== undefined ? { filter: loop.filter } : {}),
+        ...(loop.delay !== undefined ? { delay: loop.delay } : {}),
     }
 }
 

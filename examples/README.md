@@ -30,7 +30,7 @@ npm run examples
 | [`fs-snapshot-store`](./fs-snapshot-store/main.ts) | File snapshot store | custom `SnapshotStore` + `withPersist` |
 | [`router-topics`](./router-topics/main.ts) | Topic fan-out | `buildRouter` + worker queues |
 | [`with-config`](./with-config/main.ts) | Declarative multi-queue | `@qkitt/queue-config` |
-| [`with-loop`](./with-loop/main.ts) | Same-queue re-entry + hop cap | `buildQueue({ name })` → `withWorker` → `withLoop` |
+| [`with-loop`](./with-loop/main.ts) | Same-queue re-entry, hop cap, hop-based `delay` | `buildQueue({ name })` → `withWorker` → `withLoop` |
 | [`with-dlq`](./with-dlq/main.ts) | Failed items → distinct sink | `withWorker` → `withDeadLetter` / `withDlq` |
 | [`loop-and-dlq`](./loop-and-dlq/main.ts) | Hop, then dead-letter via filters | `withWorker` → `withLoop` → `withDlq` |
 | [`with-config-loop-dlq`](./with-config-loop-dlq/main.ts) | Same chain from config | `@qkitt/queue-config` `loop` + `dlq` |

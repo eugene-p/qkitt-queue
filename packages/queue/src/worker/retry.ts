@@ -1,4 +1,9 @@
 import {
+    type DelayPolicy,
+    isInvalidStaticDelay,
+    resolveDelayMs,
+} from '../util/delay-policy.util'
+import {
     isIntegerInRange,
     isNonNegativeFinite,
 } from '../util/number.util'
@@ -12,11 +17,10 @@ export type RetryOptions = {
      */
     retries: number
     /**
-     * Delay in ms before each retry. Number or function of
-     * (failedAttempt, error) where failedAttempt is 1-based.
-     * Must resolve to a finite number ≥ 0.
+     * Delay in ms before each retry. Number or function of the 1-based
+     * failed attempt count only. Must resolve to a finite number ≥ 0.
      */
-    delay?: number | ((failedAttempt: number, error: unknown) => number)
+    delay?: DelayPolicy
     /** Return false to stop retrying early. Defaults to always retry. */
     shouldRetry?: (error: unknown, failedAttempt: number) => boolean
 }
@@ -54,13 +58,11 @@ const sleep = (ms: number): Promise<void> =>
         schedule(resolve, ms)
     })
 
-const resolveDelay = (
-    delay: RetryOptions['delay'],
-    failedAttempt: number,
-    error: unknown,
+const requireDelayMs = (
+    delay: DelayPolicy | undefined,
+    attempt: number,
 ): number => {
-    if (delay === undefined) return 0
-    const ms = typeof delay === 'function' ? delay(failedAttempt, error) : delay
+    const ms = resolveDelayMs(delay, attempt)
     if (!isNonNegativeFinite(ms)) {
         throw new InvalidRetryOptionError(
             'retry delay must be a finite number >= 0',
@@ -90,12 +92,7 @@ export const retryWorker = <T, R>(
         )
     }
 
-    // Static delay: validate once at wrap time.
-    if (
-        opts.delay !== undefined &&
-        typeof opts.delay !== 'function' &&
-        !isNonNegativeFinite(opts.delay)
-    ) {
+    if (isInvalidStaticDelay(opts.delay)) {
         throw new InvalidRetryOptionError(
             'retry delay must be a finite number >= 0',
         )
@@ -119,7 +116,7 @@ export const retryWorker = <T, R>(
                     throw new RetryExhaustedError(failedAttempt, error)
                 }
 
-                const wait = resolveDelay(opts.delay, failedAttempt, error)
+                const wait = requireDelayMs(opts.delay, failedAttempt)
                 if (wait > 0) {
                     await sleep(wait)
                 }

@@ -1,5 +1,7 @@
 export type { PipelineStepContext, StepFn, WorkerFn } from './types'
 
+export type { DelayPolicy } from '../util/delay-policy.util'
+
 export {
     InvalidRetryOptionError,
     RetryExhaustedError,
