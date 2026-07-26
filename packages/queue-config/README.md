@@ -9,7 +9,7 @@ Declarative setup for [`@qkitt/queue`](https://www.npmjs.com/package/@qkitt/queu
 
 Builds the same stack as hand-written composition (`queue → persist → worker → loop → dlq → router`) from a config object. Optional; most apps only need `@qkitt/queue`. See the core [composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) and [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) guides for the underlying model.
 
-**Peer dependency:** `@qkitt/queue` `^0.6.4`. Requires TypeScript **4.7+** with `moduleResolution` `node16` or `nodenext`, or **5.0+** with `bundler`.
+**Peer dependency:** `@qkitt/queue` `^0.6.4`. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.2` → `0.3`). Check the changelog on minor upgrades.
 

@@ -9,7 +9,7 @@
 
 Composable **in-process** queues for TypeScript — zero runtime dependencies.
 
-Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing, failure routing (loop / dead letter). Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript **4.7+** with `moduleResolution` `node16` or `nodenext`, or **5.0+** with `bundler`.
+Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing, failure routing (loop / dead letter). Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
 
 **Out of scope:** work that spans machines or processes.
 
