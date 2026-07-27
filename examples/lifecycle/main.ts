@@ -1,10 +1,9 @@
 /**
  * Drain vs shutdown: whenIdle (full empty) vs gracefulStop (in-flight only).
- * Layers: buildQueue({ store? }) → withWorker
+ * Layers: buildQueue → withWorker
  */
 import {
   buildQueue,
-  createMemoryRowStore,
   gracefulStop,
   whenIdle,
   withWorker,
@@ -17,10 +16,7 @@ type Job = {
 }
 
 async function main() {
-  title(
-    '@qkitt/queue — lifecycle',
-    'whenIdle + gracefulStop  store=memory-row',
-  )
+  title('@qkitt/queue — lifecycle', 'whenIdle + gracefulStop')
 
   // --- phase 1: drain everything currently queued ---
   phase('whenIdle — full drain')
@@ -49,20 +45,16 @@ async function main() {
   line('idle', 'done', `drained=${drained}  size=${drainQueue.size()}`)
 
   // --- phase 2: SIGTERM-style stop — finish in-flight, keep remainder ---
-  phase('gracefulStop — in-flight only + flush')
+  phase('gracefulStop — in-flight only')
 
-  const store = createMemoryRowStore<Job>()
   let release!: () => void
   const gate = new Promise<void>((resolve) => {
     release = resolve
   })
   let finished = 0
 
-  const durable = buildQueue<Job>({ store })
-  await durable.hydrate()
-
   const queue = withWorker(
-    durable,
+    buildQueue<Job>(),
     async (job) => {
       line(
         'worker',
@@ -88,23 +80,23 @@ async function main() {
     `running=${queue.isRunning()}  processing=${queue.isProcessing()}  size=${queue.size()}`,
   )
 
-  const stopping = gracefulStop(queue, { flush: true })
+  const stopping = gracefulStop(queue)
   release()
   await stopping
 
   line(
     'stop',
     'done',
-    `running=${queue.isRunning()}  size=${queue.size()}  finished=${finished}  store_rows=${store.rows.length}`,
+    `running=${queue.isRunning()}  size=${queue.size()}  finished=${finished}`,
   )
   line(
     'note',
     'left',
-    'remainder stayed in queue + store — not a full drain; use whenIdle for that',
+    'remainder stayed queued — not a full drain; use whenIdle for that',
   )
 
   summary(
-    `whenIdle drained=${drained}  gracefulStop finished=${finished}  remaining=${queue.size()}  store_rows=${store.rows.length}`,
+    `whenIdle drained=${drained}  gracefulStop finished=${finished}  remaining=${queue.size()}`,
   )
 }
 

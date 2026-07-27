@@ -36,7 +36,7 @@ In-process queue toolkit. Start bare, add a layer as requirements change:
 - **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
 - **Retries** — survive flaky third-party calls (payment capture, carrier API, email or SMS gateway).
 - **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
-- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Pass a `RowStore` to `buildQueue({ store })`. Built-in memory and Web Storage; custom stores implement `RowStore`.
+- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Pass a `RowStore` to `buildQueue({ store })`. Built-in Web Storage; custom stores implement `RowStore`.
 - **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
 - **Failure routing** — re-enter the same queue with hop meta (`withLoop`) or forward failed items to a dead-letter sink (`withDeadLetter` / `withDlq`).
 - **Declarative config** — stand up a multi-queue system from one object (`@qkitt/queue-config`).
@@ -81,10 +81,12 @@ Add persistence when you need it (`store` on the constructor):
 import {
   buildQueue,
   withWorker,
-  createMemoryRowStore,
+  createLocalStorageRowStore,
 } from '@qkitt/queue'
 
-const base = buildQueue<Job>({ store: createMemoryRowStore() })
+const base = buildQueue<Job>({
+  store: createLocalStorageRowStore('my-app:jobs'),
+})
 await base.hydrate() // after restart: before withWorker
 
 const queue = withWorker(
@@ -138,10 +140,9 @@ const system = await buildFromConfig(
 | Example | Use case |
 | --- | --- |
 | [`worker-drain`](./examples/worker-drain/main.ts) | Concurrent jobs + drain wait |
-| [`lifecycle`](./examples/lifecycle/main.ts) | `whenIdle` drain vs `gracefulStop` + flush |
+| [`lifecycle`](./examples/lifecycle/main.ts) | `whenIdle` drain vs `gracefulStop` |
 | [`retry-pipeline`](./examples/retry-pipeline/main.ts) | Retries / multi-step |
-| [`persist-restart`](./examples/persist-restart/main.ts) | Survive restart (row store) |
-| [`fs-row-store`](./examples/fs-row-store/main.ts) | Custom file row store |
+| [`fs-row-store`](./examples/fs-row-store/main.ts) | Survive restart via custom file `RowStore` |
 | [`router-topics`](./examples/router-topics/main.ts) | Topic fan-out |
 | [`with-config`](./examples/with-config/main.ts) | Declarative multi-queue |
 | [`with-loop`](./examples/with-loop/main.ts) | Same-queue re-entry, hop cap, hop-based `delay` |
@@ -211,17 +212,16 @@ Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run benc
 
 Median ops/s, higher is better. Heap Δ = retained memory measured with all items still held (worker paused).
 
-### Browser — bare vs durable (Chromium)
+### Browser — in-process vs durable (Chromium)
 
 Illustrative wall times only (`npm run compare:stores`). Not a peer bench.
 
 | Mode (5k jobs, c=1) | Drain |
 | --- | ---: |
-| Bare `buildQueue()` | ~2 ms |
-| Memory `RowStore` | ~9 ms |
+| Bare `buildQueue()` (in-process) | ~2 ms |
 | `localStorage` rows | ~410 ms |
 
-Store put N=5k: memory ~1 ms · localStorage ~245 ms. Full matrix: [persistence — browser](./packages/queue/docs/persistence.md#browser-integration-checks).
+Store put N=5k: localStorage ~245 ms. Full matrix: [persistence — browser](./packages/queue/docs/persistence.md#browser-integration-checks).
 
 ## Contributing
 

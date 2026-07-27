@@ -2,7 +2,7 @@
 
 Durability is **built into the queue**: pass a `RowStore` to `buildQueue({ store })`. There is no separate persist decorator and no snapshot strategy — every durable queue is row-based (per-op put/remove with numeric ids and lease fields).
 
-Built-in stores: in-memory and browser Web Storage (`localStorage` / `sessionStorage`). Custom backends implement `RowStore` ([Custom stores](#custom-stores)).
+Built-in durable stores: browser Web Storage (`localStorage` / `sessionStorage`). Custom backends implement `RowStore` ([Custom stores](#custom-stores)). Bare `buildQueue()` (no store) is the in-process path — data is not durable across restarts.
 
 [README](../README.md) · [Composition](./composition.md) · [API `buildQueue`](./api.md#buildqueue) · [Stores](./api.md#stores)
 
@@ -11,12 +11,12 @@ Built-in stores: in-memory and browser Web Storage (`localStorage` / `sessionSto
 | | Bare queue | Durable queue (`store` set) |
 | --- | --- | --- |
 | Construction | `buildQueue()` | `buildQueue({ store })` |
-| Writes | Memory only | Memory + `RowStore` put/remove on a write chain |
+| Writes | Process memory only | Memory + `RowStore` put/remove on a write chain |
 | Worker path | `claim` / `ack` / `release` (leases) | Same; store updated on claim/ack/release |
 | Wait for I/O | `flush()` is a no-op | `await flush()` before process exit |
 | Restart | Lost | `await hydrate()` loads rows |
 
-Mutations return `Promise` so async stores work. Bare (no store) paths resolve immediately after the in-memory update (shared settled promises on the hot path).
+Mutations return `Promise` so async stores work. Bare (no store) paths resolve immediately after the in-process update (shared settled promises on the hot path).
 
 While `hydrate` runs, concurrent mutations reject with `HydrateWhileActiveError`. Hydrate also requires an idle queue (no leased rows / active workers).
 
@@ -31,12 +31,12 @@ While `hydrate` runs, concurrent mutations reject with `HydrateWhileActiveError`
 import {
   buildQueue,
   withWorker,
-  createMemoryRowStore,
+  createLocalStorageRowStore,
 } from '@qkitt/queue'
 
 type Job = { id: string }
 
-const store = createMemoryRowStore<Job>()
+const store = createLocalStorageRowStore<Job>('my-app:jobs')
 const base = buildQueue<Job>({ store })
 await base.hydrate() // load restored rows first
 
@@ -98,24 +98,22 @@ Web Storage is not multi-tab safe or transactional. Prefer one owning tab when d
 
 ### Browser integration checks
 
-Headless Chromium exercises real `localStorage` / `sessionStorage` (unit tests use an in-memory mock). From the monorepo root (first time: `npx playwright install chromium`):
+Headless Chromium exercises real `localStorage` / `sessionStorage`. From the monorepo root (first time: `npx playwright install chromium`):
 
 ```bash
 npm run test:browser      # integration specs (round-trip, batch, reload durability)
-npm run compare:stores    # bare vs memory store vs localStorage (store ops + worker drain)
+npm run compare:stores    # bare (in-process) vs localStorage drain + store ops
 ```
 
 Illustrative Chromium sample (Windows laptop, 2026-07-26 — not a peer bench):
 
 | Worker drain | 1k c=1 | 1k c=4 | 5k c=1 | 5k c=4 |
 | --- | ---: | ---: | ---: | ---: |
-| Bare (no store) | ~1.3 ms | ~1.2 ms | ~2.1 ms | ~1.8 ms |
-| Memory `RowStore` | ~3.2 ms | ~1.9 ms | ~9.4 ms | ~7.7 ms |
+| Bare (in-process) | ~1.3 ms | ~1.2 ms | ~2.1 ms | ~1.8 ms |
 | `localStorage` | ~38 ms | ~27 ms | ~411 ms | ~113 ms |
 
 | Store ops (put N) | N=1k fill | N=5k fill |
 | --- | ---: | ---: |
-| Memory | ~0.1 ms | ~1.2 ms |
 | `localStorage` | ~17 ms | ~245 ms |
 
 `browser/` is dev-only and is not published on npm.
@@ -168,7 +166,7 @@ Example (Node file rows): [`examples/fs-row-store`](../../../examples/fs-row-sto
 | Before (0.7) | After (0.8+) |
 | --- | --- |
 | `withPersist(buildQueue(), store)` | `buildQueue({ store })` |
-| `createMemorySnapshotStore` / `SnapshotStore` | **Removed** — use `createMemoryRowStore` / `RowStore` |
+| `createMemorySnapshotStore` / `SnapshotStore` | **Removed** — use Web Storage or a custom `RowStore` |
 | Snapshot `autoSave` / `persist()` | Gone — every mutation writes rows; `flush()` waits on the chain |
 | Row `insert` + string ids / `createId` | `put` full `RowRecord` with numeric ids from the queue |
 | Sync `enqueue` / `dequeue` | Always `Promise` (bare resolves immediately) |
@@ -182,7 +180,7 @@ const q = withWorker(
 
 // after
 const q = withWorker(
-  buildQueue<Job>({ store: createMemoryRowStore() }),
+  buildQueue<Job>({ store: createLocalStorageRowStore('my-app:jobs') }),
   run,
 )
 ```

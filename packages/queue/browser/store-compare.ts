@@ -1,13 +1,14 @@
 /**
- * Illustrative bare vs durable wall times in headless Chromium.
+ * Illustrative in-memory vs durable wall times in headless Chromium.
  * Not a formal peer bench — machine-dependent orientation only.
  *
  * Sections:
  *   1) store ops — put / loadAll / clear on RowStore (memory vs localStorage)
  *   2) drain — withWorker enqueue N + drain:
- *        none = bare buildQueue() (in-memory only)
- *        memory = buildQueue({ store: createMemoryRowStore() })
+ *        none = bare buildQueue() (in-memory; no store)
  *        localStorage = durable Web Storage rows
+ *
+ * Bare already is the in-process queue path. Drain compares bare vs localStorage only.
  *
  * Usage (from packages/queue after build + chromium install):
  *   npx tsx browser/store-compare.ts
@@ -61,10 +62,10 @@ const STORE_NS = [1_000, 5_000] as const
 /** Drain is heavier with localStorage; keep modest N × concurrency matrix. */
 const DRAIN_NS = [1_000, 5_000] as const
 const DRAIN_CONCURRENCIES = [1, 4] as const
-/** Store-only section (no bare queue). */
+/** Store-only section (RowStore APIs — memory helper vs Web Storage). */
 const STORE_KINDS = ['memory', 'localStorage'] as const
-/** Drain: bare mem vs in-process row store vs Web Storage. */
-const DRAIN_KINDS = ['none', 'memory', 'localStorage'] as const
+/** Drain: bare in-memory queue vs durable Web Storage. */
+const DRAIN_KINDS = ['none', 'localStorage'] as const
 
 const waitForServer = async (url: string, timeoutMs = 30_000): Promise<void> => {
   const start = Date.now()
@@ -213,20 +214,19 @@ const printStoreOps = (rows: StoreOpsRow[]): void => {
 }
 
 const labelKind = (kind: string): string => {
-  if (kind === 'none') return 'bare (no store)'
-  if (kind === 'memory') return 'memory RowStore'
+  if (kind === 'none') return 'bare (in-memory)'
   if (kind === 'localStorage') return 'localStorage'
   return kind
 }
 
 const printDrain = (rows: DrainRow[]): void => {
   console.log('')
-  console.log('=== Worker drain (mem vs persist) ===')
+  console.log('=== Worker drain (in-memory vs durable) ===')
   console.log(
     '  one cycle = enqueue N + drain until N finished (sync no-op job)',
   )
   console.log(
-    '  bare = buildQueue() · memory = RowStore in RAM · localStorage = Web Storage',
+    '  bare = buildQueue() · localStorage = buildQueue({ store }) + Web Storage',
   )
   console.log('')
 
@@ -260,7 +260,7 @@ const printDrain = (rows: DrainRow[]): void => {
 }
 
 const main = async (): Promise<void> => {
-  console.log('@qkitt/queue browser mem vs persist')
+  console.log('@qkitt/queue browser in-memory vs durable')
   console.log(`Node ${process.version} · ${baseURL}`)
   console.log('Illustrative only — not a peer bench; varies by machine/browser')
 

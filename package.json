@@ -16,7 +16,7 @@
     "compare:stores": "npm run compare:stores -w @qkitt/queue",
     "pack:check": "npm run pack:check -w @qkitt/queue && npm run pack:check -w @qkitt/queue-config",
     "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check",
-    "examples": "tsx examples/worker-drain/main.ts && tsx examples/retry-pipeline/main.ts && tsx examples/persist-restart/main.ts && tsx examples/fs-row-store/main.ts && tsx examples/router-topics/main.ts && tsx examples/with-config/main.ts && tsx examples/with-loop/main.ts && tsx examples/with-dlq/main.ts && tsx examples/loop-and-dlq/main.ts && tsx examples/with-config-loop-dlq/main.ts && tsx examples/lifecycle/main.ts"
+    "examples": "tsx examples/worker-drain/main.ts && tsx examples/retry-pipeline/main.ts && tsx examples/fs-row-store/main.ts && tsx examples/router-topics/main.ts && tsx examples/with-config/main.ts && tsx examples/with-loop/main.ts && tsx examples/with-dlq/main.ts && tsx examples/loop-and-dlq/main.ts && tsx examples/with-config-loop-dlq/main.ts && tsx examples/lifecycle/main.ts"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.10",

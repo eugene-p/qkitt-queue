@@ -7,7 +7,6 @@ Requires Node.js 20+. From the monorepo root after `npm install` and `npm run bu
 ```bash
 npx tsx examples/worker-drain/main.ts
 npx tsx examples/retry-pipeline/main.ts
-npx tsx examples/persist-restart/main.ts
 npx tsx examples/fs-row-store/main.ts
 npx tsx examples/router-topics/main.ts
 npx tsx examples/with-config/main.ts
@@ -24,10 +23,9 @@ npm run examples
 | Example | Task | Layers / package |
 | --- | --- | --- |
 | [`worker-drain`](./worker-drain/main.ts) | Concurrent jobs + drain wait | `buildQueue` → `withWorker` |
-| [`lifecycle`](./lifecycle/main.ts) | `whenIdle` drain vs `gracefulStop` + flush | bare + `buildQueue({ store })` → `withWorker` |
+| [`lifecycle`](./lifecycle/main.ts) | `whenIdle` drain vs `gracefulStop` | `buildQueue` → `withWorker` |
 | [`retry-pipeline`](./retry-pipeline/main.ts) | Retries / multi-step | `pipelineWorker` + `retryWorker` → `withWorker` |
-| [`persist-restart`](./persist-restart/main.ts) | Survive restart (row store) | `buildQueue({ store })` → `withWorker` |
-| [`fs-row-store`](./fs-row-store/main.ts) | Custom file row store | custom `RowStore` + `buildQueue({ store })` |
+| [`fs-row-store`](./fs-row-store/main.ts) | Survive restart via custom file `RowStore` | custom `RowStore` + `buildQueue({ store })` |
 | [`router-topics`](./router-topics/main.ts) | Topic fan-out | `buildRouter` + worker queues |
 | [`with-config`](./with-config/main.ts) | Declarative multi-queue | `@qkitt/queue-config` |
 | [`with-loop`](./with-loop/main.ts) | Same-queue re-entry, hop cap, hop-based `delay` | `buildQueue({ name })` → `withWorker` → `withLoop` |

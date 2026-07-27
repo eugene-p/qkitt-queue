@@ -4,7 +4,7 @@ Guides show composition patterns; this page covers public signatures.
 
 [README](../README.md) · [Composition](./composition.md) · [Persistence](./persistence.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md)
 
-**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, memory/web row store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RowStore`, `RouteMessage`).
+**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, Web Storage row store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RowStore`, `RouteMessage`).
 
 Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `claim` / `ack`, `emit`) is for specialized use — see individual entries below.
 
@@ -271,14 +271,17 @@ Guide: [Topics & routing](./routing.md).
 
 ## Stores
 
+Durable factories (use with `buildQueue({ store })` for real persistence):
+
 | Factory | Notes |
 | --- | --- |
-| `createMemoryRowStore<T>(initial?)` | In-process `RowStore` (`store.rows` for inspection) |
 | `createLocalStorageRowStore(key, options?)` | Browser `localStorage` rows |
 | `createSessionStorageRowStore(key, options?)` | Browser `sessionStorage` rows |
 | `createWebRowStore({ key, storage?, itemCodec? })` | Custom `WebStorageLike` |
 
 `RowStore` requires `loadAll` / `put` / `remove` / `clear` (optional batch helpers). Records use **numeric** ids and lease fields — see [Persistence](./persistence.md#row-records).
+
+For in-process work with no durability, use bare `buildQueue()` (no store). Custom backends implement `RowStore` themselves.
 
 **Errors:** `StorageCodecError` on bad JSON in web stores; `StorageUnavailableError` when `localStorage` / `sessionStorage` is missing and no explicit `storage` was passed; `InvalidStoreError` when `buildQueue({ store })` receives a non-`RowStore`.
 
@@ -332,9 +335,8 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
 | `@qkitt/queue/router` | `buildRouter`, router types | — |
 | `@qkitt/queue/persist` | `RowStore` contracts, errors, store factories | `buildQueue`, `withWorker` |
-| `@qkitt/queue/persist/stores` | Memory + web store factories only | Contracts-only usage |
-| `@qkitt/queue/persist/stores/memory` | Memory store factory | Web storage |
-| `@qkitt/queue/persist/stores/web-storage` | Web storage factories + `StorageCodecError` | Memory stores |
+| `@qkitt/queue/persist/stores` | Store factories only | Contracts-only usage |
+| `@qkitt/queue/persist/stores/web-storage` | Web Storage factories + `StorageCodecError` | — |
 | `@qkitt/queue/events` | `buildEventEmitter`, … | — |
 
 Companion: [`@qkitt/queue-config`](../../queue-config) — declarative `defineConfig` / `buildFromConfig`.

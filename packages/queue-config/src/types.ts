@@ -30,7 +30,7 @@ type BuiltinStoreDefinitionBase = {
 /**
  * Named entry in `config.stores`.
  *
- * - **Built-in**: `{ adapter: 'memory' | 'localStorage' | 'sessionStorage', key? }`
+ * - **Built-in**: `{ adapter: 'localStorage' | 'sessionStorage', key }` (durable Web Storage)
  * - **Custom**: `{ impl }` — your {@link RowStore}
  */
 export type StoreDefinition =

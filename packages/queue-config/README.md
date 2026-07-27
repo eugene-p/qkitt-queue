@@ -111,14 +111,13 @@ Named adapters. Queues reference them with `persist.store`. Every durable store 
 
 | Field | Values | Notes |
 | --- | --- | --- |
-| `adapter` | `'memory'` \| `'localStorage'` \| `'sessionStorage'` | Built-in only |
+| `adapter` | `'localStorage'` \| `'sessionStorage'` | Built-in Web Storage (durable) |
 | `key` | `string` | Required for web adapters |
-| `impl` | `RowStore` instance | JS only — no JSON |
+| `impl` | `RowStore` instance | JS only — no JSON; use for Node/custom backends |
 | `itemCodec` | `JsonCodec` | Web adapters only (JS) |
 
 ```ts
 stores: {
-  mem: { adapter: 'memory' },
   disk: { adapter: 'localStorage', key: 'app:jobs' },
   redis: { impl: createRedisRowStore('queue:mail') },
 }
@@ -126,7 +125,9 @@ stores: {
 
 Each named store must back **exactly one** queue (shared or unused store names are rejected). Web stores must use unique `adapter`+`key` pairs.
 
-**Removed (breaking):** `strategy` (`snapshot` / `row`), snapshot stores, and snapshot-only fields. Pass `{ adapter: 'memory' }` without a strategy.
+For in-process queues with no durability, omit `persist` (bare queue). Do not use a store for “memory-only” work.
+
+**Removed (breaking):** `strategy` (`snapshot` / `row`), snapshot stores, and snapshot-only fields.
 
 ### `queues`
 
@@ -226,14 +227,17 @@ Built-in adapters only — no workers, no custom stores.
 ```json
 {
   "stores": {
-    "ordersMem": { "adapter": "memory" },
+    "ordersDisk": {
+      "adapter": "localStorage",
+      "key": "app:orders"
+    },
     "auditDisk": {
       "adapter": "localStorage",
       "key": "app:audit"
     }
   },
   "queues": {
-    "orders": { "persist": { "store": "ordersMem" } },
+    "orders": { "persist": { "store": "ordersDisk" } },
     "audit": { "persist": { "store": "auditDisk" } }
   },
   "router": {
@@ -373,7 +377,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `DlqConfig` | Target queue name string or `{ queue, map?, filter? }` for `withDlq` |
 | `RouterConfig` / `BindingConfig` | Router section |
 | `BuildFromConfigOptions` | `{ storage?, skipValidate? }` |
-| `BuiltinStoreAdapter` | `'memory' \| 'localStorage' \| 'sessionStorage'` |
+| `BuiltinStoreAdapter` | `'localStorage' \| 'sessionStorage'` (and other built-in adapter ids) |
 | `ResolvedStore` | `RowStore` after build |
 | `ConfiguredQueueFor` | Precise queue type from one `QueueConfig` entry |
 | `ConfigErrorCode` | Union of validation error codes |
@@ -383,7 +387,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 
 | Before | After |
 | --- | --- |
-| `{ adapter: 'memory', strategy: 'snapshot' }` | `{ adapter: 'memory' }` |
+| In-process snapshot / non-durable store for “persist” | Bare queue (no `persist`) for in-process; Web Storage or `{ impl }` for durability |
 | `{ adapter, strategy: 'row', key }` | `{ adapter, key }` (drop `strategy`) |
 | `{ strategy, impl }` custom store | `{ impl }` (`RowStore` only) |
 | `persist: { store, autoSave, autoSaveDebounceMs, createId }` | `persist: { store, leaseTtlMs? }` |

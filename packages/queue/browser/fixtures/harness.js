@@ -110,7 +110,8 @@ const timeStoreOps = (opts) => {
 
 /**
  * Time enqueue N + drain until N finished with withWorker.
- * kind: none = bare queue; memory / localStorage = durable RowStore.
+ * kind: none = bare in-memory queue; localStorage / sessionStorage = durable.
+ * (memory RowStore is for store-ops / tests — not a separate drain mode.)
  * Sync no-op job body (same idea as packages/bench worker suite).
  * @param {{ kind: 'none' | 'memory' | 'localStorage' | 'sessionStorage', key: string, n: number, concurrency?: number }} opts
  */

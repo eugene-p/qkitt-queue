@@ -39,7 +39,6 @@ import {
   pipelineWorker,
   retryWorker,
   buildRouter,
-  createMemoryRowStore,
   createLocalStorageRowStore,
 } from '@qkitt/queue'
 ```
@@ -72,10 +71,12 @@ Add persistence (`store` on the constructor — no decorator):
 import {
   buildQueue,
   withWorker,
-  createMemoryRowStore,
+  createLocalStorageRowStore,
 } from '@qkitt/queue'
 
-const base = buildQueue<Job>({ store: createMemoryRowStore() })
+const base = buildQueue<Job>({
+  store: createLocalStorageRowStore('my-app:jobs'),
+})
 await base.hydrate() // after restart: before withWorker
 
 const queue = withWorker(
@@ -121,7 +122,7 @@ When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](h
 | Retries / multi-step | [Composition §4](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers) |
 | Survive restart | [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) · [Composition §3](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#3-add-persistence) |
 | Browser Web Storage | [Browser storage](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#browser-storage) |
-| Custom store (file, etc.) | [Custom stores](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#custom-stores)
+| Custom store (file, etc.) | [Custom stores](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#custom-stores) |
 | Topic fan-out | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) |
 | Same-queue re-entry / loop delay | [Loop](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop) |
 | Dead-letter sink | [Dead letter](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#dead-letter-withdeadletter--withdlq) |
@@ -154,7 +155,7 @@ In-process peers only. Full tables and setup: [root README](https://github.com/e
 | yocto-queue | 2,409 | 1.92 MiB |
 | native `Array` push/shift | 8 | 399 KiB |
 
-**Browser (Chromium)** — bare vs durable worker drain, 5k jobs c=1: bare ~2 ms · memory store ~9 ms · localStorage ~410 ms (`npm run compare:stores`).
+**Browser (Chromium)** — in-memory vs durable worker drain, 5k jobs c=1: bare ~2 ms · localStorage ~410 ms (`npm run compare:stores`).
 
 Relative numbers (Node 26.5.0, Windows laptop, 2026-07-26). YMMV.
 

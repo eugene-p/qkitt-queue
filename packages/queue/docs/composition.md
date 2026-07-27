@@ -73,12 +73,12 @@ Pass a `RowStore` into the constructor — no wrapper layer:
 import {
   buildQueue,
   withWorker,
-  createMemoryRowStore,
+  createLocalStorageRowStore,
 } from '@qkitt/queue'
 
 type Job = { id: string; url: string }
 
-const store = createMemoryRowStore<Job>()
+const store = createLocalStorageRowStore<Job>('my-app:jobs')
 // Fresh process: hydrate before attaching the worker (hydrate rejects while workers run).
 const base = buildQueue<Job>({ store })
 await base.hydrate()
@@ -95,7 +95,7 @@ await queue.enqueue({ id: '1', url: 'https://example.com' })
 await queue.flush()   // wait for pending store writes before exit
 ```
 
-Built-ins: memory and Web Storage (`localStorage` / `sessionStorage`). For something else, implement `RowStore` ([Custom stores](./persistence.md#custom-stores)).
+Built-in durable stores: Web Storage (`localStorage` / `sessionStorage`). For Node or other backends, implement `RowStore` ([Custom stores](./persistence.md#custom-stores)).
 
 ### Persist lifecycle
 
@@ -213,12 +213,12 @@ import {
   withWorker,
   pipelineWorker,
   retryWorker,
-  createMemoryRowStore,
+  createLocalStorageRowStore,
 } from '@qkitt/queue'
 
 type EmailJob = { to: string; body: string }
 
-const store = createMemoryRowStore<EmailJob>()
+const store = createLocalStorageRowStore<EmailJob>('my-app:email')
 const run = retryWorker(
   pipelineWorker([
     {
@@ -239,13 +239,15 @@ const run = retryWorker(
   { retries: 3, delay: (n) => 50 * n },
 )
 
+const base = buildQueue<EmailJob>({ store })
+await base.hydrate()
+
 const queue = withWorker(
-  buildQueue<EmailJob>({ store }),
+  base,
   run,
   { concurrency: 2 },
 )
 
-await queue.hydrate()
 await queue.enqueue({ to: 'you@example.com', body: 'hi' })
 
 queue.on('worker:completed', ({ result }) => console.log('sent to', result))
