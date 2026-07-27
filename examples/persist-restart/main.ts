@@ -1,11 +1,10 @@
 /**
- * Survive a "crash": snapshot persist, drop the queue, hydrate and finish work.
- * Layers: buildQueue → withPersist → withWorker (worker outermost)
+ * Survive a "crash": row persist, drop the queue, hydrate and finish work.
+ * Layers: buildQueue({ store }) → withWorker
  */
 import {
   buildQueue,
-  createMemorySnapshotStore,
-  withPersist,
+  createMemoryRowStore,
   withWorker,
 } from '@qkitt/queue'
 import { line, phase, sleep, summary, title, waitIdle } from '../_log'
@@ -15,30 +14,36 @@ type Job = {
 }
 
 async function main() {
-  const store = createMemorySnapshotStore<Job>()
+  const store = createMemoryRowStore<Job>()
 
-  title('@qkitt/queue — persist-restart', 'store=memory-snapshot  jobs=3')
+  title('@qkitt/queue — persist-restart', 'store=memory-row  jobs=3')
 
-  // phase 1: persist only — no worker, so nothing can drain before flush
+  // phase 1: durable queue only — no worker, so nothing can drain before flush
   phase('phase 1: enqueue + crash')
 
-  const before = withPersist(buildQueue<Job>(), store)
+  const before = buildQueue<Job>({ store })
 
   for (const id of [1, 2, 3]) {
-    before.enqueue({ id })
+    await before.enqueue({ id })
     line('queue', 'add', `job=${id}  size=${before.size()}`)
   }
 
   await before.flush()
-  line('persist', 'flush', `store_size=${store.data.length}`)
+  line('persist', 'flush', `store_rows=${store.rows.length}`)
   line('crash', 'drop', 'queue object discarded')
 
   phase('phase 2: hydrate + drain')
 
   let completed = 0
 
+  // Hydrate before the worker attaches so autoStart can drain restored rows.
+  const restored = buildQueue<Job>({ store })
+  line('persist', 'hydrate', `store_rows=${store.rows.length}`)
+  await restored.hydrate()
+  line('queue', 'ready', `size=${restored.size()}`)
+
   const after = withWorker(
-    withPersist(buildQueue<Job>(), store),
+    restored,
     async (job) => {
       line('worker', 'start', `job=${job.id}`)
       await sleep(20)
@@ -52,15 +57,11 @@ async function main() {
     line('worker', 'done', `job=${item.id}`)
   })
 
-  line('persist', 'hydrate', `store_size=${store.data.length}`)
-  await after.hydrate()
-  line('queue', 'ready', `size=${after.size()}`)
-
   await waitIdle(after)
   await after.flush()
 
   summary(
-    `completed=${completed}  queue_size=${after.size()}  store_size=${store.data.length}`,
+    `completed=${completed}  queue_size=${after.size()}  store_rows=${store.rows.length}`,
   )
 }
 

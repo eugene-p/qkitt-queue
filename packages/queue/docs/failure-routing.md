@@ -31,7 +31,7 @@ const jobs = withDlq(
 )
 ```
 
-**Stack:** `buildQueue` → `withPersist?` → `withWorker` → `withDeadLetter`.
+**Stack:** `buildQueue({ store? })` → `withWorker` → `withDeadLetter`.
 
 **Same queue is rejected.** `withDeadLetter(q, q)` throws — use [`withLoop`](#loop-withloop) for same-queue re-entry with hop meta.
 
@@ -78,13 +78,13 @@ const q = withLoop(
 
 Hop key is the queue’s `name` (not an option). `map` / `filter` receive hop `ctx: { name, previousHops, hops }`.
 
-**Stack:** `buildQueue({ name })` → `withPersist?` → `withWorker` → `withLoop`.
+**Stack:** `buildQueue({ name, store? })` → `withWorker` → `withLoop`.
 
 `__qkittQueue` is **library-owned**. If `map` returns a payload whose `__qkittQueue` differs from the original, the library emits `loop:meta-override` and **overwrites** with the correct hop stamp (re-enqueue still happens). Unchanged bag (e.g. `return item`) is fine.
 
 Pending delayed re-entries do not occupy queue slots; `loop:enqueued` fires when the item is actually re-queued. The worker may go idle while a delay is pending. `stop` does not cancel pending delays.
 
-**Disclaimer — restart / crash loses delayed items.** While waiting, the payload is held only in a process-local timer (not in the queue, not in `withPersist`). App restart, crash, or process exit **drops** those items with no recovery. Longer delays widen that window; prefer short delays when loss is unacceptable.
+**Disclaimer — restart / crash loses delayed items.** While waiting, the payload is held only in a process-local timer (not in the queue, not in the durable store). App restart, crash, or process exit **drops** those items with no recovery. Longer delays widen that window; prefer short delays when loss is unacceptable.
 
 A worker that always throws can spin forever — stop the worker, `filter` on hops, or set `delay`. This is **not** a dead-letter sink; use `withDeadLetter` for a separate queue.
 
@@ -99,12 +99,19 @@ Runnable demo: [`examples/with-loop`](../../../examples/with-loop).
 
 ## Chaining `withLoop` + `withDlq`
 
-Both layers subscribe to the **same** `worker:failed` event. They do **not** run as “loop until filter fails, then DLQ.” On every failure, **each** layer’s `filter` runs independently.
+Recovery is a **single path** on the worker (not dual independent listeners):
+
+1. `withLoop` sets recovery policy to **`loop`**.
+2. On failure, the loop `filter` / `map` / `delay` run.
+3. If the loop `filter` returns **false**, recovery falls through to the **fail** path: DLQ when `withDlq` is registered, otherwise drop (`worker:dropped`).
 
 | Setup | Result |
 | --- | --- |
-| Both with default filters | **Duplicates:** re-enqueue *and* dead-letter on every failure |
-| Complementary filters | Hop via loop while under the cap; dead-letter only when the cap is hit |
+| `withLoop` only, filter false | Drop (ack) — no requeue |
+| `withLoop` + `withDlq`, filter false | Dead-letter via fail path |
+| Loop filter always true | Requeue forever (or until success) — size the hop cap |
+
+Use complementary filters so hop-capped items reach the DLQ:
 
 ```ts
 import {

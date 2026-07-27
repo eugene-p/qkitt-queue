@@ -1,4 +1,4 @@
-import { isRowStore, isSnapshotStore } from '@qkitt/queue'
+import { isRowStore } from '@qkitt/queue'
 import type { BuiltinStoreAdapter } from './types'
 import { configError } from './errors'
 import { isIntegerInRange } from './number.util'
@@ -9,10 +9,6 @@ const BUILTIN_ADAPTERS = new Set<BuiltinStoreAdapter>([
     'sessionStorage',
 ])
 
-/**
- * True for plain data objects (`{}` / `Object.create(null)`).
- * Rejects arrays, boxed primitives, and built-ins (`Date`, `Map`, `Set`, …).
- */
 export const isPlainObject = (
     value: unknown,
 ): value is Record<string, unknown> => {
@@ -23,10 +19,6 @@ export const isPlainObject = (
     return proto === Object.prototype || proto === null
 }
 
-/**
- * True for any non-null object that is not an array (includes class instances).
- * Used for custom store `impl` so class-based backends are accepted.
- */
 export const isObjectLike = (
     value: unknown,
 ): value is object =>
@@ -50,7 +42,6 @@ export const expectBoolean = (value: unknown, path: string): boolean => {
     return value
 }
 
-/** Safe integer ≥ 1 (queue maxSize, worker concurrency, …). */
 export const expectPositiveInteger = (value: unknown, path: string): number => {
     if (!isIntegerInRange(value, 1)) {
         return configError(
@@ -62,7 +53,6 @@ export const expectPositiveInteger = (value: unknown, path: string): number => {
     return value
 }
 
-/** Safe integer ≥ 0 (debounce ms, …). */
 export const expectNonNegativeInteger = (
     value: unknown,
     path: string,
@@ -94,49 +84,32 @@ export const parseAdapter = (
     return value as BuiltinStoreAdapter
 }
 
-/** Parse-time duck check for SnapshotStore (plain objects and class instances). */
-export const isSnapshotStoreLike = (value: unknown): boolean =>
-    isObjectLike(value) && isSnapshotStore(value)
-
-/** Parse-time duck check for RowStore (plain objects and class instances). */
+/** Parse-time duck check for {@link import('@qkitt/queue').RowStore}. */
 export const isRowStoreLike = (value: unknown): boolean =>
     isObjectLike(value) && isRowStore(value)
 
-export const parseStrategy = (
-    value: unknown,
-    path: string,
-): 'snapshot' | 'row' => {
-    if (value !== 'snapshot' && value !== 'row') {
-        return configError(
-            'INVALID_STRATEGY',
-            `${path} must be "snapshot" or "row"`,
-            path,
-        )
-    }
-    return value
-}
+export const isJsonCodecLike = (value: unknown): boolean =>
+    isObjectLike(value) &&
+    typeof (value as { serialize?: unknown }).serialize === 'function' &&
+    typeof (value as { deserialize?: unknown }).deserialize === 'function'
 
 /**
  * Web adapters require a non-empty storage key.
- * Shared by validate-time and resolve-time checks.
  */
 export const assertWebStorageKey = (
-    adapter: string,
+    adapter: BuiltinStoreAdapter,
     key: string | undefined,
     path: string,
 ): string => {
-    if (key === undefined || key.length === 0) {
+    if (adapter === 'memory') {
+        return key ?? ''
+    }
+    if (key === undefined || key.trim() === '') {
         return configError(
-            'KEY_REQUIRED',
-            `${path} is required when adapter is "${adapter}"`,
+            'MISSING_FIELD',
+            `${path} is required for ${adapter} adapter`,
             path,
         )
     }
     return key
 }
-
-/** True when value looks like a JsonCodec (`serialize` + `deserialize` functions). */
-export const isJsonCodecLike = (value: unknown): boolean =>
-    isObjectLike(value) &&
-    typeof (value as { serialize?: unknown }).serialize === 'function' &&
-    typeof (value as { deserialize?: unknown }).deserialize === 'function'

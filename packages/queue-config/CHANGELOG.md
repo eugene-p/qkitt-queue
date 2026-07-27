@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-26
+
+> **BREAKING — pairs with `@qkitt/queue` 0.8.** Snapshot config, `strategy`, and
+> snapshot-only persist options are removed. Durable queues use row stores only
+> via `buildQueue({ store })` (no `withPersist` layer).
+
+### Breaking
+
+- **Peer dependency** `@qkitt/queue` is now `^0.8.0` (was `^0.7.0`)
+- **Removed store `strategy`:** no `'snapshot' | 'row'`. Built-ins are always row stores: `{ adapter: 'memory' }` or `{ adapter: 'localStorage' | 'sessionStorage', key }`
+- **Removed snapshot config:** snapshot adapters, `autoSave`, `autoSaveDebounceMs`, `createId`, `codec` (snapshot), and `system.persistAll()`
+- **Custom stores:** `{ impl: RowStore }` only (no `strategy` field)
+- **`PersistConfig`:** `{ store, leaseTtlMs? }` only
+- Build wires `buildQueue({ name, store?, leaseTtlMs? })` instead of `withPersist`
+
+### Migration
+
+```ts
+// before
+stores: {
+  disk: { adapter: 'localStorage', strategy: 'row', key: 'jobs' },
+  mem: { adapter: 'memory', strategy: 'snapshot' },
+}
+queues: {
+  jobs: { persist: { store: 'disk', autoSave: true } },
+}
+
+// after
+stores: {
+  disk: { adapter: 'localStorage', key: 'jobs' },
+  mem: { adapter: 'memory' },
+}
+queues: {
+  jobs: { persist: { store: 'disk' } },
+}
+```
+
+Upgrade core to **0.8.0** in the same release train.
+
+### Changed
+
+- README and validation messages updated for constructor-store / row-only model
+
 ## [0.5.1] — 2026-07-25
 
 ### Added
@@ -140,6 +183,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.6.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.6.0
 [0.5.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.1
 [0.5.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.0
 [0.4.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.4.1

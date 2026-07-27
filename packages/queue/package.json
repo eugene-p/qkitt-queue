@@ -1,6 +1,6 @@
 {
   "name": "@qkitt/queue",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "description": "Fast, composable in-process queues for TypeScript — zero runtime dependencies",
   "license": "ISC",
@@ -70,7 +70,6 @@
       "import": "./dist/persist/stores/web-storage.js",
       "default": "./dist/persist/stores/web-storage.js"
     },
-
     "./queue": {
       "types": "./dist/queue/index.d.ts",
       "import": "./dist/queue/index.js",
@@ -100,9 +99,15 @@
   },
   "scripts": {
     "test": "vitest run",
+    "test:browser": "npm run build && playwright test -c browser/playwright.config.ts",
+    "compare:stores": "npm run build && tsx browser/store-compare.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsup && tsc -p tsconfig.build.json && node scripts/prune-dts.mjs",
     "pack:check": "npm pack --dry-run",
     "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.0",
+    "tsx": "^4.23.1"
   }
 }

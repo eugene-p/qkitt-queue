@@ -11,25 +11,25 @@ import {
 import { buildQueue } from './queue'
 
 describe('decorateQueue', () => {
-    it('forwards base queue methods via prototype fall-through', () => {
+    it('forwards base queue methods via prototype fall-through', async () => {
         const base = buildQueue<number>()
-        base.enqueue(1)
+        await base.enqueue(1)
 
         const wrapped = decorateQueue(base, { tag: 'x' as const })
 
         expect(wrapped.tag).toBe('x')
         expect(wrapped.size()).toBe(1)
-        expect(wrapped.dequeue()).toBe(1)
+        expect(await wrapped.dequeue()).toBe(1)
     })
 
-    it('lets overrides shadow base methods', () => {
+    it('lets overrides shadow base methods', async () => {
         const base = buildQueue<string>()
-        const enqueue = vi.fn((item: string) => {
-            base.enqueue(item)
+        const enqueue = vi.fn(async (item: string) => {
+            await base.enqueue(item)
         })
 
         const wrapped = decorateQueue(base, { enqueue })
-        wrapped.enqueue('a')
+        await wrapped.enqueue('a')
 
         expect(enqueue).toHaveBeenCalledWith('a')
         expect(base.toArray()).toEqual(['a'])

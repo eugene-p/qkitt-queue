@@ -2,102 +2,125 @@ import {
     buildEventEmitter,
     type EventEmitter,
     type EventMap,
+    type MergeEventMaps,
 } from '../../events'
 import { createSubscriptionCounts } from '../../events/subscription-counts'
+import type { PersistEvents, RowRecord, RowStore } from '../../persist/contracts'
+import {
+    DuplicateRowIdError,
+    HydrateWhileActiveError,
+    InvalidRowIdError,
+    InvalidStoreError,
+    LeaseMismatchError,
+} from '../../persist/errors'
+import { isRowStore } from '../../persist/store-guards.util'
+import { createWriteChain } from '../../persist/write-chain.util'
 import { isIntegerInRange } from '../../util/number.util'
+import { RESOLVED, RESOLVED_UNDEFINED } from '../../util/resolved.util'
+import {
+    cancelTimeout,
+    scheduleTimeout,
+} from '../../util/schedule-timeout.util'
+import { createIdCounter } from './id-counter.util'
+import { attachInlineOps } from './inline-ops'
+import { createMinHeap, type MinHeap } from './min-heap.util'
 import { markQueueMaxSize } from './queue-max-size.util'
 import { markQueueName } from './queue-name.util'
 
 export type QueueEvents<T> = {
-    /** Fired after an item is added to the tail. */
+    /** Fired after an item is added (available or delayed). */
     'queue:enqueued': { item: T; size: number }
-    /** Fired after an item is removed from the head. */
+    /** Fired after an admin drop removes the head available item. */
     'queue:dequeued': { item: T; size: number }
-    /** Fired when the last item is dequeued (queue becomes empty). */
+    /** Fired when size becomes 0 after a remove path. */
     'queue:emptied': undefined
     /** Fired after clear() removes all items. */
     'queue:cleared': { removed: number }
 }
 
+export type Lease<T> = {
+    id: number
+    item: T
+    generation: number
+}
+
+export type QueueStats = {
+    available: number
+    delayed: number
+    leased: number
+}
+
 /**
- * Envelope for an occupied queue slot.
- *
- * Presence of the object means “there was an item”; {@link value} is the
- * payload and may be `null` or `undefined`. Emptiness is structural
- * (`undefined` return from {@link Queue.tryDequeue} / {@link Queue.tryPeek}),
- * never inferred from the payload.
+ * Envelope for an occupied queue slot (admin peek/dequeue).
+ * Presence means “there was an item”; value may be nullish.
  */
 export type QueueSlot<T> = {
     readonly value: T
 }
 
-export type Queue<T, TEvents extends EventMap = QueueEvents<T>> = {
-    /** Add an item to the tail (FIFO). Throws {@link QueueFullError} when at `maxSize`. */
-    enqueue: (item: T) => void
-    /**
-     * Remove and return the head item, or `undefined` if empty.
-     *
-     * When `T` may be `null`/`undefined`, prefer {@link tryDequeue}: a bare
-     * `undefined` return cannot distinguish “empty” from “payload was undefined”.
-     */
-    dequeue: () => T | undefined
-    /**
-     * Return the head item without removing it, or `undefined` if empty.
-     *
-     * When `T` may be `null`/`undefined`, prefer {@link tryPeek}.
-     */
+/**
+ * In-memory lease row. Structurally a {@link Lease} plus optional TTL.
+ * Inline claimSync returns this same object (one alloc) and may recycle it
+ * via a freelist after ack/release.
+ */
+type LeasedEntry<T> = {
+    id: number
+    item: T
+    generation: number
+    expiresAt: number | null
+}
+
+type DelayedEntry<T> = {
+    id: number
+    item: T
+    availableAt: number
+}
+
+export type Queue<
+    T,
+    TEvents extends EventMap = QueueEvents<T>,
+> = {
+    enqueue: (item: T, opts?: { delayMs?: number }) => Promise<void>
+    claim: () => Promise<Lease<T> | undefined>
+    ack: (lease: Lease<T>) => Promise<void>
+    release: (lease: Lease<T>) => Promise<void>
+    reschedule: (
+        lease: Lease<T>,
+        next: { item: T; delayMs?: number },
+    ) => Promise<void>
+    /** Admin drop of head available row (not the worker processing path). */
+    dequeue: () => Promise<T | undefined>
+    tryDequeue: () => Promise<QueueSlot<T> | undefined>
     peek: () => T | undefined
-    /**
-     * Remove the head and return it in a {@link QueueSlot}, or `undefined` if
-     * the queue was empty. Nullish payloads are valid (`{ value: undefined }`).
-     *
-     * Decorators that override {@link dequeue} must override this too so side
-     * effects (persist, hydrate gate) stay aligned.
-     */
-    tryDequeue: () => QueueSlot<T> | undefined
-    /**
-     * Peek the head in a {@link QueueSlot}, or `undefined` if empty.
-     * Nullish payloads are valid (`{ value: undefined }`).
-     *
-     * Decorators that override {@link peek} must override this too when they
-     * transform the payload (e.g. row unwrap).
-     */
     tryPeek: () => QueueSlot<T> | undefined
-    /** Current number of items. */
+    /** All non-acked rows (available + delayed + leased). */
     size: () => number
-    /** Whether the queue has no items. */
+    /** Claimable available rows only. */
+    readyCount: () => number
+    stats: () => QueueStats
     isEmpty: () => boolean
-    /** Remove all items and emit `queue:cleared`. */
-    clear: () => void
-    /**
-     * Replace all items without emitting queue events.
-     * Used by persist hydrate/rollback so workers are not mid-stream during rebuild.
-     * Not a substitute for looping `enqueue` — no `queue:enqueued` events fire.
-     * Throws {@link QueueFullError} when `items.length` exceeds `maxSize`.
-     */
-    replaceAll: (items: readonly T[]) => void
-    /** Snapshot of items from head to tail (does not mutate). */
+    clear: () => Promise<void>
+    replaceAll: (items: readonly T[]) => Promise<void>
     toArray: () => T[]
+    rowIds: () => number[]
+    hydrate: () => Promise<void>
+    flush: () => Promise<void>
     on: EventEmitter<TEvents>['on']
     emit: EventEmitter<TEvents>['emit']
 }
 
-export type BuildQueueOptions = {
-    /**
-     * Maximum items allowed in the queue.
-     * Must be a safe integer ≥ 1.
-     * `enqueue` / `replaceAll` throw {@link QueueFullError} when exceeded.
-     */
+export type BuildQueueOptions<T = unknown> = {
     maxSize?: number
-    /**
-     * Logical queue id for hop meta, tracking, and layers that require identity
-     * (e.g. {@link import('../loop/with-loop').withLoop}).
-     * Trimmed; must be non-empty when provided. Read with {@link import('./queue-name.util').getQueueName}.
-     */
     name?: string
+    store?: RowStore<T>
+    /**
+     * In-process lease TTL (ms). Omitted → reclaim only on hydrate/restart.
+     * Must be a safe integer ≥ 1 when set.
+     */
+    leaseTtlMs?: number
 }
 
-/** Thrown when enqueue/replaceAll would exceed {@link BuildQueueOptions.maxSize}. */
+/** Thrown when enqueue/replaceAll would exceed maxSize. */
 export class QueueFullError extends Error {
     override readonly name = 'QueueFullError'
     readonly maxSize: number
@@ -117,7 +140,14 @@ export class InvalidQueueOptionError extends Error {
     }
 }
 
-export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
+const nowMs = (): number => Date.now()
+
+const isSafeId = (id: unknown): id is number =>
+    typeof id === 'number' && Number.isSafeInteger(id) && id >= 1
+
+export const buildQueue = <T>(
+    options: BuildQueueOptions<T> = {},
+): Queue<T, MergeEventMaps<QueueEvents<T>, PersistEvents>> => {
     const maxSize = options.maxSize
     if (maxSize !== undefined && !isIntegerInRange(maxSize, 1)) {
         throw new InvalidQueueOptionError('maxSize must be a safe integer >= 1')
@@ -127,154 +157,997 @@ export const buildQueue = <T>(options: BuildQueueOptions = {}): Queue<T> => {
     if (options.name !== undefined) {
         const trimmed = options.name.trim()
         if (trimmed === '') {
-            throw new InvalidQueueOptionError(
-                'name must be a non-empty string',
-            )
+            throw new InvalidQueueOptionError('name must be a non-empty string')
         }
         name = trimmed
     }
 
-    // Two-stack FIFO: O(1) amortized enqueue/dequeue without splice shifting.
-    // Maintained `count` avoids inbox.length + outbox.length on every op.
-    let inbox: T[] = []
-    let outbox: T[] = []
-    let count = 0
-    const emitter = buildEventEmitter<QueueEvents<T>>()
+    const leaseTtlMs = options.leaseTtlMs
+    if (leaseTtlMs !== undefined && !isIntegerInRange(leaseTtlMs, 1)) {
+        throw new InvalidQueueOptionError(
+            'leaseTtlMs must be a safe integer >= 1',
+        )
+    }
+
+    const store = options.store
+    if (store !== undefined && !isRowStore(store)) {
+        throw new InvalidStoreError(
+            'buildQueue: store must implement RowStore (loadAll, put, remove, clear)',
+        )
+    }
+    const durable = store !== undefined
+    const chain = durable ? createWriteChain() : undefined
+    /**
+     * Durable rows need stable ids on available. Inline available is raw `T`
+     * (no parallel id array) — ids are allocated only on claim / delay.
+     */
+    const trackAvailableIds = durable
+
+    // Split in-memory state: available FIFO (+ optional ids) + leased + delayed.
+    let availableItems: T[] = []
+    let availableIds: number[] = []
+    let availableOutItems: T[] = []
+    let availableOutIds: number[] = []
+    let availableCount = 0
+    const leased = new Map<number, LeasedEntry<T>>()
+    /** Recycled lease objects for the inline claim/ack hot path (cap keeps GC happy). */
+    const leaseFreelist: LeasedEntry<T>[] = []
+    const LEASE_FREELIST_MAX = 64
+    // Lazy: most queues never use delay.
+    let delayed: MinHeap<DelayedEntry<T>> | undefined
+    const getDelayed = (): MinHeap<DelayedEntry<T>> => {
+        if (delayed === undefined) {
+            delayed = createMinHeap<DelayedEntry<T>>((e) => e.availableAt)
+        }
+        return delayed
+    }
+    const delayedSize = (): number => delayed?.size ?? 0
+    const ids = createIdCounter()
+    // Monotonic lease generation (single-process); no per-id Map retained after ack.
+    let leaseGenSeq = 0
+    const nextLeaseGeneration = (): number => {
+        leaseGenSeq += 1
+        return leaseGenSeq
+    }
+
+    const allocLease = (
+        id: number,
+        item: T,
+        generation: number,
+        expiresAt: number | null,
+    ): LeasedEntry<T> => {
+        const recycled = leaseFreelist.pop()
+        if (recycled !== undefined) {
+            recycled.id = id
+            recycled.item = item
+            recycled.generation = generation
+            recycled.expiresAt = expiresAt
+            return recycled
+        }
+        return { id, item, generation, expiresAt }
+    }
+
+    const recycleLease = (entry: LeasedEntry<T>): void => {
+        if (leaseFreelist.length < LEASE_FREELIST_MAX) {
+            leaseFreelist.push(entry)
+        }
+    }
+
+    type QueueFullEvents = MergeEventMaps<QueueEvents<T>, PersistEvents>
+    const emitter = buildEventEmitter<QueueFullEvents>()
     const { counts: subs, wrapOn } = createSubscriptionCounts({
         enqueued: 'queue:enqueued',
         dequeued: 'queue:dequeued',
         emptied: 'queue:emptied',
         cleared: 'queue:cleared',
+        loaded: 'persist:loaded',
+        leaseExpired: 'persist:lease-expired',
+        idSpaceLow: 'persist:id-space-low',
+        persistError: 'persist:error',
     })
     const on = wrapOn(emitter.on)
 
-    const flipInboxToOutbox = (): void => {
-        // Reverse in place, then retarget: no intermediate copy of elements.
-        outbox = inbox
-        outbox.reverse()
-        inbox = []
-    }
+    let delayTimer: unknown
+    let leaseTimer: unknown
+    let hydrating = false
 
-    const enqueue = (item: T): void => {
-        if (maxSize !== undefined && count >= maxSize) {
+    const totalSize = (): number =>
+        availableCount + delayedSize() + leased.size
+
+    const assertNotFull = (extra = 1): void => {
+        if (maxSize !== undefined && totalSize() + extra > maxSize) {
             throw new QueueFullError(maxSize)
         }
-        inbox.push(item)
-        count += 1
+    }
+
+    const flipAvailable = (): void => {
+        availableOutItems = availableItems
+        availableOutItems.reverse()
+        availableItems = []
+        if (trackAvailableIds) {
+            availableOutIds = availableIds
+            availableOutIds.reverse()
+            availableIds = []
+        }
+    }
+
+    /** Push ready item. `id` required when tracking available ids (durable). */
+    const pushAvailable = (item: T, id?: number): void => {
+        availableItems.push(item)
+        if (trackAvailableIds) {
+            availableIds.push(id as number)
+        }
+        availableCount += 1
+    }
+
+    const popAvailable = ():
+        | { item: T; id: number | undefined }
+        | undefined => {
+        if (availableCount === 0) return undefined
+        if (availableOutItems.length === 0) flipAvailable()
+        const item = availableOutItems.pop() as T
+        const id = trackAvailableIds
+            ? (availableOutIds.pop() as number)
+            : undefined
+        availableCount -= 1
+        return { item, id }
+    }
+
+    const peekAvailable = ():
+        | { item: T; id: number | undefined }
+        | undefined => {
+        if (availableCount === 0) return undefined
+        if (availableOutItems.length > 0) {
+            const i = availableOutItems.length - 1
+            return {
+                item: availableOutItems[i]!,
+                id: trackAvailableIds ? availableOutIds[i] : undefined,
+            }
+        }
+        return {
+            item: availableItems[0]!,
+            id: trackAvailableIds ? availableIds[0] : undefined,
+        }
+    }
+
+    const emitEnqueued = (item: T): void => {
         if (subs.enqueued > 0) {
-            emitter.emit('queue:enqueued', { item, size: count })
+            emitter.emit('queue:enqueued', { item, size: totalSize() })
         }
     }
 
-    // Nullish payloads are valid. Emptiness is “no slot”, not “value is undefined”:
-    // tryDequeue/tryPeek return `{ value }` when occupied, `undefined` when empty.
-    const tryDequeue = (): QueueSlot<T> | undefined => {
-        if (count === 0) return undefined
-
-        if (outbox.length === 0) {
-            flipInboxToOutbox()
-        }
-
-        const value = outbox.pop() as T
-        count -= 1
+    const emitDequeued = (item: T): void => {
         if (subs.dequeued > 0) {
-            emitter.emit('queue:dequeued', { item: value, size: count })
+            emitter.emit('queue:dequeued', { item, size: totalSize() })
         }
-        if (count === 0 && subs.emptied > 0) {
+        // Only compute size when emptied is observed (hot dequeue path).
+        if (subs.emptied > 0 && totalSize() === 0) {
             emitter.emit('queue:emptied', undefined)
         }
-
-        return { value }
     }
 
-    // Public dequeue inlines the core logic to avoid the QueueSlot allocation
-    // that tryDequeue requires. Decorators use tryDequeue for the discriminant.
-    const dequeue = (): T | undefined => {
-        if (count === 0) return undefined
+    const maybeWarnIdSpace = (): void => {
+        if (ids.consumeLowWaterWarning() && subs.idSpaceLow > 0) {
+            emitter.emit('persist:id-space-low', {
+                remaining: Number.MAX_SAFE_INTEGER - ids.peek(),
+            })
+        }
+    }
 
-        if (outbox.length === 0) {
-            flipInboxToOutbox()
+    const toRecord = (
+        id: number,
+        item: T,
+        availableAt: number,
+        generation: number | null,
+        expiresAt: number | null,
+    ): RowRecord<T> => ({
+        id,
+        item,
+        availableAt,
+        leaseGeneration: generation,
+        leaseExpiresAt: expiresAt,
+    })
+
+    /** Serialize durable work; always runs `op` (inline path runs immediately). */
+    const withChain = <R>(op: () => R | PromiseLike<R>): Promise<R> => {
+        if (!durable || !chain) {
+            return Promise.resolve(op())
+        }
+        // WriteChain returns the op result; no extra outer Promise wrapper.
+        return chain.push(op)
+    }
+
+    const runStore = (op: () => void | PromiseLike<void>): Promise<void> =>
+        withChain(op)
+
+    const armDelayTimer = (): void => {
+        if (delayTimer !== undefined) {
+            cancelTimeout(delayTimer)
+            delayTimer = undefined
+        }
+        if (delayed === undefined) return
+        const next = delayed.peek()
+        if (next === undefined) return
+        const wait = Math.max(0, next.availableAt - nowMs())
+        delayTimer = scheduleTimeout(() => {
+            delayTimer = undefined
+            promoteDueDelayed()
+        }, wait)
+    }
+
+    const promoteDueDelayed = (): void => {
+        if (delayed === undefined || delayed.size === 0) return
+        const now = nowMs()
+        let promoted = false
+        for (;;) {
+            const head = delayed.peek()
+            if (head === undefined || head.availableAt > now) break
+            delayed.pop()
+            // Keep durable id when tracking; inline reuses id for delayed→available.
+            pushAvailable(head.item, trackAvailableIds ? head.id : undefined)
+            promoted = true
+        }
+        armDelayTimer()
+        if (promoted) {
+            const head = peekAvailable()
+            if (head !== undefined) emitEnqueued(head.item)
+        }
+    }
+
+    const armLeaseTimer = (): void => {
+        if (leaseTimer !== undefined) {
+            cancelTimeout(leaseTimer)
+            leaseTimer = undefined
+        }
+        if (leaseTtlMs === undefined) return
+        let earliest: number | null = null
+        for (const entry of leased.values()) {
+            if (entry.expiresAt === null) continue
+            if (earliest === null || entry.expiresAt < earliest) {
+                earliest = entry.expiresAt
+            }
+        }
+        if (earliest === null) return
+        const wait = Math.max(0, earliest - nowMs())
+        leaseTimer = scheduleTimeout(() => {
+            leaseTimer = undefined
+            void reclaimExpiredLeases()
+        }, wait)
+    }
+
+    /** Reclaim one expired lease (must run on write chain when durable). */
+    const reclaimOneExpired = async (
+        id: number,
+        entry: LeasedEntry<T>,
+    ): Promise<void> => {
+        const current = leased.get(id)
+        if (
+            current === undefined ||
+            current.generation !== entry.generation
+        ) {
+            return
+        }
+        if (durable && store) {
+            await store.put(toRecord(id, entry.item, 0, null, null))
+        }
+        // Re-check after await — another op may have settled this lease.
+        const still = leased.get(id)
+        if (
+            still === undefined ||
+            still.generation !== entry.generation
+        ) {
+            return
+        }
+        leased.delete(id)
+        const item = entry.item
+        recycleLease(entry)
+        pushAvailable(item, trackAvailableIds ? id : undefined)
+        if (subs.leaseExpired > 0) {
+            emitter.emit('persist:lease-expired', {
+                id,
+                item,
+            })
+        }
+        emitEnqueued(item)
+    }
+
+    const reclaimExpiredLeases = async (): Promise<void> => {
+        if (leaseTtlMs === undefined) return
+        await withChain(async () => {
+            const now = nowMs()
+            const expired: { id: number; entry: LeasedEntry<T> }[] = []
+            for (const [id, entry] of leased) {
+                if (entry.expiresAt !== null && entry.expiresAt <= now) {
+                    expired.push({ id, entry })
+                }
+            }
+            for (const { id, entry } of expired) {
+                try {
+                    await reclaimOneExpired(id, entry)
+                } catch (error) {
+                    if (subs.persistError > 0) {
+                        emitter.emit('persist:error', {
+                            operation: 'put',
+                            error,
+                            id,
+                        })
+                    }
+                }
+            }
+            armLeaseTimer()
+        })
+    }
+
+    const clearMemory = (): void => {
+        availableItems = []
+        availableIds = []
+        availableOutItems = []
+        availableOutIds = []
+        availableCount = 0
+        leased.clear()
+        leaseFreelist.length = 0
+        delayed?.clear()
+        if (delayTimer !== undefined) {
+            cancelTimeout(delayTimer)
+            delayTimer = undefined
+        }
+        if (leaseTimer !== undefined) {
+            cancelTimeout(leaseTimer)
+            leaseTimer = undefined
+        }
+    }
+
+    const requireLease = (
+        lease: Lease<T>,
+    ): LeasedEntry<T> => {
+        const entry = leased.get(lease.id)
+        if (entry === undefined || entry.generation !== lease.generation) {
+            throw new LeaseMismatchError()
+        }
+        return entry
+    }
+
+    /** Sync claim for inline path (and durable body of withChain). */
+    const claimCore = async (): Promise<Lease<T> | undefined> => {
+        promoteDueDelayed()
+        if (leaseTtlMs !== undefined) {
+            const now = nowMs()
+            for (const [id, entry] of [...leased]) {
+                if (entry.expiresAt !== null && entry.expiresAt <= now) {
+                    await reclaimOneExpired(id, entry)
+                }
+            }
         }
 
-        const value = outbox.pop() as T
-        count -= 1
-        if (subs.dequeued > 0) {
-            emitter.emit('queue:dequeued', { item: value, size: count })
-        }
-        if (count === 0 && subs.emptied > 0) {
-            emitter.emit('queue:emptied', undefined)
+        const head = popAvailable()
+        if (head === undefined) return undefined
+
+        const id = head.id ?? ids.next()
+        if (head.id === undefined) maybeWarnIdSpace()
+        const nextGen = nextLeaseGeneration()
+        const expiresAt =
+            leaseTtlMs !== undefined ? nowMs() + leaseTtlMs : null
+
+        if (durable && store) {
+            try {
+                await store.put(
+                    toRecord(id, head.item, 0, nextGen, expiresAt),
+                )
+            } catch (error) {
+                pushAvailable(head.item, trackAvailableIds ? id : undefined)
+                throw error
+            }
         }
 
-        return value
+        const lease = allocLease(id, head.item, nextGen, expiresAt)
+        leased.set(id, lease)
+        armLeaseTimer()
+        return lease
+    }
+
+    const claimSync = (): Lease<T> | undefined => {
+        // Inline only — no awaitable store / TTL reclaim await.
+        // Fast empty check before delayed promotion / id work.
+        if (availableCount === 0) {
+            if (delayed === undefined || delayed.size === 0) return undefined
+            promoteDueDelayed()
+            if (availableCount === 0) return undefined
+        }
+        if (availableOutItems.length === 0) flipAvailable()
+        const item = availableOutItems.pop() as T
+        availableCount -= 1
+        // One monotonic counter serves as both row id and lease generation
+        // (inline never reuses an id while a lease is live).
+        const id = ids.next()
+        const lease = allocLease(id, item, id, null)
+        leased.set(id, lease)
+        // Same object is the public Lease (one alloc, freelist on settle).
+        return lease
+    }
+
+    const ackSync = (lease: Lease<T>): void => {
+        const entry = leased.get(lease.id)
+        if (entry === undefined || entry.generation !== lease.generation) {
+            throw new LeaseMismatchError()
+        }
+        leased.delete(lease.id)
+        recycleLease(entry)
+    }
+
+    const releaseSync = (lease: Lease<T>): void => {
+        const entry = leased.get(lease.id)
+        if (entry === undefined || entry.generation !== lease.generation) {
+            throw new LeaseMismatchError()
+        }
+        leased.delete(lease.id)
+        const item = entry.item
+        recycleLease(entry)
+        // Inline available has no stable ids.
+        availableItems.push(item)
+        availableCount += 1
+        emitEnqueued(item)
+    }
+
+    const rescheduleSync = (
+        lease: Lease<T>,
+        next: { item: T; delayMs?: number },
+    ): void => {
+        const entry = leased.get(lease.id)
+        if (entry === undefined || entry.generation !== lease.generation) {
+            throw new LeaseMismatchError()
+        }
+        const delayMs = next.delayMs ?? 0
+        const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
+        const leaseId = lease.id
+        leased.delete(lease.id)
+        recycleLease(entry)
+        if (availableAt === 0) {
+            availableItems.push(next.item)
+            availableCount += 1
+            emitEnqueued(next.item)
+        } else {
+            getDelayed().push({
+                id: leaseId,
+                item: next.item,
+                availableAt,
+            })
+            armDelayTimer()
+        }
+    }
+
+    const enqueue = (item: T, opts?: { delayMs?: number }): Promise<void> => {
+        // Hot path first: inline + immediate — no id, no Promise alloc.
+        if (!durable && !hydrating && opts === undefined) {
+            if (maxSize !== undefined && totalSize() >= maxSize) {
+                return Promise.reject(new QueueFullError(maxSize))
+            }
+            availableItems.push(item)
+            availableCount += 1
+            if (subs.enqueued > 0) {
+                emitter.emit('queue:enqueued', { item, size: totalSize() })
+            }
+            return RESOLVED
+        }
+
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError(
+                    'cannot enqueue while hydrate is in progress',
+                ),
+            )
+        }
+        const delayMs = opts?.delayMs ?? 0
+        if (!Number.isFinite(delayMs) || delayMs < 0) {
+            return Promise.reject(
+                new InvalidQueueOptionError(
+                    'delayMs must be a finite number >= 0',
+                ),
+            )
+        }
+
+        try {
+            assertNotFull(1)
+        } catch (e) {
+            return Promise.reject(e)
+        }
+
+        // Inline delayed/opts path without store.
+        if (!durable && delayMs === 0) {
+            availableItems.push(item)
+            availableCount += 1
+            emitEnqueued(item)
+            return RESOLVED
+        }
+
+        let id: number
+        try {
+            id = ids.next()
+            maybeWarnIdSpace()
+        } catch (e) {
+            return Promise.reject(e)
+        }
+
+        const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
+
+        const applyMemory = (): void => {
+            if (availableAt === 0) {
+                pushAvailable(item, id)
+            } else {
+                getDelayed().push({ id, item, availableAt })
+                armDelayTimer()
+            }
+            emitEnqueued(item)
+        }
+
+        if (!store) {
+            applyMemory()
+            return RESOLVED
+        }
+
+        return runStore(async () => {
+            await store.put(
+                toRecord(id, item, availableAt, null, null),
+            )
+            applyMemory()
+        })
+    }
+
+    const claim = (): Promise<Lease<T> | undefined> => {
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError(
+                    'cannot claim while hydrate is in progress',
+                ),
+            )
+        }
+        if (!durable) {
+            const lease = claimSync()
+            return lease === undefined
+                ? (RESOLVED_UNDEFINED as Promise<undefined>)
+                : Promise.resolve(lease)
+        }
+        return withChain(() => claimCore())
+    }
+
+    const ack = (lease: Lease<T>): Promise<void> => {
+        if (!durable) {
+            try {
+                ackSync(lease)
+                return RESOLVED
+            } catch (e) {
+                return Promise.reject(e)
+            }
+        }
+        return withChain(async () => {
+            requireLease(lease)
+            if (store) {
+                await store.remove(lease.id)
+            }
+            const entry = leased.get(lease.id)
+            if (
+                entry === undefined ||
+                entry.generation !== lease.generation
+            ) {
+                throw new LeaseMismatchError()
+            }
+            leased.delete(lease.id)
+            recycleLease(entry)
+            armLeaseTimer()
+        })
+    }
+
+    const release = (lease: Lease<T>): Promise<void> => {
+        if (!durable) {
+            try {
+                releaseSync(lease)
+                return RESOLVED
+            } catch (e) {
+                return Promise.reject(e)
+            }
+        }
+        return withChain(async () => {
+            const entry = requireLease(lease)
+            if (store) {
+                await store.put(
+                    toRecord(lease.id, entry.item, 0, null, null),
+                )
+            }
+            const still = leased.get(lease.id)
+            if (
+                still === undefined ||
+                still.generation !== lease.generation
+            ) {
+                throw new LeaseMismatchError()
+            }
+            const item = entry.item
+            leased.delete(lease.id)
+            recycleLease(entry)
+            pushAvailable(item, lease.id)
+            armLeaseTimer()
+            emitEnqueued(item)
+        })
+    }
+
+    const reschedule = (
+        lease: Lease<T>,
+        next: { item: T; delayMs?: number },
+    ): Promise<void> => {
+        const delayMs = next.delayMs ?? 0
+        if (!Number.isFinite(delayMs) || delayMs < 0) {
+            return Promise.reject(
+                new InvalidQueueOptionError(
+                    'delayMs must be a finite number >= 0',
+                ),
+            )
+        }
+        if (!durable) {
+            try {
+                rescheduleSync(lease, next)
+                return RESOLVED
+            } catch (e) {
+                return Promise.reject(e)
+            }
+        }
+        const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
+        const item = next.item
+
+        return withChain(async () => {
+            requireLease(lease)
+            if (store) {
+                await store.put(
+                    toRecord(lease.id, item, availableAt, null, null),
+                )
+            }
+            const still = leased.get(lease.id)
+            if (
+                still === undefined ||
+                still.generation !== lease.generation
+            ) {
+                throw new LeaseMismatchError()
+            }
+            leased.delete(lease.id)
+            recycleLease(still)
+            if (availableAt === 0) {
+                pushAvailable(item, lease.id)
+                emitEnqueued(item)
+            } else {
+                getDelayed().push({ id: lease.id, item, availableAt })
+                armDelayTimer()
+            }
+            armLeaseTimer()
+        })
+    }
+
+    const tryDequeue = (): Promise<QueueSlot<T> | undefined> => {
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError(
+                    'cannot dequeue while hydrate is in progress',
+                ),
+            )
+        }
+        // Inline admin drop: two-stack pop, no chain.
+        if (!durable) {
+            if (availableCount === 0) {
+                if (delayed !== undefined && delayed.size > 0) {
+                    promoteDueDelayed()
+                }
+                if (availableCount === 0) {
+                    return RESOLVED_UNDEFINED as Promise<undefined>
+                }
+            }
+            if (availableOutItems.length === 0) flipAvailable()
+            const item = availableOutItems.pop() as T
+            availableCount -= 1
+            emitDequeued(item)
+            return Promise.resolve({ value: item })
+        }
+        return withChain(async () => {
+            promoteDueDelayed()
+            const head = popAvailable()
+            if (head === undefined) return undefined
+            const id = head.id as number
+            try {
+                await store!.remove(id)
+            } catch (error) {
+                pushAvailable(head.item, id)
+                throw error
+            }
+            emitDequeued(head.item)
+            return { value: head.item }
+        })
+    }
+
+    const dequeue = (): Promise<T | undefined> => {
+        // Inline: avoid async-function Promise + tryDequeue slot envelope.
+        if (!durable && !hydrating) {
+            if (availableCount === 0) {
+                if (delayed !== undefined && delayed.size > 0) {
+                    promoteDueDelayed()
+                }
+                if (availableCount === 0) {
+                    return RESOLVED_UNDEFINED as Promise<undefined>
+                }
+            }
+            if (availableOutItems.length === 0) flipAvailable()
+            const item = availableOutItems.pop() as T
+            availableCount -= 1
+            if (subs.dequeued > 0) {
+                emitter.emit('queue:dequeued', {
+                    item,
+                    size: totalSize(),
+                })
+            }
+            if (subs.emptied > 0 && totalSize() === 0) {
+                emitter.emit('queue:emptied', undefined)
+            }
+            return Promise.resolve(item)
+        }
+        return tryDequeue().then((slot) => slot?.value)
     }
 
     const tryPeek = (): QueueSlot<T> | undefined => {
-        if (count === 0) return undefined
-        const value =
-            outbox.length > 0 ? outbox[outbox.length - 1]! : inbox[0]!
-        return { value }
+        promoteDueDelayed()
+        const head = peekAvailable()
+        if (head === undefined) return undefined
+        return { value: head.item }
     }
 
-    // Public peek inlines the lookup to avoid the QueueSlot allocation.
-    const peek = (): T | undefined => {
-        if (count === 0) return undefined
-        return outbox.length > 0 ? outbox[outbox.length - 1]! : inbox[0]!
+    const peek = (): T | undefined => tryPeek()?.value
+
+    const size = (): number => totalSize()
+    const readyCount = (): number => {
+        promoteDueDelayed()
+        return availableCount
     }
-
-    const size = (): number => count
-
-    const isEmpty = (): boolean => count === 0
-
-    const clear = (): void => {
-        if (count === 0) return
-
-        const removed = count
-        inbox = []
-        outbox = []
-        count = 0
-        if (subs.cleared > 0) {
-            emitter.emit('queue:cleared', { removed })
+    const stats = (): QueueStats => {
+        promoteDueDelayed()
+        return {
+            available: availableCount,
+            delayed: delayedSize(),
+            leased: leased.size,
         }
     }
+    const isEmpty = (): boolean => totalSize() === 0
 
-    const replaceAll = (next: readonly T[]): void => {
-        if (maxSize !== undefined && next.length > maxSize) {
-            throw new QueueFullError(maxSize)
+    const clear = (): Promise<void> => {
+        const removed = totalSize()
+        if (removed === 0 && !durable) return RESOLVED
+
+        const applyMemory = (): void => {
+            clearMemory()
+            ids.reset()
+            leaseGenSeq = 0
+            if (removed > 0 && subs.cleared > 0) {
+                emitter.emit('queue:cleared', { removed })
+            }
         }
-        inbox = [...next]
-        outbox = []
-        count = next.length
+
+        if (!durable || !store) {
+            applyMemory()
+            return RESOLVED
+        }
+
+        return runStore(async () => {
+            await store.clear()
+            applyMemory()
+        })
     }
 
-    // Single allocation: reverse-fill outbox then append inbox (head → tail).
+    const replaceAll = (items: readonly T[]): Promise<void> => {
+        if (leased.size > 0) {
+            return Promise.reject(new HydrateWhileActiveError())
+        }
+        if (maxSize !== undefined && items.length > maxSize) {
+            return Promise.reject(new QueueFullError(maxSize))
+        }
+
+        const planned: RowRecord<T>[] = []
+        for (let i = 0; i < items.length; i += 1) {
+            planned.push(toRecord(i + 1, items[i]!, 0, null, null))
+        }
+
+        const applyMemory = (): void => {
+            clearMemory()
+            ids.reset()
+            leaseGenSeq = 0
+            for (const rec of planned) {
+                pushAvailable(rec.item, trackAvailableIds ? rec.id : undefined)
+                if (trackAvailableIds) ids.fixup(rec.id)
+            }
+            if (!trackAvailableIds) {
+                // Inline: no durable ids; keep counter ready for claim.
+                ids.reset()
+            }
+        }
+
+        if (!durable || !store) {
+            applyMemory()
+            return RESOLVED
+        }
+
+        return withChain(async () => {
+            if (store.replaceAll) {
+                await store.replaceAll(planned)
+            } else {
+                await store.clear()
+                for (const rec of planned) {
+                    await store.put(rec)
+                }
+            }
+            applyMemory()
+        })
+    }
+
     const toArray = (): T[] => {
-        const outLen = outbox.length
-        const inLen = inbox.length
-        if (outLen === 0) return [...inbox]
-        const result = new Array<T>(outLen + inLen)
-        for (let i = 0; i < outLen; i += 1) {
-            result[i] = outbox[outLen - 1 - i]!
+        promoteDueDelayed()
+        const out: T[] = []
+        if (availableOutItems.length > 0) {
+            for (let i = availableOutItems.length - 1; i >= 0; i -= 1) {
+                out.push(availableOutItems[i]!)
+            }
         }
-        for (let i = 0; i < inLen; i += 1) {
-            result[outLen + i] = inbox[i]!
+        for (let i = 0; i < availableItems.length; i += 1) {
+            out.push(availableItems[i]!)
         }
-        return result
+        if (delayed !== undefined && delayed.size > 0) {
+            const delayedList = delayed.toArray().slice().sort((a, b) => {
+                if (a.availableAt !== b.availableAt) {
+                    return a.availableAt - b.availableAt
+                }
+                return a.id - b.id
+            })
+            for (const d of delayedList) out.push(d.item)
+        }
+        const leasedIds = [...leased.keys()].sort((a, b) => a - b)
+        for (const id of leasedIds) out.push(leased.get(id)!.item)
+        return out
     }
 
-    const api: Queue<T> = {
+    const rowIds = (): number[] => {
+        promoteDueDelayed()
+        const out: number[] = []
+        if (trackAvailableIds) {
+            if (availableOutIds.length > 0) {
+                for (let i = availableOutIds.length - 1; i >= 0; i -= 1) {
+                    out.push(availableOutIds[i]!)
+                }
+            }
+            for (let i = 0; i < availableIds.length; i += 1) {
+                out.push(availableIds[i]!)
+            }
+        }
+        // Inline available has no stable ids until claim; omit those.
+        if (delayed !== undefined && delayed.size > 0) {
+            const delayedList = delayed.toArray().slice().sort((a, b) => {
+                if (a.availableAt !== b.availableAt) {
+                    return a.availableAt - b.availableAt
+                }
+                return a.id - b.id
+            })
+            for (const d of delayedList) out.push(d.id)
+        }
+        const leasedIds = [...leased.keys()].sort((a, b) => a - b)
+        for (const id of leasedIds) out.push(id)
+        return out
+    }
+
+    const flush = (): Promise<void> => {
+        if (!chain) return RESOLVED
+        return chain.flush()
+    }
+
+    const hydrate = async (): Promise<void> => {
+        if (!durable || !store) return
+        if (leased.size > 0) {
+            throw new HydrateWhileActiveError()
+        }
+        hydrating = true
+        try {
+            await flush()
+            const loaded = await store.loadAll()
+            const seen = new Set<number>()
+            let maxId = 0
+            for (const record of loaded) {
+                if (!isSafeId(record.id)) {
+                    throw new InvalidRowIdError(
+                        `invalid row id: ${String(record.id)}`,
+                    )
+                }
+                if (seen.has(record.id)) {
+                    throw new DuplicateRowIdError(record.id)
+                }
+                seen.add(record.id)
+                if (record.id > maxId) maxId = record.id
+            }
+
+            const now = nowMs()
+            const availableRows: RowRecord<T>[] = []
+            const delayedRows: DelayedEntry<T>[] = []
+            const reclaimPuts: RowRecord<T>[] = []
+
+            for (const row of loaded) {
+                const availableAt =
+                    typeof row.availableAt === 'number' ? row.availableAt : 0
+                if (row.leaseGeneration != null) {
+                    const cleared = toRecord(row.id, row.item, 0, null, null)
+                    reclaimPuts.push(cleared)
+                    availableRows.push(cleared)
+                } else if (availableAt > now) {
+                    delayedRows.push({
+                        id: row.id,
+                        item: row.item,
+                        availableAt,
+                    })
+                } else {
+                    availableRows.push(
+                        toRecord(row.id, row.item, 0, null, null),
+                    )
+                }
+            }
+
+            // Durable reclaim writes before installing memory snapshot.
+            for (const rec of reclaimPuts) {
+                await store.put(rec)
+            }
+
+            clearMemory()
+            ids.reset()
+            ids.fixup(maxId)
+            leaseGenSeq = 0
+
+            availableRows.sort((a, b) => a.id - b.id)
+            for (const row of availableRows) {
+                pushAvailable(row.item, row.id)
+            }
+            for (const d of delayedRows) {
+                getDelayed().push(d)
+            }
+            armDelayTimer()
+            if (subs.loaded > 0) {
+                emitter.emit('persist:loaded', { size: totalSize() })
+            }
+            if (availableCount > 0) {
+                const head = peekAvailable()
+                if (head) emitEnqueued(head.item)
+            }
+        } finally {
+            hydrating = false
+        }
+    }
+
+    const api: Queue<T, QueueFullEvents> = {
         enqueue,
+        claim,
+        ack,
+        release,
+        reschedule,
         dequeue,
-        peek,
         tryDequeue,
+        peek,
         tryPeek,
         size,
+        readyCount,
+        stats,
         isEmpty,
         clear,
         replaceAll,
         toArray,
+        rowIds,
+        hydrate,
+        flush,
         on,
         emit: emitter.emit,
     }
 
-    return markQueueName(markQueueMaxSize(api, maxSize), name)
+    const marked = markQueueName(markQueueMaxSize(api, maxSize), name)
+    if (!durable) {
+        attachInlineOps(marked, {
+            claimSync,
+            ackSync,
+            releaseSync,
+            rescheduleSync,
+        })
+    }
+    return marked
 }

@@ -1,50 +1,140 @@
 import { describe, expect, it } from 'vitest'
-import { buildQueue } from '../../queue/core/queue'
-import { withPersist } from '../with-persist'
-import { createMemoryRowStore, createMemorySnapshotStore } from './memory'
-
-describe('createMemorySnapshotStore', () => {
-    it('round-trips through withPersist', async () => {
-        const store = createMemorySnapshotStore<string>(['a'], {
-            autoSave: false,
-        })
-        const queue = withPersist(buildQueue<string>(), store)
-
-        await queue.hydrate()
-        expect(queue.toArray()).toEqual(['a'])
-
-        queue.enqueue('b')
-        await queue.persist()
-        expect(store.data).toEqual(['a', 'b'])
-    })
-})
+import { createMemoryRowStore } from './memory'
 
 describe('createMemoryRowStore', () => {
-    it('round-trips through withPersist', async () => {
-        const store = createMemoryRowStore<string>(
-            [{ id: '1', item: 'x' }],
-            { createId: () => '2' },
-        )
-        const first = withPersist(buildQueue<string>(), store)
-
-        await first.hydrate()
-        first.enqueue('y')
-        await first.flush()
-        first.dequeue()
-        await first.flush()
-
-        const second = withPersist(buildQueue<string>(), store)
-        await second.hydrate()
-
-        expect(second.toArray()).toEqual(['y'])
-        expect(second.rowIds()).toEqual(['2'])
-        expect(store.rows).toEqual([{ id: '2', item: 'y' }])
+    it('put upserts and loadAll returns clones', () => {
+        const store = createMemoryRowStore<string>()
+        store.put({
+            id: 1,
+            item: 'a',
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
+        })
+        store.put({
+            id: 1,
+            item: 'b',
+            availableAt: 0,
+            leaseGeneration: 1,
+            leaseExpiresAt: null,
+        })
+        const loaded = store.loadAll() as ReadonlyArray<{
+            id: number
+            item: string
+            availableAt: number
+            leaseGeneration: number | null
+            leaseExpiresAt: number | null
+        }>
+        expect(loaded).toEqual([
+            {
+                id: 1,
+                item: 'b',
+                availableAt: 0,
+                leaseGeneration: 1,
+                leaseExpiresAt: null,
+            },
+        ])
+        // loadAll returns clones — store.rows is independent of the snapshot
+        expect(store.rows[0]!.item).toBe('b')
+        expect(loaded[0]).not.toBe(store.rows[0])
     })
 
-    it('upserts on insert with the same id', () => {
+    it('remove and clear', () => {
+        const store = createMemoryRowStore<number>()
+        store.put({
+            id: 1,
+            item: 1,
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
+        })
+        store.put({
+            id: 2,
+            item: 2,
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
+        })
+        store.remove(1)
+        const remaining = store.loadAll() as readonly { id: number }[]
+        expect(remaining.map((r) => r.id)).toEqual([2])
+        store.clear()
+        expect(store.loadAll() as readonly unknown[]).toEqual([])
+    })
+
+    it('put updates existing record in place (stable identity)', () => {
         const store = createMemoryRowStore<string>()
-        store.insert({ id: 'a', item: 'one' })
-        store.insert({ id: 'a', item: 'two' })
-        expect(store.rows).toEqual([{ id: 'a', item: 'two' }])
+        store.put({
+            id: 1,
+            item: 'a',
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
+        })
+        const recordRef = store.rows[0]!
+        store.put({
+            id: 1,
+            item: 'b',
+            availableAt: 10,
+            leaseGeneration: 2,
+            leaseExpiresAt: 99,
+        })
+        expect(store.rows[0]).toBe(recordRef)
+        expect(recordRef).toMatchObject({
+            id: 1,
+            item: 'b',
+            availableAt: 10,
+            leaseGeneration: 2,
+            leaseExpiresAt: 99,
+        })
+    })
+
+    it('remove is O(1) swap-remove and keeps remaining ids', () => {
+        const store = createMemoryRowStore<number>()
+        for (let id = 1; id <= 5; id += 1) {
+            store.put({
+                id,
+                item: id,
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            })
+        }
+        store.remove(3)
+        store.remove(1)
+        const ids = (store.loadAll() as readonly { id: number }[])
+            .map((r) => r.id)
+            .sort((a, b) => a - b)
+        expect(ids).toEqual([2, 4, 5])
+        expect(store.rows).toHaveLength(3)
+    })
+
+    it('putBatch and removeBatch match single ops', () => {
+        const store = createMemoryRowStore<string>()
+        store.putBatch?.([
+            {
+                id: 1,
+                item: 'a',
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            },
+            {
+                id: 2,
+                item: 'b',
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            },
+        ])
+        store.removeBatch?.([1])
+        expect(
+            (store.loadAll() as readonly { id: number; item: string }[]).map(
+                (r) => [r.id, r.item],
+            ),
+        ).toEqual([[2, 'b']])
     })
 })
+
+
+

@@ -8,7 +8,6 @@ import type {
 import { configError } from '../errors'
 import {
     expectBoolean,
-    expectNonNegativeInteger,
     expectPositiveInteger,
     expectString,
     isPlainObject,
@@ -31,68 +30,29 @@ export const parsePersistConfig = (
         )
     }
 
-    const strategy = ctx.storeStrategies.get(store)!
-
-    const autoSave =
-        obj.autoSave === undefined
-            ? undefined
-            : expectBoolean(obj.autoSave, `${path}.autoSave`)
-    const autoSaveDebounceMs =
-        obj.autoSaveDebounceMs === undefined
-            ? undefined
-            : expectNonNegativeInteger(
-                  obj.autoSaveDebounceMs,
-                  `${path}.autoSaveDebounceMs`,
-              )
-
-    if (autoSave !== undefined && strategy === 'row') {
+    if (obj.autoSave !== undefined || obj.autoSaveDebounceMs !== undefined) {
         return configError(
             'INVALID_FIELD',
-            `${path}.autoSave is only valid for snapshot stores (store "${store}" uses strategy "row")`,
-            `${path}.autoSave`,
+            `${path}: snapshot autoSave options are no longer supported`,
+            path,
         )
     }
-    if (autoSaveDebounceMs !== undefined && strategy === 'row') {
-        return configError(
-            'INVALID_FIELD',
-            `${path}.autoSaveDebounceMs is only valid for snapshot stores (store "${store}" uses strategy "row")`,
-            `${path}.autoSaveDebounceMs`,
-        )
-    }
-
-    let createId: (() => string) | undefined
     if (obj.createId !== undefined) {
-        if (!ctx.allowJs) {
-            return configError(
-                'JS_ONLY_FIELD',
-                `${path}.createId is only valid in JS config (functions cannot be expressed in JSON)`,
-                `${path}.createId`,
-            )
-        }
-        if (strategy !== 'row') {
-            return configError(
-                'INVALID_FIELD',
-                `${path}.createId is only valid for row stores (store "${store}" uses strategy "snapshot")`,
-                `${path}.createId`,
-            )
-        }
-        if (typeof obj.createId !== 'function') {
-            return configError(
-                'INVALID_TYPE',
-                `${path}.createId must be a function`,
-                `${path}.createId`,
-            )
-        }
-        createId = obj.createId as () => string
+        return configError(
+            'INVALID_FIELD',
+            `${path}.createId is no longer supported (ids are numeric and allocated by the queue)`,
+            `${path}.createId`,
+        )
     }
+
+    const leaseTtlMs =
+        obj.leaseTtlMs === undefined
+            ? undefined
+            : expectPositiveInteger(obj.leaseTtlMs, `${path}.leaseTtlMs`)
 
     return {
         store,
-        ...(autoSave !== undefined ? { autoSave } : {}),
-        ...(autoSaveDebounceMs !== undefined
-            ? { autoSaveDebounceMs }
-            : {}),
-        ...(createId !== undefined ? { createId } : {}),
+        ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),
     }
 }
 

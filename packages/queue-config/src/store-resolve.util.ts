@@ -1,15 +1,11 @@
 import {
     createMemoryRowStore,
-    createMemorySnapshotStore,
     createWebRowStore,
-    createWebSnapshotStore,
     StorageUnavailableError,
     type JsonCodec,
     type RowStore,
-    type SnapshotStore,
     type WebStorageLike,
 } from '@qkitt/queue'
-import { configError } from './errors'
 import { assertWebStorageKey } from './parse.util'
 import type {
     BuildFromConfigOptions,
@@ -20,10 +16,6 @@ import type {
 
 type WebAdapter = Exclude<BuiltinStoreAdapter, 'memory'>
 
-/**
- * Lazy global storage proxy matching core's `lazyGlobalStorage` behavior
- * without importing private helpers. Resolves on first use.
- */
 const lazyGlobalStorage = (
     name: 'localStorage' | 'sessionStorage',
 ): WebStorageLike => {
@@ -51,16 +43,6 @@ const resolveWebStorage = (
     options: BuildFromConfigOptions,
 ): WebStorageLike => options.storage ?? lazyGlobalStorage(adapter)
 
-/**
- * Materialize one store definition into a live SnapshotStore or RowStore.
- * Custom `impl` is used as-is; built-ins are constructed from `adapter`.
- *
- * Resolution is synchronous. If a future adapter needs async init
- * (IndexedDB, network-backed stores), introduce an async path rather than
- * blocking here — {@link resolveAllStores} would need a matching redesign.
- *
- * Store shape was already validated in parse; custom `impl` is trusted here.
- */
 const resolveStore = <T>(
     storeName: string,
     definition: StoreDefinition,
@@ -70,12 +52,10 @@ const resolveStore = <T>(
         return definition.impl as ResolvedStore<T>
     }
 
-    const { adapter, strategy } = definition
+    const { adapter } = definition
 
     if (adapter === 'memory') {
-        return strategy === 'snapshot'
-            ? createMemorySnapshotStore<T>()
-            : createMemoryRowStore<T>()
+        return createMemoryRowStore<T>()
     }
 
     const key = assertWebStorageKey(
@@ -84,16 +64,6 @@ const resolveStore = <T>(
         `config.stores.${storeName}.key`,
     )
     const storage = resolveWebStorage(adapter, options)
-
-    if (strategy === 'snapshot') {
-        const codec = definition.codec as JsonCodec<T[]> | undefined
-        return createWebSnapshotStore<T>({
-            key,
-            storage,
-            ...(codec !== undefined ? { codec } : {}),
-        }) as SnapshotStore<T>
-    }
-
     const itemCodec = definition.itemCodec as JsonCodec<T> | undefined
     return createWebRowStore<T>({
         key,

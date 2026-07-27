@@ -1,12 +1,4 @@
-import type {
-    RowPersistOptions,
-    RowRecord,
-    RowStore,
-    RowStoreHandle,
-    SnapshotPersistOptions,
-    SnapshotStore,
-    SnapshotStoreHandle,
-} from '../contracts'
+import type { RowRecord, RowStore } from '../contracts'
 import {
     decodeWithCodec,
     defaultJsonCodec,
@@ -24,117 +16,87 @@ export {
     type WebStorageLike,
 } from './web-storage-access.util'
 
-export type WebSnapshotStoreOptions<T> = {
-    /** Storage key for the full JSON array snapshot. */
-    key: string
-    /** Defaults to `globalThis.localStorage`. */
-    storage?: WebStorageLike
-    codec?: JsonCodec<T[]>
-}
-
-/**
- * Snapshot store backed by Web Storage (localStorage / sessionStorage).
- * Entire queue is one JSON value under `key`.
- *
- * Corrupt data throws {@link StorageCodecError}. Supply a validating `codec`
- * when storage may contain untrusted or versioned payloads.
- *
- * **Limits (not multi-tab safe):**
- * - Reads/writes are not transactional; a failed `setItem` can leave a partial
- *   or stale snapshot (e.g. quota exceeded).
- * - Concurrent tabs race on the same key — last write wins; no locking.
- * - Prefer a single tab owner, or a server-side store for shared durability.
- */
-export const createWebSnapshotStore = <T>(
-    options: WebSnapshotStoreOptions<T> & SnapshotPersistOptions,
-): SnapshotStoreHandle<T> => {
-    const storage = () => resolveStorage(options.storage)
-    const codec = options.codec ?? defaultJsonCodec<T[]>()
-    const { autoSave, autoSaveDebounceMs } = options
-
-    const persistOptions: SnapshotPersistOptions = {}
-    if (autoSave !== undefined) persistOptions.autoSave = autoSave
-    if (autoSaveDebounceMs !== undefined)
-        persistOptions.autoSaveDebounceMs = autoSaveDebounceMs
-
-    return {
-        load: () => {
-            const raw = storage().getItem(options.key)
-            if (raw === null || raw === '') return []
-            const items = decodeWithCodec(
-                `snapshot "${options.key}"`,
-                raw,
-                codec.deserialize,
-            )
-            return Array.isArray(items) ? items : []
-        },
-        save: (items) => {
-            storage().setItem(options.key, codec.serialize([...items]))
-        },
-        ...(Object.keys(persistOptions).length > 0
-            ? { persistOptions }
-            : {}),
-    }
-}
-
 export type WebRowStoreOptions<T> = {
     /**
      * Key prefix. Uses:
-     * - `${key}:order` → id list head → tail
-     * - `${key}:row:${id}` → serialized item
+     * - `${key}:order` → numeric id list head → tail
+     * - `${key}:row:${id}` → serialized full {@link RowRecord}
      */
     key: string
     storage?: WebStorageLike
     itemCodec?: JsonCodec<T>
 }
 
-type OrderCodec = JsonCodec<string[]>
+type StoredRecord<T> = {
+    id: number
+    item: T
+    availableAt: number
+    leaseGeneration: number | null
+    leaseExpiresAt: number | null
+}
+
+type OrderCodec = JsonCodec<number[]>
 
 const orderCodec: OrderCodec = {
     serialize: (ids) => JSON.stringify(ids),
     deserialize: (raw) => {
         const ids = JSON.parse(raw) as unknown
         if (!Array.isArray(ids)) return []
-        return ids.filter((id): id is string => typeof id === 'string')
+        return ids.filter(
+            (id): id is number =>
+                typeof id === 'number' && Number.isSafeInteger(id) && id >= 1,
+        )
     },
 }
 
+const defaultRecordCodec = <T>(): JsonCodec<StoredRecord<T>> => ({
+    serialize: (record) => JSON.stringify(record),
+    deserialize: (raw) => JSON.parse(raw) as StoredRecord<T>,
+})
+
 /**
- * Row-level store on Web Storage.
- * Each job is its own key; order is a separate id list (true row ops).
+ * Web Storage backend with full record state (claim/delay fields).
  *
- * Corrupt order/row payloads throw {@link StorageCodecError}.
- * Prefer a validating `itemCodec` for untrusted storage.
+ * **Limits (not multi-tab safe):** multi-key ops are not atomic; concurrent tabs
+ * race without merge. Prefer one owning tab or a real DB when durability is shared.
  *
- * **Limits (not multi-tab safe):**
- * - `insert` / `remove` / `clear` are multi-key and not atomic — a crash or
- *   quota error mid-op can leave order list and row keys inconsistent.
- * - Concurrent tabs race on the same prefix; last writer wins without merge.
- * - Use one owning tab, or a real DB/backend when durability must be shared.
+ * **Hot path:** an in-memory order cache (array + Set) avoids re-reading and
+ * re-writing the order key on every claim/ack update — only membership changes
+ * touch `${key}:order`. Record bodies still go through `setItem` per put.
  */
 export const createWebRowStore = <T>(
-    options: WebRowStoreOptions<T> & RowPersistOptions,
-): RowStoreHandle<T> => {
+    options: WebRowStoreOptions<T>,
+): RowStore<T> => {
     const storage = () => resolveStorage(options.storage)
     const itemCodec = options.itemCodec ?? defaultJsonCodec<T>()
+    const recordCodec = defaultRecordCodec<T>()
     const orderKey = `${options.key}:order`
-    const rowKey = (id: string) => `${options.key}:row:${id}`
+    const recordKey = (id: number) => `${options.key}:row:${id}`
+    const hasCustomItemCodec = options.itemCodec !== undefined
 
-    const { createId: _createId } = options
-    const persistOptions: RowPersistOptions = {}
-    if (_createId !== undefined) persistOptions.createId = _createId
+    /** Lazy process-local order cache (single-owner assumption). */
+    let orderIds: number[] | undefined
+    let orderSet: Set<number> | undefined
 
-    const readOrder = (): string[] => {
+    const loadOrderFromStorage = (): number[] => {
         const raw = storage().getItem(orderKey)
         if (raw === null || raw === '') return []
         return decodeWithCodec(
-            `row order "${orderKey}"`,
+            `order "${orderKey}"`,
             raw,
             orderCodec.deserialize,
         )
     }
 
-    const writeOrder = (ids: string[]): void => {
+    const ensureOrder = (): { ids: number[]; set: Set<number> } => {
+        if (orderIds === undefined || orderSet === undefined) {
+            orderIds = loadOrderFromStorage()
+            orderSet = new Set(orderIds)
+        }
+        return { ids: orderIds, set: orderSet }
+    }
+
+    const persistOrder = (ids: number[]): void => {
         if (ids.length === 0) {
             storage().removeItem(orderKey)
             return
@@ -142,95 +104,171 @@ export const createWebRowStore = <T>(
         storage().setItem(orderKey, orderCodec.serialize(ids))
     }
 
+    const writeRecord = (record: RowRecord<T>): void => {
+        const store = storage()
+        const key = recordKey(record.id)
+        if (hasCustomItemCodec) {
+            store.setItem(
+                key,
+                JSON.stringify({
+                    id: record.id,
+                    availableAt: record.availableAt,
+                    leaseGeneration: record.leaseGeneration,
+                    leaseExpiresAt: record.leaseExpiresAt,
+                    itemRaw: itemCodec.serialize(record.item),
+                }),
+            )
+            return
+        }
+        // RowRecord shape matches StoredRecord — serialize without a copy object.
+        store.setItem(key, recordCodec.serialize(record as StoredRecord<T>))
+    }
+
+    const readRecord = (id: number): RowRecord<T> | undefined => {
+        const raw = storage().getItem(recordKey(id))
+        if (raw === null) return undefined
+        if (hasCustomItemCodec) {
+            const parsed = JSON.parse(raw) as StoredRecord<T> & {
+                itemRaw?: string
+            }
+            const item =
+                typeof parsed.itemRaw === 'string'
+                    ? itemCodec.deserialize(parsed.itemRaw)
+                    : (parsed.item as T)
+            return {
+                id: parsed.id,
+                item,
+                availableAt: parsed.availableAt ?? 0,
+                leaseGeneration: parsed.leaseGeneration ?? null,
+                leaseExpiresAt: parsed.leaseExpiresAt ?? null,
+            }
+        }
+        const stored = decodeWithCodec(
+            `record "${recordKey(id)}"`,
+            raw,
+            recordCodec.deserialize,
+        )
+        return {
+            id: stored.id,
+            item: stored.item,
+            availableAt: stored.availableAt ?? 0,
+            leaseGeneration: stored.leaseGeneration ?? null,
+            leaseExpiresAt: stored.leaseExpiresAt ?? null,
+        }
+    }
+
+    const putOne = (record: RowRecord<T>): void => {
+        writeRecord(record)
+        const { ids, set } = ensureOrder()
+        if (set.has(record.id)) return
+        // Membership change only — claim/lease updates skip order rewrite.
+        set.add(record.id)
+        ids.push(record.id)
+        persistOrder(ids)
+    }
+
+    const removeOne = (id: number): void => {
+        storage().removeItem(recordKey(id))
+        const { ids, set } = ensureOrder()
+        if (!set.has(id)) return
+        set.delete(id)
+        const next = ids.filter((entry) => entry !== id)
+        orderIds = next
+        persistOrder(next)
+    }
+
     return {
         loadAll: () => {
-            const ids = readOrder()
-            const rows: RowRecord<T>[] = []
-
-            for (const id of ids) {
-                const raw = storage().getItem(rowKey(id))
-                if (raw === null) continue
-                rows.push({
-                    id,
-                    item: decodeWithCodec(
-                        `row "${rowKey(id)}"`,
-                        raw,
-                        itemCodec.deserialize,
-                    ),
-                })
+            const { ids } = ensureOrder()
+            const out: RowRecord<T>[] = []
+            for (let i = 0; i < ids.length; i += 1) {
+                const record = readRecord(ids[i]!)
+                if (record) out.push(record)
             }
-
-            return rows
+            return out
         },
-        insert: (record) => {
-            const store = storage()
-            store.setItem(rowKey(record.id), itemCodec.serialize(record.item))
-            const ids = readOrder()
-            if (!ids.includes(record.id)) {
-                ids.push(record.id)
-                writeOrder(ids)
-            }
-        },
-        remove: (id) => {
-            const store = storage()
-            store.removeItem(rowKey(id))
-            writeOrder(readOrder().filter((entry) => entry !== id))
-        },
+        put: putOne,
+        remove: removeOne,
         clear: () => {
             const store = storage()
-            for (const id of readOrder()) {
-                store.removeItem(rowKey(id))
+            const { ids } = ensureOrder()
+            for (let i = 0; i < ids.length; i += 1) {
+                store.removeItem(recordKey(ids[i]!))
             }
             store.removeItem(orderKey)
+            orderIds = []
+            orderSet = new Set()
         },
-        ...(Object.keys(persistOptions).length > 0
-            ? { persistOptions }
-            : {}),
+        putBatch: (batch) => {
+            if (batch.length === 0) return
+            const { ids, set } = ensureOrder()
+            let orderChanged = false
+            for (let i = 0; i < batch.length; i += 1) {
+                const record = batch[i]!
+                writeRecord(record)
+                if (!set.has(record.id)) {
+                    set.add(record.id)
+                    ids.push(record.id)
+                    orderChanged = true
+                }
+            }
+            if (orderChanged) persistOrder(ids)
+        },
+        removeBatch: (batchIds) => {
+            if (batchIds.length === 0) return
+            const store = storage()
+            const { ids, set } = ensureOrder()
+            let orderChanged = false
+            for (let i = 0; i < batchIds.length; i += 1) {
+                const id = batchIds[i]!
+                store.removeItem(recordKey(id))
+                if (set.has(id)) {
+                    set.delete(id)
+                    orderChanged = true
+                }
+            }
+            if (!orderChanged) return
+            const next = ids.filter((id) => set.has(id))
+            orderIds = next
+            persistOrder(next)
+        },
+        replaceAll: (batch) => {
+            const store = storage()
+            const { ids: prev } = ensureOrder()
+            for (let i = 0; i < prev.length; i += 1) {
+                store.removeItem(recordKey(prev[i]!))
+            }
+            const nextIds: number[] = []
+            const nextSet = new Set<number>()
+            for (let i = 0; i < batch.length; i += 1) {
+                const record = batch[i]!
+                writeRecord(record)
+                if (!nextSet.has(record.id)) {
+                    nextSet.add(record.id)
+                    nextIds.push(record.id)
+                }
+            }
+            orderIds = nextIds
+            orderSet = nextSet
+            persistOrder(nextIds)
+        },
     }
 }
 
-/** Convenience: snapshot store on `localStorage` (resolved lazily on use). */
-export const createLocalStorageSnapshotStore = <T>(
-    key: string,
-    options: Omit<WebSnapshotStoreOptions<T>, 'key' | 'storage'> &
-        SnapshotPersistOptions = {},
-): SnapshotStoreHandle<T> =>
-    createWebSnapshotStore({
-        ...options,
-        key,
-        storage: lazyGlobalStorage('localStorage'),
-    })
-
-/** Convenience: row store on `localStorage` (resolved lazily on use). */
 export const createLocalStorageRowStore = <T>(
     key: string,
-    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> &
-        RowPersistOptions = {},
-): RowStoreHandle<T> =>
+    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> = {},
+): RowStore<T> =>
     createWebRowStore({
         ...options,
         key,
         storage: lazyGlobalStorage('localStorage'),
     })
 
-/** Convenience: snapshot store on `sessionStorage` (resolved lazily on use). */
-export const createSessionStorageSnapshotStore = <T>(
-    key: string,
-    options: Omit<WebSnapshotStoreOptions<T>, 'key' | 'storage'> &
-        SnapshotPersistOptions = {},
-): SnapshotStoreHandle<T> =>
-    createWebSnapshotStore({
-        ...options,
-        key,
-        storage: lazyGlobalStorage('sessionStorage'),
-    })
-
-/** Convenience: row store on `sessionStorage` (resolved lazily on use). */
 export const createSessionStorageRowStore = <T>(
     key: string,
-    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> &
-        RowPersistOptions = {},
-): RowStoreHandle<T> =>
+    options: Omit<WebRowStoreOptions<T>, 'key' | 'storage'> = {},
+): RowStore<T> =>
     createWebRowStore({
         ...options,
         key,

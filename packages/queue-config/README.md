@@ -7,11 +7,11 @@
 
 Declarative setup for [`@qkitt/queue`](https://www.npmjs.com/package/@qkitt/queue): named stores, queues, workers, optional loop / dead-letter, and topic-router bindings in one object.
 
-Builds the same stack as hand-written composition (`queue → persist → worker → loop → dlq → router`) from a config object. Optional; most apps only need `@qkitt/queue`. See the core [composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) and [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) guides for the underlying model.
+Builds the same stack as hand-written composition (`buildQueue({ store? })` → worker → loop → dlq → router) from a config object. Optional; most apps only need `@qkitt/queue`. See the core [composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) and [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) guides for the underlying model.
 
-**Peer dependency:** `@qkitt/queue` `^0.6.4`. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
+**Peer dependency:** `@qkitt/queue` `^0.8.0`. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
 
-**Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.2` → `0.3`). Check the changelog on minor upgrades.
+**Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
 Runnable demos: [`examples/with-config`](https://github.com/eugene-p/qkitt-queue/tree/main/examples/with-config), [`examples/with-config-loop-dlq`](https://github.com/eugene-p/qkitt-queue/tree/main/examples/with-config-loop-dlq).
 
@@ -38,7 +38,7 @@ const system = await buildFromConfig(
   }),
 )
 
-system.queues.jobs.enqueue({ id: '1' })
+await system.queues.jobs.enqueue({ id: '1' })
 ```
 
 **B. Add persist + router**
@@ -54,7 +54,6 @@ export default defineConfig({
   stores: {
     mailDisk: {
       adapter: 'localStorage',
-      strategy: 'row',
       key: 'mail',
     },
   },
@@ -73,7 +72,7 @@ export default defineConfig({
 })
 ```
 
-Build order: stores → queue(+name) → persist → worker → loop → dlq → router → hydrate (same stack rule: persist inside, worker outside; loop/dlq outside worker).
+Build order: stores → `buildQueue({ name, store? })` → worker → loop → dlq → router → hydrate.
 
 ```ts
 // app.ts
@@ -103,39 +102,39 @@ type SystemConfig = {
 
 ### `stores`
 
-Named adapters. Queues reference them with `persist.store`.
+Named adapters. Queues reference them with `persist.store`. Every durable store is a **row** store (`RowStore`).
 
 | Kind | Shape | Notes |
 | --- | --- | --- |
-| Built-in | `{ adapter, strategy, key? }` | Library constructs the store |
-| Custom (JS only) | `{ strategy, impl }` | Your `SnapshotStore` / `RowStore` instance (plain object or class) |
+| Built-in | `{ adapter, key? }` | Library constructs the store |
+| Custom (JS only) | `{ impl }` | Your `RowStore` instance |
 
 | Field | Values | Notes |
 | --- | --- | --- |
 | `adapter` | `'memory'` \| `'localStorage'` \| `'sessionStorage'` | Built-in only |
-| `strategy` | `'snapshot'` \| `'row'` | Required |
 | `key` | `string` | Required for web adapters |
-| `impl` | store instance | JS only — no JSON |
-| `codec` | `JsonCodec` | Snapshot + web adapters only (JS) |
-| `itemCodec` | `JsonCodec` | Row + web adapters only (JS) |
+| `impl` | `RowStore` instance | JS only — no JSON |
+| `itemCodec` | `JsonCodec` | Web adapters only (JS) |
 
 ```ts
 stores: {
-  mem: { adapter: 'memory', strategy: 'snapshot' },
-  disk: { adapter: 'localStorage', strategy: 'row', key: 'app:jobs' },
-  redis: { strategy: 'row', impl: createRedisRowStore('queue:mail') },
+  mem: { adapter: 'memory' },
+  disk: { adapter: 'localStorage', key: 'app:jobs' },
+  redis: { impl: createRedisRowStore('queue:mail') },
 }
 ```
 
 Each named store must back **exactly one** queue (shared or unused store names are rejected). Web stores must use unique `adapter`+`key` pairs.
+
+**Removed (breaking):** `strategy` (`snapshot` / `row`), snapshot stores, and snapshot-only fields. Pass `{ adapter: 'memory' }` without a strategy.
 
 ### `queues`
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `maxSize` | `number` | Safe integer ≥ 1; same as `buildQueue({ maxSize })` |
-| `persist` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` | `store` = name in `stores`; `autoSave` / `autoSaveDebounceMs` **snapshot-only**; `createId` **row-only** (JS) |
-| `worker` | `WorkerFn` or `{ run, concurrency?, autoStart? }` | **JS only** — not available in JSON |
+| `persist` | `{ store, leaseTtlMs? }` | `store` = name in `stores`; optional in-process lease TTL |
+| `worker` | `WorkerFn` or `{ run, concurrency?, autoStart?, onFailure? }` | **JS only** — not available in JSON |
 | `loop` | `true` or `{ map?, filter?, delay? }` | `withLoop` after worker; requires `worker`. Queue config key is `buildQueue({ name })`. `map` / `filter` / function `delay` **JS only**; static `delay` ms allowed in JSON. **Delay is not durable** — restart/crash drops pending delayed re-entries (see core [loop delay disclaimer](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop)) |
 | `dlq` | `string` or `{ queue, map?, filter? }` | `withDlq` after worker/loop; requires `worker`. Target must be another named queue. `map` / `filter` **JS only** |
 
@@ -146,7 +145,7 @@ queues: {
   scratch: {}, // plain in-memory
   jobs: {
     maxSize: 500,
-    persist: { store: 'disk', autoSave: true },
+    persist: { store: 'disk' },
     worker: { run: handleJob, concurrency: 4, autoStart: true },
     loop: true,
     dlq: 'failed',
@@ -157,12 +156,13 @@ queues: {
 
 #### `loop` + `dlq` together
 
-Both attach to `worker:failed` **independently** — not “loop until filter fails, then DLQ.”
+Recovery is sequential on the worker: **loop first**; when the loop `filter` returns false, the **fail** path runs (DLQ if configured, else drop).
 
 | Setup | Result |
 | --- | --- |
-| `loop: true` and `dlq: 'failed'` (default filters) | **Duplicates:** every failure re-enters *and* is dead-lettered |
-| Complementary `filter`s | Chain: re-enter while under a hop cap; DLQ only when the cap is hit |
+| `loop` only, filter false | Drop |
+| `loop` + `dlq`, filter false | Dead-letter |
+| Complementary `filter`s | Re-enter while under a hop cap; DLQ when the cap is hit |
 
 ```ts
 import { getLoopHops } from '@qkitt/queue'
@@ -209,13 +209,12 @@ router: {
 
 ### `hydrate`
 
-Load all persisted queues after build (and after workers attach, so restored items can run when `autoStart` is on). Defaults to `true` when any queue has `persist`. Set `false` to hydrate yourself via `system.hydrateAll()` or per-queue `hydrate()`.
+Load all durable queues after build (and after workers attach, so restored items can run when `autoStart` is on). Defaults to `true` when any queue has `persist`. Set `false` to hydrate yourself via `system.hydrateAll()` or per-queue `hydrate()`.
 
 ### Build rules
 
-- Persist wraps the bare queue; worker is outer (**persist inside, worker outside** — same as hand composition).
+- Durable queues use `buildQueue({ store })` (no persist decorator).
 - Optional `loop` then `dlq` wrap the worker queue (both require `worker`).
-- One persist layer per queue.
 - One store → one queue.
 - `dlq` target must exist under `queues` and must not be the source (use `loop` for same-queue).
 - JSON cannot carry workers, custom `impl`, or `map` / `filter` functions.
@@ -227,15 +226,14 @@ Built-in adapters only — no workers, no custom stores.
 ```json
 {
   "stores": {
-    "ordersMem": { "adapter": "memory", "strategy": "snapshot" },
+    "ordersMem": { "adapter": "memory" },
     "auditDisk": {
       "adapter": "localStorage",
-      "strategy": "row",
       "key": "app:audit"
     }
   },
   "queues": {
-    "orders": { "persist": { "store": "ordersMem", "autoSave": true } },
+    "orders": { "persist": { "store": "ordersMem" } },
     "audit": { "persist": { "store": "auditDisk" } }
   },
   "router": {
@@ -279,7 +277,7 @@ buildFromConfig<T extends SystemConfig>(
 | `storage` | `WebStorageLike` | Inject Web Storage (tests, Node, mocks) for `localStorage` / `sessionStorage` adapters |
 | `skipValidate` | `boolean` | Skip re-validation when config was already validated (`defineConfig` / parse) |
 
-Validates, resolves stores, builds queues (persist → worker → loop → dlq), applies router bindings, optionally hydrates.
+Validates, resolves stores, builds queues (store → worker → loop → dlq), applies router bindings, optionally hydrates.
 
 ### `buildFromConfigSync`
 
@@ -352,8 +350,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `stores` | Resolved store instances by name |
 | `router` | Present when `router` was set in config |
 | `hydrateAll()` | Hydrate every queue that exposes `hydrate` |
-| `flushAll()` | Drain pending auto-saves / write chains (`flush`) |
-| `persistAll()` | Explicit snapshot `persist()` on every queue that has it |
+| `flushAll()` | Await durable write chains (`flush`) |
 | `config` | Nested plain data frozen; worker functions and store `impl` refs preserved |
 
 **`ConfiguredQueue`** — base `Queue` plus, when configured:
@@ -361,7 +358,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | Method | When |
 | --- | --- |
 | `start` / `stop` / `isRunning` / `activeCount` / … | Worker attached |
-| `hydrate` / `flush` / `persist?` / `rowIds?` | Persist attached |
+| `hydrate` / `flush` / `rowIds` | Always on core `Queue` (hydrate/flush no-op without store) |
 
 ### Config types
 
@@ -369,32 +366,30 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | --- | --- |
 | `SystemConfig` | Top-level config |
 | `StoreDefinition` | Built-in or custom store entry |
-| `PersistConfig` | `{ store, autoSave?, autoSaveDebounceMs?, createId? }` on a queue |
+| `PersistConfig` | `{ store, leaseTtlMs? }` on a queue |
 | `QueueConfig` | `maxSize`, `persist`, `worker`, `loop`, `dlq` |
-| `WorkerConfig` | Function or `{ run, concurrency?, autoStart? }` |
+| `WorkerConfig` | Function or `{ run, concurrency?, autoStart?, onFailure? }` |
 | `LoopConfig` | `true` or `{ map?, filter?, delay? }` for `withLoop` |
 | `DlqConfig` | Target queue name string or `{ queue, map?, filter? }` for `withDlq` |
 | `RouterConfig` / `BindingConfig` | Router section |
 | `BuildFromConfigOptions` | `{ storage?, skipValidate? }` |
 | `BuiltinStoreAdapter` | `'memory' \| 'localStorage' \| 'sessionStorage'` |
-| `ResolvedStore` | `SnapshotStore \| RowStore` after build |
+| `ResolvedStore` | `RowStore` after build |
 | `ConfiguredQueueFor` | Precise queue type from one `QueueConfig` entry |
 | `ConfigErrorCode` | Union of validation error codes |
 | `ConfigValidationError` | Typed error class (see above) |
 
-## Migration (from `@qkitt/queue` ≤ 0.4)
+## Migration (from config ≤ 0.5 / core ≤ 0.7)
 
-Config used to ship inside the core package. Core removed it in **`@qkitt/queue@0.5.0`**; this package starts at **`0.1.0`**:
+| Before | After |
+| --- | --- |
+| `{ adapter: 'memory', strategy: 'snapshot' }` | `{ adapter: 'memory' }` |
+| `{ adapter, strategy: 'row', key }` | `{ adapter, key }` (drop `strategy`) |
+| `{ strategy, impl }` custom store | `{ impl }` (`RowStore` only) |
+| `persist: { store, autoSave, autoSaveDebounceMs, createId }` | `persist: { store, leaseTtlMs? }` |
+| Peer `@qkitt/queue` `^0.7` | Peer `^0.8.0` |
 
-```ts
-// before
-import { buildFromConfig, defineConfig } from '@qkitt/queue'
-// or
-import { buildFromConfig, defineConfig } from '@qkitt/queue/config'
-
-// after
-import { buildFromConfig, defineConfig } from '@qkitt/queue-config'
-```
+Core no longer has `withPersist` / snapshot stores — see the [core persistence migration](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#migration-from-withpersist--snapshot--07).
 
 ## License
 

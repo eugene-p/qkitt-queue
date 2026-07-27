@@ -1,13 +1,12 @@
 /**
  * Drain vs shutdown: whenIdle (full empty) vs gracefulStop (in-flight only).
- * Layers: buildQueue → withPersist → withWorker
+ * Layers: buildQueue({ store? }) → withWorker
  */
 import {
   buildQueue,
-  createMemorySnapshotStore,
+  createMemoryRowStore,
   gracefulStop,
   whenIdle,
-  withPersist,
   withWorker,
 } from '@qkitt/queue'
 import { line, phase, sleep, summary, title } from '../_log'
@@ -20,7 +19,7 @@ type Job = {
 async function main() {
   title(
     '@qkitt/queue — lifecycle',
-    'whenIdle + gracefulStop  store=memory-snapshot',
+    'whenIdle + gracefulStop  store=memory-row',
   )
 
   // --- phase 1: drain everything currently queued ---
@@ -42,7 +41,7 @@ async function main() {
     { id: 2, ms: 35 },
     { id: 3, ms: 20 },
   ]) {
-    drainQueue.enqueue(job)
+    await drainQueue.enqueue(job)
     line('queue', 'add', `job=${job.id}`)
   }
 
@@ -52,21 +51,18 @@ async function main() {
   // --- phase 2: SIGTERM-style stop — finish in-flight, keep remainder ---
   phase('gracefulStop — in-flight only + flush')
 
-  // Long debounce so only an explicit flush writes the remainder.
-  const store = createMemorySnapshotStore<Job>([], {
-    autoSaveDebounceMs: 60_000,
-  })
+  const store = createMemoryRowStore<Job>()
   let release!: () => void
   const gate = new Promise<void>((resolve) => {
     release = resolve
   })
   let finished = 0
 
-  const persisted = withPersist(buildQueue<Job>(), store)
-  await persisted.hydrate()
+  const durable = buildQueue<Job>({ store })
+  await durable.hydrate()
 
   const queue = withWorker(
-    persisted,
+    durable,
     async (job) => {
       line(
         'worker',
@@ -80,9 +76,9 @@ async function main() {
     { concurrency: 1 },
   )
 
-  queue.enqueue({ id: 10, ms: 0 })
-  queue.enqueue({ id: 11, ms: 0 })
-  queue.enqueue({ id: 12, ms: 0 })
+  await queue.enqueue({ id: 10, ms: 0 })
+  await queue.enqueue({ id: 11, ms: 0 })
+  await queue.enqueue({ id: 12, ms: 0 })
   line('queue', 'add', 'jobs=10,11,12  (10 in-flight, 11–12 waiting)')
   await sleep(0)
 
@@ -99,7 +95,7 @@ async function main() {
   line(
     'stop',
     'done',
-    `running=${queue.isRunning()}  size=${queue.size()}  finished=${finished}  store=${store.data.length}`,
+    `running=${queue.isRunning()}  size=${queue.size()}  finished=${finished}  store_rows=${store.rows.length}`,
   )
   line(
     'note',
@@ -108,7 +104,7 @@ async function main() {
   )
 
   summary(
-    `whenIdle drained=${drained}  gracefulStop finished=${finished}  remaining=${queue.size()}  store=${store.data.length}`,
+    `whenIdle drained=${drained}  gracefulStop finished=${finished}  remaining=${queue.size()}  store_rows=${store.rows.length}`,
   )
 }
 

@@ -26,7 +26,7 @@ describe('whenIdle', () => {
 
         queue.enqueue(1)
         queue.enqueue(2)
-        await Promise.resolve()
+        for (let i = 0; i < 5; i += 1) await Promise.resolve()
         expect(queue.isProcessing()).toBe(true)
 
         const idle = whenIdle(queue)
@@ -39,6 +39,7 @@ describe('whenIdle', () => {
 
         release()
         await idle
+        for (let i = 0; i < 5; i += 1) await Promise.resolve()
         expect(queue.isEmpty()).toBe(true)
         expect(queue.isProcessing()).toBe(false)
     })
@@ -60,8 +61,10 @@ describe('whenIdle', () => {
         const idle = whenIdle(queue)
         queue.enqueue(1)
         queue.enqueue(2)
+        for (let i = 0; i < 5; i += 1) await Promise.resolve()
         release()
         await idle
+        for (let i = 0; i < 5; i += 1) await Promise.resolve()
         expect(queue.isEmpty()).toBe(true)
     })
 

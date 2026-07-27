@@ -1,9 +1,23 @@
+/**
+ * Retained-heap measurement for bench structures.
+ *
+ * Answers: “how large is this structure when it holds N?”
+ * - Measures heapUsed (and rss) delta to build and **keep** N items live, after GC.
+ * - Does not measure peak during ops/s, GC churn while draining, or “memory of the
+ *   throughput loop.” ops/s empties/drains each iteration; this keeps N held.
+ *
+ * FIFO: after N enqueues (queue still full).
+ * Worker: N pending jobs with the worker paused / autoStart false.
+ */
+
 export type MemRow = {
   name: string
-  /** heapUsed after − before (bytes). */
+  /** heapUsed after − before (bytes), structure still held. */
   heapDelta: number
-  /** rss after − before (bytes). */
+  /** rss after − before (bytes). Noisier than heap; informational. */
   rssDelta: number
+  /** Human label for what was held (for tables / legends). */
+  held: string
 }
 
 export const formatBytes = (bytes: number): string => {
@@ -25,41 +39,49 @@ export const isGcExposed = (): boolean =>
 
 /**
  * Measure retained memory for a structure kept alive by `build`'s return value.
- * Call once per library under the same N so rows are comparable.
+ * Isolated from timing: call on its own after GC, never mid-Bench-run.
  */
-export const measureRetained = (name: string, build: () => unknown): MemRow => {
+export const measureRetained = (
+  name: string,
+  held: string,
+  build: () => unknown,
+): MemRow => {
+  tryGc()
   tryGc()
   const before = process.memoryUsage()
-  const held = build()
-  const after = process.memoryUsage()
-
-  // Keep graph live across the sample (and defeat DCE).
-  if (held === null || held === undefined) {
+  const value = build()
+  if (value === null || value === undefined) {
     throw new Error(`measureRetained(${name}): build() must return a held value`)
   }
   // Touch so V8 cannot prove the value is unused before `after`.
-  void (held as { constructor?: unknown }).constructor
+  void (value as { constructor?: unknown }).constructor
+  // Drop build-side garbage so Δ ≈ retained structure.
+  tryGc()
+  const after = process.memoryUsage()
+  void (value as { constructor?: unknown }).constructor
 
   return {
     name,
+    held,
     heapDelta: after.heapUsed - before.heapUsed,
     rssDelta: after.rss - before.rss,
   }
 }
 
-export const printMemoryTable = (rows: readonly MemRow[]): void => {
-  console.log('Memory (retained heap while structure holds all items):')
-  console.table(
-    rows.map((row) => ({
-      name: row.name,
-      'heap Δ': formatBytes(row.heapDelta),
-      'rss Δ': formatBytes(row.rssDelta),
-      'heap Δ (B)': row.heapDelta,
-    })),
-  )
-  if (!isGcExposed()) {
-    console.log(
-      '  tip: tighter deltas with GC — npm run bench -- --expose-gc  (or NODE_OPTIONS=--expose-gc)',
-    )
+/**
+ * Best of several independent samples. Post-build GC noise is one-sided
+ * (collapsed / negative); the largest Δ is the least under-counted.
+ */
+export const measureRetainedStable = (
+  name: string,
+  held: string,
+  build: () => unknown,
+  trials = 5,
+): MemRow => {
+  let best: MemRow | undefined
+  for (let i = 0; i < trials; i++) {
+    const row = measureRetained(name, held, build)
+    if (!best || row.heapDelta > best.heapDelta) best = row
   }
+  return best!
 }

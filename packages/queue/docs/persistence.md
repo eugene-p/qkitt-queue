@@ -1,139 +1,188 @@
 # Persistence
 
-Built-in stores: in-memory and browser Web Storage (snapshot or row). You can also use your own store as long as it matches `SnapshotStore` or `RowStore` ([Custom stores](#custom-stores)).
+Durability is **built into the queue**: pass a `RowStore` to `buildQueue({ store })`. There is no separate persist decorator and no snapshot strategy — every durable queue is row-based (per-op put/remove with numeric ids and lease fields).
 
-[README](../README.md) · [Composition](./composition.md) · [API `withPersist`](./api.md#withpersist) · [Stores](./api.md#stores)
+Built-in stores: in-memory and browser Web Storage (`localStorage` / `sessionStorage`). Custom backends implement `RowStore` ([Custom stores](#custom-stores)).
 
-## Strategies
+[README](../README.md) · [Composition](./composition.md) · [API `buildQueue`](./api.md#buildqueue) · [Stores](./api.md#stores)
 
-| | Snapshot | Row |
+## Model
+
+| | Bare queue | Durable queue (`store` set) |
 | --- | --- | --- |
-| Writes | Full list rewrite | Insert/remove per op |
-| Good for | Simple backends, small queues | DB-style stores |
-| Failed write | `persist:error`; memory unchanged | Failed insert rolls back that row; failed remove/clear error only (hydrate to resync) |
-| Wait | `flush()` or `persist()` | `flush()` |
+| Construction | `buildQueue()` | `buildQueue({ store })` |
+| Writes | Memory only | Memory + `RowStore` put/remove on a write chain |
+| Worker path | `claim` / `ack` / `release` (leases) | Same; store updated on claim/ack/release |
+| Wait for I/O | `flush()` is a no-op | `await flush()` before process exit |
+| Restart | Lost | `await hydrate()` loads rows |
 
-`enqueue` / `dequeue` / `clear` stay sync; store I/O runs on a serialized write chain. Concurrent mutations during `hydrate` throw `QueueHydratingError`. A second concurrent `hydrate()` rejects.
+Mutations return `Promise` so async stores work. Bare (no store) paths resolve immediately after the in-memory update (shared settled promises on the hot path).
 
-Stack rule (same as [composition](./composition.md#3-add-persistence)): **persist inside, worker outside**.
+While `hydrate` runs, concurrent mutations reject with `HydrateWhileActiveError`. Hydrate also requires an idle queue (no leased rows / active workers).
 
-### Persist lifecycle
+## Lifecycle
 
-1. Build stack: bare → persist → worker (**persist inside, worker outside**).
-2. `await queue.hydrate()` before enqueue / before expecting workers to process restored items.
-3. Mutate as usual — `enqueue` / `dequeue` stay sync.
-4. `await queue.flush()` before process exit. Snapshot auto-save may debounce; `flush` promotes pending writes.
-
-## Snapshot
-
-```ts
-const store = createMemorySnapshotStore<string>()
-const queue = withPersist(buildQueue<string>(), store)
-
-await queue.hydrate()
-queue.enqueue('a')    // auto-saves by default
-await queue.persist() // manual save
-await queue.flush()
-```
-
-| Call | When |
-| --- | --- |
-| Auto-save (default) | After mutations; coalesced (microtask or `autoSaveDebounceMs`) |
-| `flush()` | Wait until pending auto-saves / in-flight writes settle — **shutdown path** |
-| `persist()` | Explicit full snapshot write **now**; never debounced |
-
-Row has no `persist()`; use `flush()` to await the insert/remove/clear chain.
-
-## Row
+1. Build: `buildQueue({ store })`.
+2. After restart: `await hydrate()` **before** attaching `withWorker` (or `autoStart: false` → hydrate → `start()`). Hydrate rejects with `HydrateWhileActiveError` while workers are active or rows are leased.
+3. Attach worker / loop / dlq; mutate as usual — `enqueue` / `claim` / admin `dequeue` await store I/O when durable.
+4. `await flush()` before process exit so the write chain settles.
 
 ```ts
-const store = createMemoryRowStore<string>()
-const queue = withPersist(buildQueue<string>(), store)
-// optional: pass { createId: () => crypto.randomUUID() } as factory second arg
+import {
+  buildQueue,
+  withWorker,
+  createMemoryRowStore,
+} from '@qkitt/queue'
 
-await queue.hydrate()
-queue.enqueue('job-1')
-await queue.flush()
-queue.rowIds()
-queue.replaceAll(['x', 'y']) // clears store and reinserts with fresh ids
-await queue.flush()
+type Job = { id: string }
+
+const store = createMemoryRowStore<Job>()
+const base = buildQueue<Job>({ store })
+await base.hydrate() // load restored rows first
+
+const queue = withWorker(
+  base,
+  async (job) => {
+    // handle job
+  },
+  { concurrency: 2 },
+)
+
+await queue.enqueue({ id: '1' })
+await queue.flush() // before process exit
 ```
 
-Row ids (from the store's id factory or `loadAll`) must be unique non-empty strings (not whitespace-only).
+Optional `leaseTtlMs` on `buildQueue` reclaims abandoned in-process leases after a wall-clock deadline. Without it, leased rows are reclaimed only on the next `hydrate` (restart path).
+
+## Row records
+
+```ts
+type RowRecord<T> = {
+  id: number // safe integer ≥ 1, allocated by the queue
+  item: T
+  availableAt: number // 0 = claimable now; else ms epoch
+  leaseGeneration: number | null
+  leaseExpiresAt: number | null
+}
+
+type RowStore<T> = {
+  loadAll: () => readonly RowRecord<T>[] | Promise<readonly RowRecord<T>[]>
+  put: (record: RowRecord<T>) => void | Promise<void>
+  remove: (id: number) => void | Promise<void>
+  clear: () => void | Promise<void>
+  putBatch?: (records: readonly RowRecord<T>[]) => void | Promise<void>
+  removeBatch?: (ids: readonly number[]) => void | Promise<void>
+  replaceAll?: (records: readonly RowRecord<T>[]) => void | Promise<void>
+}
+```
+
+Ids are **numeric** and owned by the queue (not string factories). `loadAll` may return rows in any order; the queue rebuilds FIFO from id order of available heads.
 
 ## Browser storage
 
 ```ts
 import {
-  withPersist,
-  createLocalStorageSnapshotStore,
+  buildQueue,
   createLocalStorageRowStore,
 } from '@qkitt/queue'
 
-const snap = withPersist(
-  buildQueue<{ id: string }>(),
-  createLocalStorageSnapshotStore('my-app:queue'),
-)
-await snap.hydrate()
-
-const rows = withPersist(
-  buildQueue<{ id: string }>(),
-  createLocalStorageRowStore('my-app:jobs'),
-)
-await rows.hydrate()
+const queue = buildQueue<{ id: string }>({
+  store: createLocalStorageRowStore('my-app:jobs'),
+})
+await queue.hydrate()
 ```
 
-Also: `createSessionStorageSnapshotStore`, `createSessionStorageRowStore`.
+Also: `createSessionStorageRowStore`, `createWebRowStore` (custom `WebStorageLike`).
 
-Web Storage is not multi-tab safe or transactional. Prefer one owning tab, or a real DB, when durability is shared.
+Web Storage is not multi-tab safe or transactional. Prefer one owning tab when durability is shared.
+
+### Browser integration checks
+
+Headless Chromium exercises real `localStorage` / `sessionStorage` (unit tests use an in-memory mock). From the monorepo root (first time: `npx playwright install chromium`):
+
+```bash
+npm run test:browser      # integration specs (round-trip, batch, reload durability)
+npm run compare:stores    # bare vs memory store vs localStorage (store ops + worker drain)
+```
+
+Illustrative Chromium sample (Windows laptop, 2026-07-26 — not a peer bench):
+
+| Worker drain | 1k c=1 | 1k c=4 | 5k c=1 | 5k c=4 |
+| --- | ---: | ---: | ---: | ---: |
+| Bare (no store) | ~1.3 ms | ~1.2 ms | ~2.1 ms | ~1.8 ms |
+| Memory `RowStore` | ~3.2 ms | ~1.9 ms | ~9.4 ms | ~7.7 ms |
+| `localStorage` | ~38 ms | ~27 ms | ~411 ms | ~113 ms |
+
+| Store ops (put N) | N=1k fill | N=5k fill |
+| --- | ---: | ---: |
+| Memory | ~0.1 ms | ~1.2 ms |
+| `localStorage` | ~17 ms | ~245 ms |
+
+`browser/` is dev-only and is not published on npm.
 
 ## Custom stores
 
-Same API as the built-ins: implement the interface, pass the object to `withPersist`.
+Implement `RowStore` and pass the instance to `buildQueue({ store })`.
 
 ```ts
-import type { SnapshotStore } from '@qkitt/queue'
-import { buildQueue, withPersist } from '@qkitt/queue'
+import type { RowRecord, RowStore } from '@qkitt/queue'
+import { buildQueue } from '@qkitt/queue'
 
 type Job = { id: string }
 
-const store: SnapshotStore<Job> = {
-  async load() {
-    // return items head → tail
+const store: RowStore<Job> = {
+  async loadAll() {
+    // return all durable rows (any order)
     return []
   },
-  async save(items) {
-    // replace the full snapshot
+  async put(record: RowRecord<Job>) {
+    // upsert full row state by record.id
+  },
+  async remove(id: number) {
+    // delete by id
+  },
+  async clear() {
+    // wipe all rows for this queue
   },
 }
 
-const queue = withPersist(buildQueue<Job>(), store)
+const queue = buildQueue<Job>({ store })
 await queue.hydrate()
-queue.enqueue({ id: '1' })
+await queue.enqueue({ id: '1' })
 await queue.flush()
 ```
 
+Example (Node file rows): [`examples/fs-row-store`](../../../examples/fs-row-store/main.ts). With [`@qkitt/queue-config`](../../queue-config), pass the instance as `{ impl }` under `stores`.
+
+## Events
+
+| Event | Payload | When |
+| --- | --- | --- |
+| `persist:loaded` | `{ size }` | After successful `hydrate` |
+| `persist:lease-expired` | `{ id, item }` | In-process lease TTL reclaim |
+| `persist:id-space-low` | `{ remaining }` | Id counter approaching exhaustion |
+| `persist:error` | `{ operation, error, id? }` | Store `load` / `put` / `remove` / `clear` failed |
+
+## Migration from `withPersist` / snapshot (≤ 0.7)
+
+| Before (0.7) | After (0.8+) |
+| --- | --- |
+| `withPersist(buildQueue(), store)` | `buildQueue({ store })` |
+| `createMemorySnapshotStore` / `SnapshotStore` | **Removed** — use `createMemoryRowStore` / `RowStore` |
+| Snapshot `autoSave` / `persist()` | Gone — every mutation writes rows; `flush()` waits on the chain |
+| Row `insert` + string ids / `createId` | `put` full `RowRecord` with numeric ids from the queue |
+| Sync `enqueue` / `dequeue` | Always `Promise` (bare resolves immediately) |
+
 ```ts
-type SnapshotStore<T> = {
-  load: () => readonly T[] | Promise<readonly T[]>
-  save: (items: readonly T[]) => void | Promise<void>
-}
+// before
+const q = withWorker(
+  withPersist(buildQueue<Job>(), createMemorySnapshotStore()),
+  run,
+)
 
-type RowStore<T> = {
-  loadAll: () =>
-    | readonly { id: string; item: T }[]
-    | Promise<readonly { id: string; item: T }[]>
-  insert: (record: { id: string; item: T }) => void | Promise<void>
-  remove: (id: string) => void | Promise<void>
-  clear: () => void | Promise<void>
-}
+// after
+const q = withWorker(
+  buildQueue<Job>({ store: createMemoryRowStore() }),
+  run,
+)
 ```
-
-- `load` / `loadAll` return FIFO order (head first).
-- Row ids must be unique, non-empty strings (not whitespace-only).
-- Optional `persistOptions` on the store object (same as the factories; omit for defaults):
-  - **Snapshot:** `autoSave`, `autoSaveDebounceMs`
-  - **Row:** `createId`
-- Queue methods stay sync; store methods may be async.
-
-Example (Node file snapshot): [`examples/fs-snapshot-store`](../../../examples/fs-snapshot-store/main.ts). With [`@qkitt/queue-config`](../../queue-config), pass the instance as `{ strategy, impl }` under `stores`.

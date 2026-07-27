@@ -1,6 +1,8 @@
 # Composition
 
-Add layers as needed. Stack order: **bare → persist (optional) → worker → loop / dlq (optional)**.
+Add layers as needed. Stack order: **bare / durable queue → worker → loop / dlq (optional)**.
+
+Persistence is not a decorator: pass `store` into `buildQueue` when you need durability.
 
 [README](../README.md) · [Persistence](./persistence.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md) · [API](./api.md)
 
@@ -11,15 +13,15 @@ import { buildQueue, QueueFullError } from '@qkitt/queue'
 
 const queue = buildQueue<{ id: string }>()
 
-queue.enqueue({ id: '1' })
-queue.peek()    // { id: '1' }
-queue.size()    // 1
-queue.dequeue() // { id: '1' }
-queue.clear()
+await queue.enqueue({ id: '1' })
+queue.peek()           // { id: '1' }
+queue.size()           // 1
+await queue.dequeue()  // { id: '1' }
+await queue.clear()
 
 const bounded = buildQueue<number>({ maxSize: 100 })
 try {
-  bounded.enqueue(1)
+  await bounded.enqueue(1)
 } catch (e) {
   if (e instanceof QueueFullError) {
     // drop, wait, or reject
@@ -27,9 +29,11 @@ try {
 }
 ```
 
+Mutating methods return `Promise` (bare paths resolve immediately after the in-memory update). Prefer `tryDequeue` / `tryPeek` when `T` may be nullish.
+
 ## 2. Add a worker
 
-`withWorker` drains the queue with your async function. Defaults: auto-start, concurrency 1.
+`withWorker` drains the queue with claim/ack leases and your async function. Defaults: auto-start, concurrency 1.
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue'
@@ -50,79 +54,55 @@ queue.on('worker:failed', ({ item, error }) => {
   console.error(item.id, error)
 })
 
-queue.enqueue({ id: '1', url: 'https://example.com' })
+await queue.enqueue({ id: '1', url: 'https://example.com' })
 
 queue.stop()  // no new items; in-flight finish (does not wait)
 // await queue.gracefulStop({ flush: true })  // stop + wait in-flight + optional flush
 queue.start()
 ```
 
-**Failed items are not re-queued.** Use [`retryWorker`](#4-worker-helpers) for in-call retries, [dead letter / loop](./failure-routing.md) for failure routing, or handle `worker:failed` yourself.
+**Failed items are not re-queued by default.** Use [`retryWorker`](#4-worker-helpers) for in-call retries, [dead letter / loop](./failure-routing.md) for failure routing, or handle `worker:failed` yourself.
 
 Drain and shutdown: [Lifecycle](./lifecycle.md).
 
 ## 3. Add persistence
 
-Stack order matters: **persist wraps the bare queue; worker is outermost** so `dequeue` goes through the store.
+Pass a `RowStore` into the constructor — no wrapper layer:
 
 ```ts
 import {
   buildQueue,
   withWorker,
-  withPersist,
-  createMemorySnapshotStore,
+  createMemoryRowStore,
 } from '@qkitt/queue'
 
 type Job = { id: string; url: string }
 
-const store = createMemorySnapshotStore<Job>()
-// Stack: bare → persist → worker (persist inside, worker outside)
+const store = createMemoryRowStore<Job>()
+// Fresh process: hydrate before attaching the worker (hydrate rejects while workers run).
+const base = buildQueue<Job>({ store })
+await base.hydrate()
+
 const queue = withWorker(
-  withPersist(buildQueue<Job>(), store),
+  base,
   async (job) => {
     // handle job
   },
   { concurrency: 2 },
 )
 
-await queue.hydrate() // load from store before accepting work
-queue.enqueue({ id: '1', url: 'https://example.com' })
-await queue.flush()   // wait for pending saves before exit
+await queue.enqueue({ id: '1', url: 'https://example.com' })
+await queue.flush()   // wait for pending store writes before exit
 ```
 
-Built-ins: memory and Web Storage. For something else, implement `SnapshotStore` or `RowStore` and pass that instance instead ([Custom stores](./persistence.md#custom-stores)).
+Built-ins: memory and Web Storage (`localStorage` / `sessionStorage`). For something else, implement `RowStore` ([Custom stores](./persistence.md#custom-stores)).
 
 ### Persist lifecycle
 
-1. Build stack: bare → persist → worker (**persist inside, worker outside**).
-2. `await queue.hydrate()` before enqueue / before expecting workers to process restored items.
-3. Mutate as usual — `enqueue` / `dequeue` stay sync.
-4. `await queue.flush()` before process exit. Snapshot auto-save may debounce; `flush` promotes pending writes.
-
-Row-style persist (insert/remove per item) uses the same stack rule:
-
-```ts
-import {
-  buildQueue,
-  withPersist,
-  withWorker,
-  createMemoryRowStore,
-} from '@qkitt/queue'
-
-type Job = { id: string }
-
-const store = createMemoryRowStore<Job>()
-const queue = withWorker(
-  withPersist(buildQueue<Job>(), store),
-  async (job) => {
-    // handle job
-  },
-)
-
-await queue.hydrate()
-```
-
-The strategy is inferred from the store's method shape — `load`/`save` selects snapshot; `loadAll`/`insert`/`remove`/`clear` selects row. The public surface is `T` — you enqueue plain jobs; row ids are managed internally.
+1. Build: `buildQueue({ store })`.
+2. `await hydrate()` **before** `withWorker` when restoring after restart (or use `autoStart: false`, hydrate, then `start()`). Hydrate throws `HydrateWhileActiveError` while workers are active or rows are leased.
+3. Attach worker / loop / dlq; mutate as usual — durable ops await the write chain.
+4. `await flush()` before process exit.
 
 Full detail: [Persistence](./persistence.md).
 
@@ -231,7 +211,6 @@ const run = retryWorker(
 import {
   buildQueue,
   withWorker,
-  withPersist,
   pipelineWorker,
   retryWorker,
   createMemoryRowStore,
@@ -261,13 +240,13 @@ const run = retryWorker(
 )
 
 const queue = withWorker(
-  withPersist(buildQueue<EmailJob>(), store),
+  buildQueue<EmailJob>({ store }),
   run,
   { concurrency: 2 },
 )
 
 await queue.hydrate()
-queue.enqueue({ to: 'you@example.com', body: 'hi' })
+await queue.enqueue({ to: 'you@example.com', body: 'hi' })
 
 queue.on('worker:completed', ({ result }) => console.log('sent to', result))
 queue.on('worker:failed', ({ error }) => console.error(error))
@@ -275,7 +254,7 @@ queue.on('worker:failed', ({ error }) => console.error(error))
 
 ## 6. Optional: drive from config
 
-Prefer a declarative setup? [`@qkitt/queue-config`](../../queue-config) builds the same queue → persist → worker stacks from a JS/JSON object:
+Prefer a declarative setup? [`@qkitt/queue-config`](../../queue-config) builds the same stacks from a JS/JSON object:
 
 ```ts
 import { defineConfig, buildFromConfig } from '@qkitt/queue-config'
@@ -298,44 +277,43 @@ Every layer is typed. `on` returns an unsubscribe function. The emitter also wor
 | Layer | Events |
 | --- | --- |
 | Queue | `queue:enqueued`, `queue:dequeued`, `queue:emptied`, `queue:cleared` |
-| Worker | `worker:started`, `worker:completed`, `worker:failed`, `worker:idle`, `worker:pump-error` |
+| Worker | `worker:started`, `worker:completed`, `worker:failed`, `worker:requeued`, `worker:dropped`, `worker:idle`, `worker:pump-error` |
 | Dead letter | `dlq:enqueued`, `dlq:error` |
 | Loop | `loop:enqueued`, `loop:meta-override`, `loop:error` |
 | Router | `router:bound`, `router:unbound`, `router:published`, `router:unmatched`, `router:error` |
-| Snapshot | `persist:loaded`, `persist:saved`, `persist:error` |
-| Row | `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error` |
+| Persist | `persist:loaded`, `persist:lease-expired`, `persist:id-space-low`, `persist:error` |
 
 Events cost nothing when nobody is subscribed.
 
 ## Notes & pitfalls
 
-**Stack order matters.** Persist wraps the bare queue; worker is outermost. **Persist inside, worker outside.**
+**Durable mode is constructor options, not a wrapper.**
 
 ```ts
-// wrong — withPersist throws (worker already attached)
-withPersist(withWorker(buildQueue<T>(), run), store)
-
 // right
-withWorker(withPersist(buildQueue<T>(), store), run)
+withWorker(buildQueue<T>({ store }), run)
+
+// removed in 0.8 — no withPersist decorator
+// withPersist(buildQueue<T>(), store)
 ```
 
-**Await `hydrate()` before enqueue** when using persist, or mutations throw `QueueHydratingError`. Call `flush()` before process exit so debounced writes are not lost.
+**Await `hydrate()` after restart** when using a store, so restored rows become claimable. Call `flush()` before process exit so pending durable writes are not cut off mid-flight.
 
 ```ts
-const queue = withPersist(buildQueue<T>(), store)
-queue.enqueue(item)      // throws QueueHydratingError
+const queue = buildQueue<T>({ store })
 await queue.hydrate()
-queue.enqueue(item)      // fine
+await queue.enqueue(item)
+await queue.flush()
 ```
 
 **Nullish payloads need `tryDequeue()` / `tryPeek()`.** Plain `dequeue()` and `peek()` return `undefined` for both "empty" and a queued `undefined` — fine for most types, but use the `try*` variants when `T` includes `null` or `undefined`:
 
 ```ts
 const q = buildQueue<string | undefined>()
-q.enqueue(undefined)
+await q.enqueue(undefined)
 
-q.dequeue()       // undefined — the item, or an empty queue?
-q.tryDequeue()    // { value: undefined } — item present; undefined means empty
+await q.dequeue()     // undefined — the item, or an empty queue?
+await q.tryDequeue()  // { value: undefined } — item present; undefined means empty
 ```
 
 **Failed items are not re-queued.** Prefer [failure routing](./failure-routing.md) or handle `worker:failed` yourself:

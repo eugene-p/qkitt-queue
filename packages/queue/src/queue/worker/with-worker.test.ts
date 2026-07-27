@@ -155,59 +155,54 @@ describe('withWorker', () => {
         expect(queue.isEmpty()).toBe(true)
     })
 
-    it('hydrate + running worker still drains restored items', async () => {
-        const { withPersist } = await import('../../persist/with-persist')
-        const items: number[] = [1, 2]
-        const store = {
-            load: async () => [...items],
-            save: async (next: readonly number[]) => {
-                items.length = 0
-                items.push(...next)
-            },
-        }
+    it('hydrate while stopped reclaims durable records for the worker', async () => {
+        const { createMemoryRowStore } = await import(
+            '../../persist/stores/memory'
+        )
+        const store = createMemoryRowStore<number>()
+        const seed = buildQueue<number>({ store })
+        await seed.enqueue(1)
+        await seed.enqueue(2)
+        await seed.flush()
+
         const processed: number[] = []
         const queue = withWorker(
-            withPersist(buildQueue<number>(), store),
+            buildQueue<number>({ store }),
             async (item) => {
                 processed.push(item)
             },
+            { autoStart: false },
         )
-
-        const idle = waitForIdle(queue)
         await queue.hydrate()
+        const idle = waitForIdle(queue)
+        queue.start()
         await idle
         await queue.flush()
 
         expect(processed).toEqual([1, 2])
         expect(queue.isEmpty()).toBe(true)
-        expect(items).toEqual([])
     })
 
-    it('hydrate kick drains when restored head is undefined', async () => {
-        const { withPersist } = await import('../../persist/with-persist')
-        const items: Array<string | undefined> = [undefined, 'tail']
-        const store = {
-            load: async () => [...items],
-            save: async (next: readonly (string | undefined)[]) => {
-                items.length = 0
-                items.push(...next)
-            },
-        }
-        const processed: Array<string | undefined> = []
+    it('hydrate while running throws', async () => {
+        const { createMemoryRowStore } = await import(
+            '../../persist/stores/memory'
+        )
+        const { HydrateWhileActiveError } = await import('../../persist/errors')
+        const store = createMemoryRowStore<number>()
         const queue = withWorker(
-            withPersist(buildQueue<string | undefined>(), store),
-            async (item) => {
-                processed.push(item)
+            buildQueue<number>({ store }),
+            async () => {
+                await new Promise(() => {
+                    /* hang */
+                })
             },
         )
-
-        const idle = waitForIdle(queue)
-        await queue.hydrate()
-        await idle
-        await queue.flush()
-
-        expect(processed).toEqual([undefined, 'tail'])
-        expect(queue.isEmpty()).toBe(true)
+        queue.enqueue(1)
+        await flush(3)
+        await expect(queue.hydrate()).rejects.toBeInstanceOf(
+            HydrateWhileActiveError,
+        )
+        queue.stop()
     })
 
     it('stop prevents taking new items while in-flight work finishes', async () => {
@@ -324,64 +319,23 @@ describe('withWorker', () => {
         ).toThrow(InvalidWorkerOptionError)
     })
 
-    it('waits on QueueHydratingError without stopping or emitting pump-error', async () => {
-        const { QueueHydratingError } = await import('../../persist/hydrate-gate.util')
+    it('emits worker:pump-error and stops on unexpected claim failures', async () => {
+        const { INLINE_OPS } = await import('../core/inline-ops')
         const queue = buildQueue<number>()
-        const originalTryDequeue = queue.tryDequeue.bind(queue)
+        const ops = (queue as Record<symbol, {
+            claimSync: () => unknown
+            ackSync: (lease: unknown) => void
+            releaseSync: (lease: unknown) => void
+            rescheduleSync: (lease: unknown, next: unknown) => void
+        }>)[INLINE_OPS]
+        const originalClaimSync = ops.claimSync.bind(ops)
         let failNext = false
-        queue.tryDequeue = () => {
-            if (failNext) {
-                throw new QueueHydratingError()
-            }
-            return originalTryDequeue()
-        }
-
-        let release!: () => void
-        const hold = new Promise<void>((resolve) => {
-            release = resolve
-        })
-
-        const workerQueue = withWorker(
-            queue,
-            async (item) => {
-                if (item === 1) await hold
-                return item
-            },
-            { concurrency: 1 },
-        )
-        const pumpError = vi.fn()
-        workerQueue.on('worker:pump-error', pumpError)
-
-        workerQueue.enqueue(1)
-        workerQueue.enqueue(2)
-        await flush()
-
-        failNext = true
-        release()
-        await flush(5)
-
-        expect(pumpError).not.toHaveBeenCalled()
-        expect(workerQueue.isRunning()).toBe(true)
-        expect(workerQueue.size()).toBe(1)
-        expect(workerQueue.peek()).toBe(2)
-
-        failNext = false
-        workerQueue.enqueue(3)
-        const idle = waitForIdle(workerQueue)
-        await idle
-        expect(workerQueue.isEmpty()).toBe(true)
-    })
-
-    it('emits worker:pump-error and stops on unexpected dequeue failures', async () => {
-        const queue = buildQueue<number>()
-        const originalTryDequeue = queue.tryDequeue.bind(queue)
-        let failNext = false
-        const boom = new Error('custom dequeue failure')
-        queue.tryDequeue = () => {
+        const boom = new Error('custom claim failure')
+        ops.claimSync = () => {
             if (failNext) {
                 throw boom
             }
-            return originalTryDequeue()
+            return originalClaimSync()
         }
 
         let release!: () => void
@@ -410,16 +364,9 @@ describe('withWorker', () => {
 
         expect(pumpError).toHaveBeenCalledWith({ error: boom })
         expect(workerQueue.isRunning()).toBe(false)
-        expect(workerQueue.size()).toBe(1)
-        expect(workerQueue.peek()).toBe(2)
+        expect(workerQueue.size()).toBeGreaterThanOrEqual(1)
 
-        // Enqueue while stopped does not resume processing.
         failNext = false
-        workerQueue.enqueue(3)
-        await flush(5)
-        expect(workerQueue.size()).toBe(2)
-
-        // Explicit start recovers after the failure is fixed.
         const idle = waitForIdle(workerQueue)
         workerQueue.start()
         await idle

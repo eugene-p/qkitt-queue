@@ -1,92 +1,110 @@
-import type {
-    RowPersistOptions,
-    RowRecord,
-    RowStore,
-    RowStoreHandle,
-    SnapshotPersistOptions,
-    SnapshotStore,
-    SnapshotStoreHandle,
-} from '../contracts'
-
-export type MemorySnapshotStore<T> = SnapshotStore<T> & {
-    /** Live in-memory snapshot (mutated by `save`). */
-    readonly data: T[]
-}
+import type { RowRecord, RowStore } from '../contracts'
 
 export type MemoryRowStore<T> = RowStore<T> & {
-    /** Live rows head → tail (mutated by insert/remove/clear). */
+    /** Live rows (mutated by put/remove/clear). Order is insertion-ish, not FIFO. */
     readonly rows: RowRecord<T>[]
 }
 
-/** In-process snapshot store. Useful for tests and non-durable queues. */
-export const createMemorySnapshotStore = <T>(
-    initial: readonly T[] = [],
-    options?: SnapshotPersistOptions,
-): MemorySnapshotStore<T> & SnapshotStoreHandle<T> => {
-    const data: T[] = [...initial]
+const cloneRecord = <T>(row: RowRecord<T>): RowRecord<T> => ({
+    id: row.id,
+    item: row.item,
+    availableAt: row.availableAt,
+    leaseGeneration: row.leaseGeneration,
+    leaseExpiresAt: row.leaseExpiresAt,
+})
 
-    return {
-        get data() {
-            return data
-        },
-        load: () => data.slice(),
-        save: (items) => {
-            data.length = 0
-            data.push(...items)
-        },
-        ...(options !== undefined ? { persistOptions: options } : {}),
-    }
+const assignRecord = <T>(target: RowRecord<T>, source: RowRecord<T>): void => {
+    // id is the map key and does not change on upsert.
+    target.item = source.item
+    target.availableAt = source.availableAt
+    target.leaseGeneration = source.leaseGeneration
+    target.leaseExpiresAt = source.leaseExpiresAt
 }
 
-/** In-process row store with stable ids. */
+/**
+ * In-process row store with numeric ids and full row state.
+ *
+ * Hot path: O(1) put/remove via id→index map + swap-remove.
+ * - Upsert of an existing id mutates the stored row in place (no alloc).
+ * - Insert of a new id **takes ownership** of the passed record (no clone).
+ *   Callers must not mutate the object after `put` (the queue always allocates
+ *   a fresh record per write).
+ * - `loadAll` still returns clones so external snapshots are isolated.
+ */
 export const createMemoryRowStore = <T>(
     initial: readonly RowRecord<T>[] = [],
-    options?: RowPersistOptions,
-): MemoryRowStore<T> & RowStoreHandle<T> => {
-    const rows: RowRecord<T>[] = initial.map((row) => ({
-        id: row.id,
-        item: row.item,
-    }))
-    // id → index for O(1) upsert/remove lookup (splice still shifts the array).
-    const indexById = new Map<string, number>()
-    for (let i = 0; i < rows.length; i += 1) {
-        indexById.set(rows[i]!.id, i)
+): MemoryRowStore<T> => {
+    const rows: RowRecord<T>[] = []
+    /** id → index in `rows`. */
+    const indexById = new Map<number, number>()
+
+    for (let i = 0; i < initial.length; i += 1) {
+        const next = cloneRecord(initial[i]!)
+        indexById.set(next.id, rows.length)
+        rows.push(next)
     }
 
-    const reindexFrom = (start: number): void => {
-        for (let i = start; i < rows.length; i += 1) {
-            indexById.set(rows[i]!.id, i)
+    const putOne = (record: RowRecord<T>): void => {
+        const index = indexById.get(record.id)
+        if (index !== undefined) {
+            assignRecord(rows[index]!, record)
+            return
         }
+        // Ownership of `record` — avoids a clone on every durable enqueue.
+        indexById.set(record.id, rows.length)
+        rows.push(record)
+    }
+
+    const removeOne = (id: number): void => {
+        const index = indexById.get(id)
+        if (index === undefined) return
+        const last = rows.length - 1
+        if (index !== last) {
+            const moved = rows[last]!
+            rows[index] = moved
+            indexById.set(moved.id, index)
+        }
+        rows.pop()
+        indexById.delete(id)
     }
 
     return {
         get rows() {
             return rows
         },
-        loadAll: () => rows.map((row) => ({ id: row.id, item: row.item })),
-        insert: (record) => {
-            // Upsert by id so re-insert matches web-storage row store semantics
-            // (order list stays unique; payload is replaced).
-            const index = indexById.get(record.id)
-            const next = { id: record.id, item: record.item }
-            if (index !== undefined) {
-                rows[index] = next
-            } else {
-                indexById.set(record.id, rows.length)
-                rows.push(next)
+        loadAll: () => {
+            const n = rows.length
+            const out = new Array<RowRecord<T>>(n)
+            for (let i = 0; i < n; i += 1) {
+                out[i] = cloneRecord(rows[i]!)
             }
+            return out
         },
-        remove: (id) => {
-            const index = indexById.get(id)
-            if (index === undefined) return
-            rows.splice(index, 1)
-            indexById.delete(id)
-            reindexFrom(index)
-        },
+        put: putOne,
+        remove: removeOne,
         clear: () => {
             rows.length = 0
             indexById.clear()
         },
-        ...(options !== undefined ? { persistOptions: options } : {}),
+        putBatch: (records) => {
+            for (let i = 0; i < records.length; i += 1) {
+                putOne(records[i]!)
+            }
+        },
+        removeBatch: (ids) => {
+            for (let i = 0; i < ids.length; i += 1) {
+                removeOne(ids[i]!)
+            }
+        },
+        replaceAll: (records) => {
+            rows.length = 0
+            indexById.clear()
+            for (let i = 0; i < records.length; i += 1) {
+                // Clone on replaceAll: input may be reused / frozen by callers.
+                const next = cloneRecord(records[i]!)
+                indexById.set(next.id, rows.length)
+                rows.push(next)
+            }
+        },
     }
 }

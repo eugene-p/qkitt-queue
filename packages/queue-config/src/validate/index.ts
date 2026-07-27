@@ -32,7 +32,7 @@ export const validateJsConfig = <TConfig extends SystemConfig>(
  * ```ts
  * export default defineConfig({
  *   stores: {
- *     jobs: { adapter: 'memory', strategy: 'row' },
+ *     jobs: { adapter: 'memory' },
  *   },
  *   queues: {
  *     jobs: {

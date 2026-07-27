@@ -60,15 +60,10 @@ export const parseSystemConfigValue = (
     }
 
     const storeNames = new Set(Object.keys(stores))
-    const storeStrategies = new Map<string, 'snapshot' | 'row'>()
-    for (const [name, def] of Object.entries(stores)) {
-        storeStrategies.set(name, def.strategy)
-    }
 
     const ctx: ParseCtx = {
         allowJs: options.allowJs,
         storeNames,
-        storeStrategies,
     }
 
     // Duplicate web storage keys (adapter + key) corrupt each other.

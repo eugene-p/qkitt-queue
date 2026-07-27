@@ -1,4 +1,4 @@
-import type { EventCallback, EventMap, MergeEventMaps } from '../../events'
+import type { EventMap, MergeEventMaps } from '../../events'
 import { InvalidQueueCompositionError } from '../../persist/errors'
 import {
     decorateQueue,
@@ -12,34 +12,23 @@ import {
 } from '../core/layers.util'
 import type { QueueEvents } from '../core/queue'
 import type { QueueWithWorker, WorkerEvents } from '../worker/with-worker'
+import { configureDlqRecovery } from '../worker/recovery.util'
 
 /** Minimal enqueue surface for a dead-letter destination. */
 export type DeadLetterTarget<U> = {
-    enqueue: (item: U) => void
+    enqueue: (item: U) => void | Promise<void>
 }
 
 export type WithDeadLetterOptions<T, U = T> = {
-    /** Remap the failed item before enqueue. Default: identity. */
     map?: (item: T, error: unknown) => U
-    /** Skip dead-letter enqueue when false. Default: always enqueue. */
     filter?: (item: T, error: unknown) => boolean
 }
 
 export type DeadLetterEvents<T, U = T> = {
-    /** Fired after a successful dead-letter enqueue. */
     'dlq:enqueued': { item: T; error: unknown; deadLetterItem: U }
-    /**
-     * Fired when `filter`, `map`, or destination `enqueue` throws.
-     * {@link DeadLetterEnqueueError} wraps the original failure as `cause`
-     * (often {@link import('../core/queue').QueueFullError}).
-     */
-    'dlq:error': { item: T; error: unknown; cause: DeadLetterEnqueueError }
+    'dlq:error': { item: T; error: unknown; cause: unknown }
 }
 
-/**
- * Worker queue events plus dead-letter events. Re-merges {@link WorkerEvents}
- * so they are not lost when the input event map is only inferred as queue events.
- */
 export type DeadLetterQueueEvents<
     T,
     U,
@@ -50,7 +39,6 @@ export type DeadLetterQueueEvents<
     DeadLetterEvents<T, U>
 >
 
-/** Thrown when {@link WithDeadLetterOptions} / destination pairing is invalid. */
 export class InvalidDeadLetterOptionError extends Error {
     override readonly name = 'InvalidDeadLetterOptionError'
 
@@ -59,7 +47,6 @@ export class InvalidDeadLetterOptionError extends Error {
     }
 }
 
-/** Emitted via `dlq:error` when dead-letter map/enqueue fails. */
 export class DeadLetterEnqueueError extends Error {
     override readonly name = 'DeadLetterEnqueueError'
     override readonly cause: unknown
@@ -78,22 +65,12 @@ export class DeadLetterEnqueueError extends Error {
 }
 
 /**
- * Forward `worker:failed` items to a **distinct** dead-letter destination via `enqueue`.
+ * Register a dead-letter destination used when recovery policy is **`fail`**.
  *
- * **Composition:** apply after the worker:
- * `withDeadLetter(withWorker(withPersist(buildQueue(), store), run), dlq)`.
+ * Handoff order: durable dest enqueue first, then source `ack`. Handoff
+ * failure emits `dlq:error` and loops the source item back with backoff.
  *
- * Destination must not be the same reference as `source`. For same-queue
- * re-entry with hop metadata, use {@link import('../loop/with-loop').withLoop}.
- *
- * Destination `filter` / `map` / `enqueue` failures emit `dlq:error` with
- * {@link DeadLetterEnqueueError} (does not rethrow). A full bounded sink is
- * misconfiguration — size or drain the destination and subscribe to `dlq:error`.
- *
- * Multiple `withDeadLetter` layers each subscribe and forward (multi-destination).
- *
- * @throws {InvalidQueueCompositionError} if `source` has no worker layer
- * @throws {InvalidDeadLetterOptionError} if `source === deadLetter`
+ * **Composition:** `withDeadLetter(withWorker(buildQueue({ store }), run), dlq)`.
  */
 export const withDeadLetter = <
     T,
@@ -117,43 +94,19 @@ export const withDeadLetter = <
         )
     }
 
-    // Runtime reference check (types differ: worker queue vs enqueue target).
     if ((source as object) === (deadLetter as object)) {
         throw new InvalidDeadLetterOptionError(
             'withDeadLetter: destination must differ from source; use withLoop for same-queue re-entry',
         )
     }
 
-    const map = options.map ?? ((item: T) => item as unknown as U)
-    const filter = options.filter ?? (() => true)
-
-    const inner = source
-    const emitInner = inner.emit as (
-        eventName: string,
-        data: unknown,
-    ) => void
-    const onInner = inner.on as (
-        eventName: string,
-        callback: EventCallback<unknown>,
-    ) => () => void
-
-    onInner('worker:failed', (payload) => {
-        const { item, error } = payload as { item: T; error: unknown }
-        try {
-            if (!filter(item, error)) return
-            const deadLetterItem = map(item, error)
-            deadLetter.enqueue(deadLetterItem)
-            emitInner('dlq:enqueued', { item, error, deadLetterItem })
-        } catch (cause) {
-            const wrapped = new DeadLetterEnqueueError(
-                'withDeadLetter: failed to enqueue dead-letter item',
-                { cause, item, workerError: error },
-            )
-            emitInner('dlq:error', { item, error, cause: wrapped })
-        }
+    configureDlqRecovery(source, {
+        target: deadLetter as DeadLetterTarget<unknown>,
+        map: options.map as WithDeadLetterOptions<T>['map'],
+        filter: options.filter,
     })
 
-    const api = markQueueLayer(decorateQueue(inner, {}), DLQ_LAYER)
+    const api = markQueueLayer(decorateQueue(source, {}), DLQ_LAYER)
 
     return api as unknown as QueueWithWorker<
         T,
@@ -163,5 +116,4 @@ export const withDeadLetter = <
         PreserveQueueExtras<TQueue>
 }
 
-/** Short alias for {@link withDeadLetter}. */
 export const withDlq = withDeadLetter

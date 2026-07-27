@@ -3,12 +3,9 @@ import {
     buildRouter,
     withDlq,
     withLoop,
-    withPersist,
     withWorker,
     type RouteTarget,
     type Router,
-    type RowStore,
-    type SnapshotStore,
     type WithDeadLetterOptions,
     type WithLoopOptions,
     type WithWorkerOptions,
@@ -25,100 +22,35 @@ import type {
     LoopConfig,
     QueueConfig,
     ResolvedStore,
-    StoreDefinition,
     SystemConfig,
     WorkerConfig,
 } from './types'
 import { parseSystemConfig, validateJsConfig } from './validate'
 import { dlqTargetName } from './validate/queue'
 
-const resolveWorker = (
+const resolveWorker = <T>(
     worker: WorkerConfig,
-): { run: WorkerFn<unknown, unknown>; options: WithWorkerOptions } => {
+): { run: WorkerFn<T, unknown>; options: WithWorkerOptions<T> } => {
     if (typeof worker === 'function') {
-        return { run: worker, options: {} }
+        return { run: worker as WorkerFn<T, unknown>, options: {} }
     }
-    const { run, concurrency, autoStart } = worker
+    const { run, concurrency, autoStart, onFailure } = worker
     return {
-        run,
+        run: run as WorkerFn<T, unknown>,
         options: {
             ...(concurrency !== undefined ? { concurrency } : {}),
             ...(autoStart !== undefined ? { autoStart } : {}),
+            ...(onFailure !== undefined
+                ? { onFailure: onFailure as WithWorkerOptions<T>['onFailure'] }
+                : {}),
         },
     }
 }
 
-/**
- * Bridge a configured queue into the router's minimal {@link RouteTarget}
- * surface. `ConfiguredQueue.enqueue` is typed as `(item: T) => void` while
- * `RouteTarget` expects `RouteMessage`; at runtime router publishes always
- * enqueue envelopes. Kept as an explicit helper so the variance is documented
- * rather than silenced with ad-hoc double casts at call sites.
- */
 const asRouteTarget = <T>(queue: ConfiguredQueue<T>): RouteTarget =>
     queue as unknown as RouteTarget
 
-type SnapshotStoreWithOptions<T> = SnapshotStore<T> & {
-    persistOptions?: {
-        autoSave?: boolean
-        autoSaveDebounceMs?: number
-    }
-}
-
-type RowStoreWithOptions<T> = RowStore<T> & {
-    persistOptions?: {
-        createId?: () => string
-    }
-}
-
-/**
- * Merge queue-level persist options onto a store without clobbering
- * options already set on the store instance (e.g. factory defaults).
- */
-const withSnapshotPersistOptions = <T>(
-    store: SnapshotStoreWithOptions<T>,
-    persist: {
-        autoSave?: boolean
-        autoSaveDebounceMs?: number
-    },
-): SnapshotStoreWithOptions<T> => {
-    const hasQueueOpts =
-        persist.autoSave !== undefined ||
-        persist.autoSaveDebounceMs !== undefined
-    if (!hasQueueOpts) return store
-
-    return {
-        ...store,
-        persistOptions: {
-            ...store.persistOptions,
-            ...(persist.autoSave !== undefined
-                ? { autoSave: persist.autoSave }
-                : {}),
-            ...(persist.autoSaveDebounceMs !== undefined
-                ? { autoSaveDebounceMs: persist.autoSaveDebounceMs }
-                : {}),
-        },
-    }
-}
-
-const withRowPersistOptions = <T>(
-    store: RowStoreWithOptions<T>,
-    persist: { createId?: () => string },
-): RowStoreWithOptions<T> => {
-    if (persist.createId === undefined) return store
-
-    return {
-        ...store,
-        persistOptions: {
-            ...store.persistOptions,
-            createId: persist.createId,
-        },
-    }
-}
-
-const resolveLoopOptions = <T>(
-    loop: LoopConfig,
-): WithLoopOptions<T, T> => {
+const resolveLoopOptions = <T>(loop: LoopConfig): WithLoopOptions<T, T> => {
     if (loop === true) return {}
     return {
         ...(loop.map !== undefined ? { map: loop.map } : {}),
@@ -138,63 +70,53 @@ const resolveDlqOptions = <T>(
 }
 
 /**
- * Build one queue through persist → worker → loop.
+ * Build one queue: `buildQueue({ store? })` → worker → loop.
  * Dead-letter is applied in a second pass so targets can resolve.
  */
 const buildQueueFromConfig = <T>(
     queueName: string,
     queueConfig: QueueConfig,
-    storeDefs: Record<string, StoreDefinition> | undefined,
+    storeDefs: Record<string, unknown> | undefined,
     resolvedStores: Record<string, ResolvedStore<T>>,
 ): ConfiguredQueue<T> => {
-    const buildOptions: { name: string; maxSize?: number } = {
+    const buildOptions: {
+        name: string
+        maxSize?: number
+        store?: ResolvedStore<T>
+        leaseTtlMs?: number
+    } = {
         name: queueName,
     }
     if (queueConfig.maxSize !== undefined) {
         buildOptions.maxSize = queueConfig.maxSize
     }
 
-    let queue: ConfiguredQueue<T> = buildQueue<T>(buildOptions)
-
     if (queueConfig.persist) {
         const storeName = queueConfig.persist.store
-        const definition = storeDefs?.[storeName]
         const store = resolvedStores[storeName]
-
-        if (!definition || !store) {
+        if (!storeDefs?.[storeName] || !store) {
             return configError(
                 'STORE_NOT_FOUND',
                 `config.queues.${queueName}.persist.store "${storeName}" is not defined in config.stores`,
                 `config.queues.${queueName}.persist.store`,
             )
         }
-
-        if (definition.strategy === 'snapshot') {
-            queue = withPersist(
-                queue,
-                withSnapshotPersistOptions(
-                    store as SnapshotStoreWithOptions<T>,
-                    queueConfig.persist,
-                ),
-            )
-        } else {
-            queue = withPersist(
-                queue,
-                withRowPersistOptions(
-                    store as RowStoreWithOptions<T>,
-                    queueConfig.persist,
-                ),
-            )
+        buildOptions.store = store
+        if (queueConfig.persist.leaseTtlMs !== undefined) {
+            buildOptions.leaseTtlMs = queueConfig.persist.leaseTtlMs
         }
     }
 
+    let queue = buildQueue<T>(buildOptions) as ConfiguredQueue<T>
+
     if (queueConfig.worker) {
-        const { run, options: workerOptions } = resolveWorker(queueConfig.worker)
-        queue = withWorker(queue, run as WorkerFn<T, unknown>, workerOptions)
+        const { run, options: workerOptions } = resolveWorker<T>(
+            queueConfig.worker,
+        )
+        queue = withWorker(queue, run, workerOptions)
     }
 
     if (queueConfig.loop !== undefined) {
-        // Layer wrappers are generic over payload T; config queues stay untyped at edges.
         queue = withLoop(
             queue as never,
             resolveLoopOptions(queueConfig.loop),
@@ -288,153 +210,60 @@ const buildConfiguredRouter = <T>(
     return built
 }
 
-type QueueLifecycleMethod = 'hydrate' | 'flush' | 'persist'
-
-/** Run a lifecycle method on every queue that exposes it. */
 const runOnQueues = async <T>(
     queues: Record<string, ConfiguredQueue<T>>,
-    method: QueueLifecycleMethod,
+    method: 'hydrate' | 'flush',
 ): Promise<void> => {
     const tasks: Promise<void>[] = []
     for (const queue of Object.values(queues)) {
         const fn = queue[method]
         if (typeof fn === 'function') {
-            tasks.push(fn.call(queue))
+            tasks.push(Promise.resolve(fn.call(queue)))
         }
     }
     await Promise.all(tasks)
 }
 
-const createSystemLifecycle = <T>(
-    queues: Record<string, ConfiguredQueue<T>>,
-): {
-    hydrateAll: () => Promise<void>
-    flushAll: () => Promise<void>
-    persistAll: () => Promise<void>
-} => ({
-    hydrateAll: () => runOnQueues(queues, 'hydrate'),
-    flushAll: () => runOnQueues(queues, 'flush'),
-    persistAll: () => runOnQueues(queues, 'persist'),
-})
-
-const shouldHydrateConfig = (validated: SystemConfig): boolean =>
-    validated.hydrate ??
-    Object.values(validated.queues).some((q) => q.persist !== undefined)
-
 /**
- * Assemble a configured system from an already-validated config.
- * Does not re-validate or hydrate.
+ * Build queues (and optional router) from a system config.
  */
-const assembleSystem = <TConfig extends SystemConfig, T>(
-    validated: TConfig,
-    options: BuildFromConfigOptions,
+export const buildFromConfig = <TConfig extends SystemConfig, T = unknown>(
+    config: TConfig,
+    options: BuildFromConfigOptions = {},
 ): ConfiguredSystem<TConfig, T> => {
+    const validated = options.skipValidate
+        ? config
+        : validateJsConfig(config)
+
     const resolvedStores = resolveAllStores<T>(validated.stores, options)
     const queues = buildQueues<TConfig, T>(validated, resolvedStores)
-
     const queueMap = queues as Record<string, ConfiguredQueue<T>>
-    const router = validated.router
-        ? buildConfiguredRouter(validated.router, queueMap)
-        : undefined
 
-    const { hydrateAll, flushAll, persistAll } =
-        createSystemLifecycle(queueMap)
+    const router =
+        validated.router !== undefined
+            ? buildConfiguredRouter(validated.router, queueMap)
+            : undefined
 
     return {
         queues,
         stores: resolvedStores as ConfiguredSystem<TConfig, T>['stores'],
         router: router as ConfiguredSystem<TConfig, T>['router'],
-        hydrateAll,
-        flushAll,
-        persistAll,
-        config: freezeConfig(validated),
-    } satisfies ConfiguredSystem<TConfig, T>
-}
-
-/**
- * Build named stores, queues, optional workers, and an optional topic router
- * from a single {@link SystemConfig}.
- *
- * ```ts
- * const config = defineConfig({
- *   stores: {
- *     jobsDb: { adapter: 'memory', strategy: 'row' },
- *     redis: { strategy: 'row', impl: createRedisRowStore() },
- *   },
- *   queues: {
- *     jobs: {
- *       persist: { store: 'jobsDb' },
- *       worker: { run: handleJob, concurrency: 2 },
- *     },
- *   },
- *   router: { bindings: [{ pattern: 'jobs.#', queue: 'jobs' }] },
- * })
- *
- * const system = await buildFromConfig(config)
- * ```
- *
- * Order: resolve stores → queue(+name) → persist → worker → loop → dlq →
- * router bind → hydrate.
- */
-export const buildFromConfig = async <
-    TConfig extends SystemConfig,
-    T = unknown,
->(
-    config: TConfig,
-    options: BuildFromConfigOptions = {},
-): Promise<ConfiguredSystem<TConfig, T>> => {
-    const validated = options.skipValidate
-        ? config
-        : validateJsConfig(config)
-
-    const system = assembleSystem<TConfig, T>(validated, options)
-
-    if (shouldHydrateConfig(validated)) {
-        await system.hydrateAll()
+        hydrateAll: () => runOnQueues(queueMap, 'hydrate'),
+        flushAll: () => runOnQueues(queueMap, 'flush'),
+        config: freezeConfig(validated) as Readonly<TConfig>,
     }
-
-    return system
 }
 
-/**
- * Synchronous build when no hydrate is required.
- *
- * Use when `hydrate: false`, or when no queue has `persist` (nothing to load).
- * Throws {@link ConfigValidationError} with code `ASYNC_REQUIRED` if hydrate
- * would run — use {@link buildFromConfig} instead.
- */
-export const buildFromConfigSync = <
-    TConfig extends SystemConfig,
-    T = unknown,
->(
-    config: TConfig,
-    options: BuildFromConfigOptions = {},
-): ConfiguredSystem<TConfig, T> => {
-    const validated = options.skipValidate
-        ? config
-        : validateJsConfig(config)
+export const buildFromConfigSync = buildFromConfig
 
-    if (shouldHydrateConfig(validated)) {
-        return configError(
-            'ASYNC_REQUIRED',
-            'buildFromConfigSync cannot hydrate persisted queues; ' +
-                'pass hydrate: false or use await buildFromConfig(...)',
-        )
-    }
-
-    return assembleSystem<TConfig, T>(validated, options)
-}
-
-/**
- * Parse **data-only** JSON, validate, and build the system.
- * Workers / custom store `impl` cannot appear in JSON — use a JS module and
- * {@link buildFromConfig} instead.
- */
-export const buildFromJson = async <T = unknown>(
+export const buildFromJson = <T = unknown>(
     json: string,
-    options: BuildFromConfigOptions = {},
-): Promise<ConfiguredSystem<SystemConfig, T>> => {
-    const parsed = parseSystemConfig(json)
-    // Already validated (data-only); skip second full walk.
-    return buildFromConfig(parsed, { ...options, skipValidate: true })
+    options?: BuildFromConfigOptions,
+): ConfiguredSystem<SystemConfig, T> => {
+    const config = parseSystemConfig(json)
+    return buildFromConfig(config, options)
 }
+
+export const defineConfig = <TConfig extends SystemConfig>(
+    config: TConfig,
+): TConfig => validateJsConfig(config) as TConfig

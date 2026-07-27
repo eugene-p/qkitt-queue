@@ -4,45 +4,69 @@ import {
     type MergeEventMaps,
 } from '../../events'
 import { createSubscriptionCounts } from '../../events/subscription-counts'
+import { LeaseMismatchError } from '../../persist/errors'
 import { isIntegerInRange } from '../../util/number.util'
+import {
+    isInvalidStaticDelay,
+    resolveDelayMs,
+} from '../../util/delay-policy.util'
+import { isNonNegativeFinite } from '../../util/number.util'
 import type { WorkerFn } from '../../worker/types'
 import {
     decorateQueue,
     type PreserveQueueExtras,
 } from '../core/forward.util'
+import { getInlineOps } from '../core/inline-ops'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
-import type { Queue, QueueEvents } from '../core/queue'
-import { QueueHydratingError } from '../../persist/hydrate-gate.util'
+import type { Lease, Queue, QueueEvents } from '../core/queue'
+import { getQueueName } from '../core/queue-name.util'
+import {
+    getLoopHops,
+    queueMetaEqual,
+    readMappedQueueMeta,
+    stampLoopHops,
+    QKITT_QUEUE_KEY,
+} from '../loop/hop-meta.util'
 import {
     gracefulStop as runGracefulStop,
     type GracefulStopable,
     type GracefulStopOptions,
 } from './graceful-stop'
 import { InvalidWorkerOptionError } from './invalid-worker-option-error'
+import {
+    attachRecoveryConfig,
+    DLQ_RETRY_BACKOFF_MS,
+    getRecoveryConfig,
+    type LoopMapContext,
+    type RecoveryConfig,
+    type RecoveryPolicy,
+    type RecoveryPolicyResult,
+} from './recovery.util'
 
 export { InvalidWorkerOptionError } from './invalid-worker-option-error'
+export type {
+    RecoveryPolicy,
+    RecoveryPolicyResult,
+} from './recovery.util'
 
 export type WorkerEvents<T, R = unknown> = {
-    /** Fired just before the worker runs an item. */
     'worker:started': { item: T }
-    /** Fired when the worker resolves successfully. */
     'worker:completed': { item: T; result: R }
-    /** Fired when the worker throws or rejects. */
     'worker:failed': { item: T; error: unknown }
-    /** Fired when nothing is in-flight and the queue is empty. */
+    'worker:requeued': { item: T; error?: unknown; delayMs?: number }
+    'worker:dropped': { item: T; error?: unknown }
     'worker:idle': undefined
-    /**
-     * Fired when `dequeue` throws an unexpected error (not hydrate).
-     * The worker stops taking new items; call `start()` after fixing the cause.
-     */
     'worker:pump-error': { error: unknown }
 }
 
-export type WithWorkerOptions = {
-    /** Max items processed at the same time. Defaults to 1. Must be a safe integer ≥ 1. */
+export type WithWorkerOptions<T = unknown> = {
     concurrency?: number
-    /** Start pumping immediately. Defaults to true. */
     autoStart?: boolean
+    /**
+     * Recovery policy after worker failure. Default `'fail'` (DLQ if
+     * registered via withDeadLetter, else drop).
+     */
+    onFailure?: RecoveryPolicy<T>
 }
 
 type WorkerQueueEvents<T, R, TEvents extends EventMap> = MergeEventMaps<
@@ -51,20 +75,11 @@ type WorkerQueueEvents<T, R, TEvents extends EventMap> = MergeEventMaps<
 >
 
 export type WorkerControls = {
-    /** Begin processing queued items. */
     start: () => void
-    /** Stop taking new items. In-flight work still finishes. */
     stop: () => void
-    /**
-     * Stop taking new items, wait for in-flight work, optionally `flush`.
-     * Remaining queued items are left in place (not a full drain).
-     */
     gracefulStop: (options?: GracefulStopOptions) => Promise<void>
-    /** Whether the worker is allowed to take new items. */
     isRunning: () => boolean
-    /** Whether any items are currently being processed. */
     isProcessing: () => boolean
-    /** Number of items currently being processed. */
     activeCount: () => number
 }
 
@@ -84,30 +99,23 @@ const resolveConcurrency = (value: number | undefined): number => {
     return concurrency
 }
 
-/** Thenable check — same unwrapping surface as `await` (not only native Promise). */
 const isThenable = (value: unknown): value is PromiseLike<unknown> =>
     value != null && typeof (value as { then?: unknown }).then === 'function'
 
+const isPlainQueueMeta = (item: unknown): unknown => {
+    if (item === null || typeof item !== 'object') return undefined
+    if (!Object.prototype.hasOwnProperty.call(item, QKITT_QUEUE_KEY)) {
+        return undefined
+    }
+    return (item as Record<string, unknown>)[QKITT_QUEUE_KEY]
+}
+
 /**
- * Wrap a queue with a worker that dequeues and processes items FIFO-style.
- * Listens for `queue:enqueued` and pumps work up to `concurrency`.
+ * Wrap a queue with a worker that claims and processes items.
  *
- * Failed items are **not** re-queued. Use `retryWorker` for in-call retries,
- * `withDeadLetter` / `withDlq` for a separate sink, `withLoop` to re-enter the
- * same queue with hop meta, or handle `worker:failed` yourself.
- *
- * **Composition (required when using persist):** worker must be the **outer**
- * decorator so `dequeue` hits the persist override:
- * `withWorker(withPersist(buildQueue(), store), worker)` — not the reverse.
- *
- * Inner decorator extras (e.g. `flush` from row/snapshot persist) are preserved
- * at runtime and in the return type.
- *
- * While a stacked persist layer is hydrating, `tryDequeue` throws
- * {@link QueueHydratingError}; the pump waits for the post-hydrate
- * `queue:enqueued` kick. Any other dequeue failure emits `worker:pump-error`
- * and stops the worker. Nullish payloads are valid — the pump uses
- * {@link Queue.tryDequeue} so emptiness is structural, not value-based.
+ * Default recovery is `'fail'`: DLQ when registered, else drop. Use
+ * `onFailure: 'loop'` or {@link import('../loop/with-loop').withLoop} to requeue.
+ * Success always `ack`s the lease.
  */
 export const withWorker = <
     T,
@@ -117,11 +125,16 @@ export const withWorker = <
 >(
     queue: TQueue & Queue<T, TEvents>,
     worker: WorkerFn<T, R>,
-    options: WithWorkerOptions = {},
+    options: WithWorkerOptions<T> = {},
 ): QueueWithWorker<T, R, WorkerQueueEvents<T, R, TEvents>> &
     PreserveQueueExtras<TQueue> => {
     const concurrency = resolveConcurrency(options.concurrency)
     const autoStart = options.autoStart ?? true
+    const policyExplicit = options.onFailure !== undefined
+    const recovery: RecoveryConfig<T> = {
+        policyExplicit,
+        policy: options.onFailure ?? 'fail',
+    }
 
     const inner = queue
     const emitInner = inner.emit as (
@@ -136,6 +149,8 @@ export const withWorker = <
         started: 'worker:started',
         completed: 'worker:completed',
         failed: 'worker:failed',
+        requeued: 'worker:requeued',
+        dropped: 'worker:dropped',
         idle: 'worker:idle',
         pumpError: 'worker:pump-error',
     })
@@ -147,24 +162,248 @@ export const withWorker = <
 
     let running = false
     let active = 0
-    /** Prevents nested pump when a sync worker finishes inside the pump loop. */
     let pumping = false
+    /** Set when work arrives while a pump await is in flight. */
+    let pumpAgain = false
+
+    /** Idle only when nothing is pending (including delayed rows). */
+    const isIdleForWorker = (): boolean => inner.size() === 0
+
+    const inlineOps = getInlineOps<T>(inner)
 
     const finishItem = (): void => {
         active -= 1
-
-        if (active === 0 && inner.isEmpty() && subs.idle > 0) {
+        if (active === 0 && subs.idle > 0 && isIdleForWorker()) {
             emitInner('worker:idle', undefined)
         }
-
-        // Sync completions re-enter the open `while` via `active--` only.
-        // Async completions need an explicit pump after the microtask.
         if (!pumping) {
             pump()
         }
     }
 
-    const processItem = (item: T): void => {
+    const settleAck = async (lease: Lease<T>): Promise<void> => {
+        if (inlineOps) {
+            inlineOps.ackSync(lease)
+            return
+        }
+        await inner.ack(lease)
+    }
+
+    const settleReschedule = async (
+        lease: Lease<T>,
+        next: { item: T; delayMs?: number },
+    ): Promise<void> => {
+        if (inlineOps) {
+            inlineOps.rescheduleSync(lease, next)
+            return
+        }
+        await inner.reschedule(lease, next)
+    }
+
+    const applyLoop = async (
+        lease: Lease<T>,
+        item: T,
+        error: unknown | undefined,
+        override?: { item?: T; delayMs?: number },
+    ): Promise<void> => {
+        const name = getQueueName(inner)
+        const loopOpts = recovery.loop
+        let nextItem: T = override?.item ?? item
+        let delayMs = override?.delayMs ?? 0
+
+        if (loopOpts && name !== undefined) {
+            const previousHops = getLoopHops(item, name)
+            const hops = (previousHops ?? 0) + 1
+            const ctx: LoopMapContext = { name, previousHops, hops }
+            // Filter false → fail path (DLQ if registered), not silent drop.
+            if (loopOpts.filter && !loopOpts.filter(item, error, ctx)) {
+                await applyFail(lease, item, error)
+                return
+            }
+            if (loopOpts.delay !== undefined) {
+                if (isInvalidStaticDelay(loopOpts.delay)) {
+                    throw new InvalidWorkerOptionError(
+                        'loop delay must be a finite number >= 0',
+                    )
+                }
+                const ms = resolveDelayMs(loopOpts.delay, hops)
+                if (!isNonNegativeFinite(ms)) {
+                    throw new InvalidWorkerOptionError(
+                        'loop delay must be a finite number >= 0',
+                    )
+                }
+                delayMs = ms
+            }
+            if (loopOpts.map) {
+                const mapped = loopOpts.map(item, error, ctx)
+                const originalMeta = isPlainQueueMeta(item)
+                const attempted = readMappedQueueMeta(mapped)
+                if (
+                    attempted !== undefined &&
+                    !queueMetaEqual(attempted, originalMeta)
+                ) {
+                    emitInner('loop:meta-override', {
+                        item,
+                        error,
+                        name,
+                        attempted,
+                        applied: { hops },
+                    })
+                }
+                nextItem = stampLoopHops(mapped, item, name, hops) as T
+            } else {
+                nextItem = stampLoopHops(item, item, name, hops) as T
+            }
+        } else if (override?.item !== undefined) {
+            nextItem = override.item
+        }
+
+        await settleReschedule(lease, { item: nextItem, delayMs })
+        if (subs.requeued > 0) {
+            emitInner('worker:requeued', { item, error, delayMs })
+        }
+    }
+
+    const applyFail = async (
+        lease: Lease<T>,
+        item: T,
+        error: unknown,
+    ): Promise<void> => {
+        const dlq = recovery.dlq
+        if (!dlq) {
+            await settleAck(lease)
+            if (subs.dropped > 0) {
+                emitInner('worker:dropped', { item, error })
+            }
+            return
+        }
+
+        try {
+            if (dlq.filter && !dlq.filter(item, error)) {
+                await settleAck(lease)
+                if (subs.dropped > 0) {
+                    emitInner('worker:dropped', { item, error })
+                }
+                return
+            }
+            const map = dlq.map ?? ((x: T) => x as unknown)
+            const deadLetterItem = map(item, error)
+            await Promise.resolve(dlq.target.enqueue(deadLetterItem as never))
+            await settleAck(lease)
+            emitInner('dlq:enqueued', {
+                item,
+                error,
+                deadLetterItem,
+            })
+        } catch (cause) {
+            emitInner('dlq:error', {
+                item,
+                error,
+                cause,
+            })
+            await applyLoop(lease, item, error, {
+                item,
+                delayMs: DLQ_RETRY_BACKOFF_MS,
+            })
+        }
+    }
+
+    const applyRecovery = async (
+        lease: Lease<T>,
+        item: T,
+        error: unknown,
+    ): Promise<void> => {
+        const policy = recovery.policy
+        if (policy === 'loop') {
+            await applyLoop(lease, item, error)
+            return
+        }
+        if (policy === 'fail') {
+            await applyFail(lease, item, error)
+            return
+        }
+        try {
+            const result = await policy({ item, error, lease })
+            if (result == null) return
+            if (result.action === 'loop') {
+                await applyLoop(lease, item, error, {
+                    item: result.item,
+                    delayMs: result.delayMs,
+                })
+                return
+            }
+            if (result.action === 'fail') {
+                await applyFail(lease, item, error)
+            }
+        } catch {
+            await applyLoop(lease, item, error)
+        }
+    }
+
+    const failLease = (lease: Lease<T>, item: T, error: unknown): void => {
+        void applyRecovery(lease, item, error)
+            .catch(async (err) => {
+                if (err instanceof LeaseMismatchError) return
+                if (subs.pumpError > 0) {
+                    emitInner('worker:pump-error', { error: err })
+                }
+                try {
+                    if (inlineOps) inlineOps.releaseSync(lease)
+                    else await inner.release(lease)
+                } catch {
+                    /* already settled or reclaim won */
+                }
+            })
+            .finally(() => {
+                // active-- then failed so gracefulStop settles after recovery.
+                finishItem()
+                if (subs.failed > 0) {
+                    emitInner('worker:failed', { item, error })
+                }
+            })
+    }
+
+    const completeLease = (lease: Lease<T>, item: T, result: R): void => {
+        // Inline: ack is sync — finish without Promise hops.
+        if (inlineOps) {
+            try {
+                inlineOps.ackSync(lease)
+                finishItem()
+                if (subs.completed > 0) {
+                    emitInner('worker:completed', { item, result })
+                }
+            } catch (err) {
+                finishItem()
+                if (
+                    !(err instanceof LeaseMismatchError) &&
+                    subs.pumpError > 0
+                ) {
+                    emitInner('worker:pump-error', { error: err })
+                }
+            }
+            return
+        }
+        void inner
+            .ack(lease)
+            .then(() => {
+                finishItem()
+                if (subs.completed > 0) {
+                    emitInner('worker:completed', { item, result })
+                }
+            })
+            .catch((err) => {
+                finishItem()
+                if (
+                    !(err instanceof LeaseMismatchError) &&
+                    subs.pumpError > 0
+                ) {
+                    emitInner('worker:pump-error', { error: err })
+                }
+            })
+    }
+
+    const processLease = (lease: Lease<T>): void => {
+        const item = lease.item
         if (subs.started > 0) {
             emitInner('worker:started', { item })
         }
@@ -173,42 +412,109 @@ export const withWorker = <
         try {
             ret = worker(item)
         } catch (error) {
-            if (subs.failed > 0) {
-                emitInner('worker:failed', { item, error })
-            }
-            finishItem()
+            failLease(lease, item, error)
             return
         }
 
         if (isThenable(ret)) {
-            // One thenable hop — no outer `async` function Promise.
             Promise.resolve(ret).then(
                 (result) => {
-                    if (subs.completed > 0) {
-                        emitInner('worker:completed', {
-                            item,
-                            result: result as R,
-                        })
-                    }
-                    finishItem()
+                    completeLease(lease, item, result as R)
                 },
                 (error: unknown) => {
-                    if (subs.failed > 0) {
-                        emitInner('worker:failed', { item, error })
-                    }
-                    finishItem()
+                    failLease(lease, item, error)
                 },
             )
             return
         }
 
-        if (subs.completed > 0) {
-            emitInner('worker:completed', { item, result: ret })
-        }
-        finishItem()
+        completeLease(lease, item, ret)
     }
 
     let unsubscribeEnqueued: (() => void) | undefined
+
+    const stop = (): void => {
+        running = false
+        unsubscribeEnqueued?.()
+        unsubscribeEnqueued = undefined
+    }
+
+    /**
+     * Inline pump is fully synchronous (no Promise alloc per kick).
+     * Durable path awaits claim on the write chain in pumpDurable.
+     */
+    const pumpInline = (): void => {
+        if (pumping) {
+            pumpAgain = true
+            return
+        }
+        pumping = true
+        try {
+            do {
+                pumpAgain = false
+                while (running && active < concurrency) {
+                    let lease: Lease<T> | undefined
+                    try {
+                        lease = inlineOps!.claimSync()
+                    } catch (error) {
+                        if (subs.pumpError > 0) {
+                            emitInner('worker:pump-error', { error })
+                        }
+                        stop()
+                        break
+                    }
+                    if (lease === undefined) break
+                    active += 1
+                    processLease(lease)
+                }
+            } while (pumpAgain && running)
+        } finally {
+            pumping = false
+            if (pumpAgain && running) {
+                pumpAgain = false
+                pumpInline()
+            }
+        }
+    }
+
+    const pumpDurable = async (): Promise<void> => {
+        if (pumping) {
+            pumpAgain = true
+            return
+        }
+        pumping = true
+        try {
+            do {
+                pumpAgain = false
+                while (running && active < concurrency) {
+                    let lease: Lease<T> | undefined
+                    try {
+                        lease = await inner.claim()
+                    } catch (error) {
+                        if (subs.pumpError > 0) {
+                            emitInner('worker:pump-error', { error })
+                        }
+                        stop()
+                        break
+                    }
+                    if (lease === undefined) break
+                    active += 1
+                    processLease(lease)
+                }
+            } while (pumpAgain && running)
+        } finally {
+            pumping = false
+            if (pumpAgain && running) {
+                pumpAgain = false
+                void pumpDurable()
+            }
+        }
+    }
+
+    const pump = (): void => {
+        if (inlineOps) pumpInline()
+        else void pumpDurable()
+    }
 
     const subscribeEnqueued = (): void => {
         if (unsubscribeEnqueued) return
@@ -217,44 +523,9 @@ export const withWorker = <
         })
     }
 
-    const stop = (): void => {
-        running = false
-        unsubscribeEnqueued?.()
-        unsubscribeEnqueued = undefined
-    }
-
-    const pump = (): void => {
-        if (pumping) return
-        pumping = true
-        try {
-            while (running && active < concurrency) {
-                // Slot presence = non-empty; payload may be null/undefined.
-                const slot = inner.tryDequeue()
-                if (slot === undefined) break
-
-                active += 1
-                processItem(slot.value)
-            }
-        } catch (error) {
-            // Persist hydrate: wait for post-hydrate restore kick.
-            if (error instanceof QueueHydratingError) {
-                return
-            }
-            // Unexpected dequeue failure: surface and stop so it is not silent.
-            if (subs.pumpError > 0) {
-                emitInner('worker:pump-error', { error })
-            }
-            stop()
-        } finally {
-            pumping = false
-        }
-    }
-
     const start = (): void => {
         if (running) return
         running = true
-        // Subscribe here so autoStart: false has no listener until start().
-        // Post-hydrate queue:enqueued kick only reaches running workers.
         subscribeEnqueued()
         pump()
     }
@@ -286,6 +557,16 @@ export const withWorker = <
         )
     }
 
+    const hydrate = async (): Promise<void> => {
+        if (running || active > 0) {
+            const { HydrateWhileActiveError } = await import(
+                '../../persist/errors'
+            )
+            throw new HydrateWhileActiveError()
+        }
+        return inner.hydrate()
+    }
+
     const api = markQueueLayer(
         decorateQueue(inner, {
             on,
@@ -295,9 +576,12 @@ export const withWorker = <
             isRunning: () => running,
             isProcessing,
             activeCount: () => active,
+            hydrate,
         }),
         WORKER_LAYER,
     )
+
+    attachRecoveryConfig(api, recovery)
 
     return api as unknown as QueueWithWorker<
         T,
@@ -306,3 +590,4 @@ export const withWorker = <
     > &
         PreserveQueueExtras<TQueue>
 }
+

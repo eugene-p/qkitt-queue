@@ -1,131 +1,144 @@
 import { describe, expect, it } from 'vitest'
-import { buildQueue } from '../../queue/core/queue'
-import { withPersist } from '../with-persist'
-import {
-    createWebRowStore,
-    createWebSnapshotStore,
-    StorageCodecError,
-    type WebStorageLike,
-} from './web-storage'
+import { createWebRowStore } from './web-storage'
 
-const createMemoryWebStorage = (): WebStorageLike & {
-    map: Map<string, string>
-} => {
+const memoryStorage = () => {
     const map = new Map<string, string>()
     return {
-        map,
-        getItem: (key) => map.get(key) ?? null,
-        setItem: (key, value) => {
-            map.set(key, value)
+        getItem: (k: string) => map.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+            map.set(k, v)
         },
-        removeItem: (key) => {
-            map.delete(key)
+        removeItem: (k: string) => {
+            map.delete(k)
         },
     }
 }
 
-describe('createWebSnapshotStore', () => {
-    it('persists the full queue under one key', async () => {
-        const storage = createMemoryWebStorage()
-        const store = createWebSnapshotStore<number>({
-            key: 'q',
-            storage,
-        })
-        const queue = withPersist(buildQueue<number>(), store)
-
-        queue.enqueue(1)
-        queue.enqueue(2)
-        await queue.persist()
-
-        expect(storage.map.get('q')).toBe('[1,2]')
-
-        const restored = withPersist(
-            buildQueue<number>(),
-            createWebSnapshotStore<number>({
-                key: 'q',
-                storage,
-                autoSave: false,
-            }),
-        )
-        await restored.hydrate()
-        expect(restored.toArray()).toEqual([1, 2])
-    })
-
-    it('loads empty when key is missing', () => {
-        const store = createWebSnapshotStore<string>({
-            key: 'missing',
-            storage: createMemoryWebStorage(),
-        })
-        expect(store.load()).toEqual([])
-    })
-
-    it('throws StorageCodecError for corrupt snapshot JSON', () => {
-        const storage = createMemoryWebStorage()
-        storage.setItem('q', '{not-json')
-        const store = createWebSnapshotStore<number>({ key: 'q', storage })
-        expect(() => store.load()).toThrow(StorageCodecError)
-    })
-})
+const countingStorage = () => {
+    const map = new Map<string, string>()
+    let setItemCalls = 0
+    return {
+        getItem: (k: string) => map.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+            setItemCalls += 1
+            map.set(k, v)
+        },
+        removeItem: (k: string) => {
+            map.delete(k)
+        },
+        stats: () => ({ setItemCalls }),
+        resetStats: () => {
+            setItemCalls = 0
+        },
+    }
+}
 
 describe('createWebRowStore', () => {
-    it('stores each row under its own key plus an order list', async () => {
-        const storage = createMemoryWebStorage()
-        let n = 0
-        const store = createWebRowStore<string>({
-            key: 'jobs',
-            storage,
-            createId: () => `id-${++n}`,
+    it('round-trips full row records', () => {
+        const storage = memoryStorage()
+        const store = createWebRowStore<string>({ key: 'q', storage })
+        store.put({
+            id: 1,
+            item: 'job',
+            availableAt: 0,
+            leaseGeneration: 2,
+            leaseExpiresAt: 100,
         })
-        const queue = withPersist(buildQueue<string>(), store)
-
-        queue.enqueue('a')
-        queue.enqueue('b')
-        await queue.flush()
-
-        expect(storage.map.get('jobs:order')).toBe('["id-1","id-2"]')
-        expect(storage.map.get('jobs:row:id-1')).toBe('"a"')
-        expect(storage.map.get('jobs:row:id-2')).toBe('"b"')
-
-        queue.dequeue()
-        await queue.flush()
-
-        expect(storage.map.get('jobs:order')).toBe('["id-2"]')
-        expect(storage.map.has('jobs:row:id-1')).toBe(false)
-
-        const restored = withPersist(
-            buildQueue<string>(),
-            createWebRowStore<string>({ key: 'jobs', storage }),
-        )
-        await restored.hydrate()
-        expect(restored.toArray()).toEqual(['b'])
-        expect(restored.rowIds()).toEqual(['id-2'])
+        const rows = store.loadAll()
+        expect(rows).toEqual([
+            {
+                id: 1,
+                item: 'job',
+                availableAt: 0,
+                leaseGeneration: 2,
+                leaseExpiresAt: 100,
+            },
+        ])
+        store.remove(1)
+        expect(store.loadAll()).toEqual([])
     })
 
-    it('clear removes order and all row keys', async () => {
-        const storage = createMemoryWebStorage()
-        let n = 0
-        const store = createWebRowStore<{ n: number }>({
-            key: 't',
-            storage,
-            createId: () => `r${++n}`,
+    it('put of existing id does not rewrite order key', () => {
+        const storage = countingStorage()
+        const store = createWebRowStore<string>({ key: 'q', storage })
+        store.put({
+            id: 1,
+            item: 'a',
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
         })
-        const queue = withPersist(buildQueue<{ n: number }>(), store)
-
-        queue.enqueue({ n: 1 })
-        queue.enqueue({ n: 2 })
-        await queue.flush()
-
-        queue.clear()
-        await queue.flush()
-
-        expect(storage.map.size).toBe(0)
+        storage.resetStats()
+        // Claim-style upsert: same id, new lease fields.
+        store.put({
+            id: 1,
+            item: 'a',
+            availableAt: 0,
+            leaseGeneration: 1,
+            leaseExpiresAt: 999,
+        })
+        const { setItemCalls } = storage.stats()
+        // Only the row body key — not `:order`.
+        expect(setItemCalls).toBe(1)
+        const afterUpsert = store.loadAll() as ReadonlyArray<{
+            leaseGeneration: number | null
+        }>
+        expect(afterUpsert[0]?.leaseGeneration).toBe(1)
     })
 
-    it('throws StorageCodecError for corrupt row payload', () => {
-        const storage = createMemoryWebStorage()
-        storage.setItem('jobs:order', '["id-1"]')
-        storage.setItem('jobs:row:id-1', '{bad')
-        const store = createWebRowStore<string>({ key: 'jobs', storage })
-        expect(() => store.loadAll()).toThrow(StorageCodecError)
+    it('putBatch and removeBatch round-trip', () => {
+        const storage = memoryStorage()
+        const store = createWebRowStore<number>({ key: 'q', storage })
+        store.putBatch?.([
+            {
+                id: 1,
+                item: 1,
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            },
+            {
+                id: 2,
+                item: 2,
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            },
+        ])
+        const afterPut = store.loadAll() as ReadonlyArray<{ id: number }>
+        expect(afterPut.map((r) => r.id)).toEqual([1, 2])
+        store.removeBatch?.([1])
+        const afterRemove = store.loadAll() as ReadonlyArray<{ id: number }>
+        expect(afterRemove.map((r) => r.id)).toEqual([2])
+    })
+
+    it('replaceAll replaces the full set', () => {
+        const storage = memoryStorage()
+        const store = createWebRowStore<string>({ key: 'q', storage })
+        store.put({
+            id: 1,
+            item: 'old',
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
+        })
+        store.replaceAll?.([
+            {
+                id: 10,
+                item: 'new',
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            },
+        ])
+        expect(store.loadAll()).toEqual([
+            {
+                id: 10,
+                item: 'new',
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            },
+        ])
     })
 })

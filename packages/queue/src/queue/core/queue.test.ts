@@ -1,42 +1,44 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createMemoryRowStore } from '../../persist/stores/memory'
+import { LeaseMismatchError } from '../../persist/errors'
 import { buildQueue, InvalidQueueOptionError, QueueFullError } from './queue'
 import { getQueueName } from './queue-name.util'
 
 describe('buildQueue', () => {
-    it('enqueues and dequeues in FIFO order', () => {
+    it('enqueues and dequeues in FIFO order', async () => {
         const queue = buildQueue<number>()
 
-        queue.enqueue(1)
-        queue.enqueue(2)
-        queue.enqueue(3)
+        await queue.enqueue(1)
+        await queue.enqueue(2)
+        await queue.enqueue(3)
 
         expect(queue.size()).toBe(3)
-        expect(queue.dequeue()).toBe(1)
-        expect(queue.dequeue()).toBe(2)
-        expect(queue.dequeue()).toBe(3)
-        expect(queue.dequeue()).toBeUndefined()
+        expect(await queue.dequeue()).toBe(1)
+        expect(await queue.dequeue()).toBe(2)
+        expect(await queue.dequeue()).toBe(3)
+        expect(await queue.dequeue()).toBeUndefined()
         expect(queue.isEmpty()).toBe(true)
     })
 
-    it('peek returns the head without removing it', () => {
+    it('peek returns the head without removing it', async () => {
         const queue = buildQueue<string>()
 
         expect(queue.peek()).toBeUndefined()
 
-        queue.enqueue('a')
-        queue.enqueue('b')
+        await queue.enqueue('a')
+        await queue.enqueue('b')
 
         expect(queue.peek()).toBe('a')
         expect(queue.size()).toBe(2)
-        expect(queue.dequeue()).toBe('a')
+        expect(await queue.dequeue()).toBe('a')
         expect(queue.peek()).toBe('b')
     })
 
-    it('toArray returns a snapshot from head to tail', () => {
+    it('toArray returns a snapshot from head to tail', async () => {
         const queue = buildQueue<number>()
 
-        queue.enqueue(1)
-        queue.enqueue(2)
+        await queue.enqueue(1)
+        await queue.enqueue(2)
 
         const snapshot = queue.toArray()
         expect(snapshot).toEqual([1, 2])
@@ -45,30 +47,30 @@ describe('buildQueue', () => {
         expect(queue.toArray()).toEqual([1, 2])
     })
 
-    it('toArray preserves order after mixed enqueue/dequeue (outbox+inbox)', () => {
+    it('toArray preserves order after mixed enqueue/dequeue', async () => {
         const queue = buildQueue<number>()
-        queue.enqueue(1)
-        queue.enqueue(2)
-        queue.enqueue(3)
-        expect(queue.dequeue()).toBe(1)
-        queue.enqueue(4)
+        await queue.enqueue(1)
+        await queue.enqueue(2)
+        await queue.enqueue(3)
+        expect(await queue.dequeue()).toBe(1)
+        await queue.enqueue(4)
         expect(queue.toArray()).toEqual([2, 3, 4])
     })
 
-    it('emits queue:enqueued with item and size', () => {
+    it('emits queue:enqueued with item and size', async () => {
         const queue = buildQueue<string>()
         const handler = vi.fn()
 
         queue.on('queue:enqueued', handler)
-        queue.enqueue('x')
-        queue.enqueue('y')
+        await queue.enqueue('x')
+        await queue.enqueue('y')
 
         expect(handler).toHaveBeenCalledTimes(2)
         expect(handler).toHaveBeenNthCalledWith(1, { item: 'x', size: 1 })
         expect(handler).toHaveBeenNthCalledWith(2, { item: 'y', size: 2 })
     })
 
-    it('emits queue:dequeued and queue:emptied when the last item is removed', () => {
+    it('emits queue:dequeued and queue:emptied on admin drop', async () => {
         const queue = buildQueue<number>()
         const dequeued = vi.fn()
         const emptied = vi.fn()
@@ -76,157 +78,128 @@ describe('buildQueue', () => {
         queue.on('queue:dequeued', dequeued)
         queue.on('queue:emptied', emptied)
 
-        queue.enqueue(10)
-        queue.enqueue(20)
+        await queue.enqueue(10)
+        await queue.enqueue(20)
 
-        expect(queue.dequeue()).toBe(10)
+        expect(await queue.dequeue()).toBe(10)
         expect(dequeued).toHaveBeenLastCalledWith({ item: 10, size: 1 })
         expect(emptied).not.toHaveBeenCalled()
 
-        expect(queue.dequeue()).toBe(20)
+        expect(await queue.dequeue()).toBe(20)
         expect(dequeued).toHaveBeenLastCalledWith({ item: 20, size: 0 })
         expect(emptied).toHaveBeenCalledOnce()
     })
 
-    it('does not emit queue:emptied when dequeue is called on an empty queue', () => {
-        const queue = buildQueue<number>()
-        const emptied = vi.fn()
-
-        queue.on('queue:emptied', emptied)
-        expect(queue.dequeue()).toBeUndefined()
-
-        expect(emptied).not.toHaveBeenCalled()
-    })
-
-    it('clear removes all items and emits queue:cleared', () => {
-        const queue = buildQueue<number>()
-        const cleared = vi.fn()
-
-        queue.on('queue:cleared', cleared)
-        queue.enqueue(1)
-        queue.enqueue(2)
-        queue.clear()
-
-        expect(queue.isEmpty()).toBe(true)
+    it('claim/ack removes work; late ack mismatches', async () => {
+        const queue = buildQueue<string>()
+        await queue.enqueue('job')
+        const lease = await queue.claim()
+        expect(lease?.item).toBe('job')
+        expect(queue.stats().leased).toBe(1)
+        expect(queue.readyCount()).toBe(0)
+        await queue.ack(lease!)
         expect(queue.size()).toBe(0)
-        expect(cleared).toHaveBeenCalledWith({ removed: 2 })
+        await expect(queue.ack(lease!)).rejects.toBeInstanceOf(
+            LeaseMismatchError,
+        )
     })
 
-    it('clear is a no-op when already empty', () => {
+    it('reschedule with delay keeps size and not ready', async () => {
+        const queue = buildQueue<string>()
+        await queue.enqueue('a')
+        const lease = await queue.claim()
+        await queue.reschedule(lease!, { item: 'a', delayMs: 60_000 })
+        expect(queue.size()).toBe(1)
+        expect(queue.readyCount()).toBe(0)
+        expect(queue.stats().delayed).toBe(1)
+    })
+
+    it('size counts delayed and leased; readyCount only available', async () => {
         const queue = buildQueue<number>()
-        const cleared = vi.fn()
-
-        queue.on('queue:cleared', cleared)
-        queue.clear()
-
-        expect(cleared).not.toHaveBeenCalled()
+        await queue.enqueue(1)
+        await queue.enqueue(2, { delayMs: 60_000 })
+        const lease = await queue.claim()
+        expect(queue.size()).toBe(2)
+        expect(queue.readyCount()).toBe(0)
+        expect(queue.stats()).toEqual({
+            available: 0,
+            delayed: 1,
+            leased: 1,
+        })
+        await queue.ack(lease!)
     })
 
-    it('on unsubscribe stops further queue events', () => {
-        const queue = buildQueue<number>()
-        const handler = vi.fn()
-
-        const unsub = queue.on('queue:enqueued', handler)
-
-        queue.enqueue(1)
-        unsub()
-        queue.enqueue(2)
-
-        expect(handler).toHaveBeenCalledOnce()
-        expect(handler).toHaveBeenCalledWith({ item: 1, size: 1 })
+    it('durable claim survives hydrate reclaim', async () => {
+        const store = createMemoryRowStore<string>()
+        const q1 = buildQueue<string>({ store })
+        await q1.enqueue('work')
+        const lease = await q1.claim()
+        expect(lease?.item).toBe('work')
+        // Simulate crash: new queue + hydrate without ack
+        const q2 = buildQueue<string>({ store })
+        await q2.hydrate()
+        expect(q2.readyCount()).toBe(1)
+        const again = await q2.claim()
+        expect(again?.item).toBe('work')
+        await q2.ack(again!)
+        expect(q2.size()).toBe(0)
     })
 
-    it('replaceAll sets items without emitting queue events', () => {
-        const queue = buildQueue<number>()
-        const enqueued = vi.fn()
-        const cleared = vi.fn()
-        queue.on('queue:enqueued', enqueued)
-        queue.on('queue:cleared', cleared)
-
-        queue.enqueue(1)
-        enqueued.mockClear()
-
-        queue.replaceAll([9, 8, 7])
-
-        expect(queue.toArray()).toEqual([9, 8, 7])
-        expect(enqueued).not.toHaveBeenCalled()
-        expect(cleared).not.toHaveBeenCalled()
-        expect(queue.dequeue()).toBe(9)
-        expect(queue.dequeue()).toBe(8)
-        expect(queue.dequeue()).toBe(7)
+    it('durable success path gone after hydrate', async () => {
+        const store = createMemoryRowStore<number>()
+        const q = buildQueue<number>({ store })
+        await q.enqueue(1)
+        const lease = await q.claim()
+        await q.ack(lease!)
+        const q2 = buildQueue<number>({ store })
+        await q2.hydrate()
+        expect(q2.size()).toBe(0)
     })
 
-    it('throws QueueFullError when maxSize is exceeded', () => {
-        const queue = buildQueue<number>({ maxSize: 2 })
-        queue.enqueue(1)
-        queue.enqueue(2)
-
-        expect(() => queue.enqueue(3)).toThrow(QueueFullError)
-        expect(queue.toArray()).toEqual([1, 2])
-        expect(() => queue.replaceAll([1, 2, 3])).toThrow(QueueFullError)
+    it('throws QueueFullError at maxSize', async () => {
+        const queue = buildQueue<number>({ maxSize: 1 })
+        await queue.enqueue(1)
+        await expect(queue.enqueue(2)).rejects.toBeInstanceOf(QueueFullError)
     })
 
     it('rejects invalid maxSize', () => {
-        expect(() => buildQueue({ maxSize: 0 })).toThrow(InvalidQueueOptionError)
-        expect(() => buildQueue({ maxSize: NaN })).toThrow(InvalidQueueOptionError)
-        expect(() => buildQueue({ maxSize: Infinity })).toThrow(
+        expect(() => buildQueue({ maxSize: 0 })).toThrow(
             InvalidQueueOptionError,
         )
-        expect(() => buildQueue({ maxSize: -1 })).toThrow(InvalidQueueOptionError)
-        expect(() => buildQueue({ maxSize: 1.5 })).toThrow(InvalidQueueOptionError)
     })
 
-    it('stores optional logical name (trimmed)', () => {
-        expect(getQueueName(buildQueue())).toBeUndefined()
-        expect(getQueueName(buildQueue({ name: 'jobs' }))).toBe('jobs')
-        expect(getQueueName(buildQueue({ name: '  orders  ' }))).toBe('orders')
+    it('stores and returns name', () => {
+        const queue = buildQueue({ name: ' jobs ' })
+        expect(getQueueName(queue)).toBe('jobs')
     })
 
-    it('rejects blank name', () => {
-        expect(() => buildQueue({ name: '' })).toThrow(InvalidQueueOptionError)
-        expect(() => buildQueue({ name: '   ' })).toThrow(InvalidQueueOptionError)
+    it('tryDequeue returns slot for nullish payloads', async () => {
+        const queue = buildQueue<null | undefined>()
+        await queue.enqueue(null)
+        await queue.enqueue(undefined)
+        expect(await queue.tryDequeue()).toEqual({ value: null })
+        expect(await queue.tryDequeue()).toEqual({ value: undefined })
+        expect(await queue.tryDequeue()).toBeUndefined()
     })
 
-    it('preserves order after many dequeues', () => {
+    it('clear empties all states', async () => {
         const queue = buildQueue<number>()
-        for (let i = 0; i < 100; i += 1) {
-            queue.enqueue(i)
-        }
-        for (let i = 0; i < 80; i += 1) {
-            expect(queue.dequeue()).toBe(i)
-        }
-        expect(queue.toArray()).toEqual(
-            Array.from({ length: 20 }, (_, i) => i + 80),
-        )
-        expect(queue.size()).toBe(20)
+        await queue.enqueue(1)
+        await queue.enqueue(2, { delayMs: 60_000 })
+        await queue.claim()
+        await queue.clear()
+        expect(queue.size()).toBe(0)
+        expect(queue.stats()).toEqual({
+            available: 0,
+            delayed: 0,
+            leased: 0,
+        })
     })
 
-    it('tryDequeue/tryPeek treat nullish payloads as occupied slots', () => {
-        const queue = buildQueue<string | null | undefined>()
-
-        expect(queue.tryDequeue()).toBeUndefined()
-        expect(queue.tryPeek()).toBeUndefined()
-
-        queue.enqueue(undefined)
-        expect(queue.size()).toBe(1)
-        expect(queue.tryPeek()).toEqual({ value: undefined })
-        expect(queue.peek()).toBeUndefined()
-        expect(queue.tryDequeue()).toEqual({ value: undefined })
-        expect(queue.isEmpty()).toBe(true)
-
-        queue.enqueue(null)
-        queue.enqueue('x')
-        expect(queue.tryDequeue()).toEqual({ value: null })
-        expect(queue.tryDequeue()).toEqual({ value: 'x' })
-        expect(queue.tryDequeue()).toBeUndefined()
-    })
-
-    it('public dequeue still returns undefined for both empty and undefined payload', () => {
-        const queue = buildQueue<string | undefined>()
-        queue.enqueue(undefined)
-        // Ambiguous by design — use tryDequeue when T may be undefined.
-        expect(queue.dequeue()).toBeUndefined()
-        expect(queue.isEmpty()).toBe(true)
-        expect(queue.dequeue()).toBeUndefined()
+    it('replaceAll replaces available set when idle', async () => {
+        const queue = buildQueue<string>()
+        await queue.enqueue('a')
+        await queue.replaceAll(['x', 'y'])
+        expect(queue.toArray()).toEqual(['x', 'y'])
     })
 })

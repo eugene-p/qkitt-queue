@@ -59,12 +59,12 @@ async function main() {
   const failed = system.queues.failed
   line('system', 'ready', `queues=${Object.keys(system.queues).join(',')}`)
 
-  queue.on('loop:enqueued', ({ item, loopItem }) => {
+  queue.on('worker:requeued', ({ item }) => {
     looped += 1
     line(
       'loop',
       'retry',
-      `job=${(item as Job).id}  hops=${getLoopHops(loopItem, 'jobs')}`,
+      `job=${(item as Job).id}  hops=${getLoopHops(item as Job, 'jobs')}`,
     )
   })
 

@@ -7,46 +7,31 @@ export {
     type MergeEventMaps,
 } from './events'
 
-// Persist core (withPersist + strategy runtime) — separate from store factories.
 export {
+    ConflictingRecoveryError,
     DuplicateRowIdError,
-    HydrateInProgressError,
-    InvalidPersistOptionError,
+    HydrateWhileActiveError,
+    IdSpaceExhaustedError,
     InvalidQueueCompositionError,
     InvalidRowIdError,
     InvalidStoreError,
+    LeaseMismatchError,
     isRowStore,
-    isSnapshotStore,
-    QueueHydratingError,
-    withPersist,
-    type QueueWithPersist,
-    type RowPersistEvents,
+    createMemoryRowStore,
+    type MemoryRowStore,
+    type PersistEvents,
     type RowRecord,
     type RowStore,
-    type SnapshotPersistEvents,
-    type SnapshotStore,
 } from './persist'
-
-// Built-in stores — own chunks so unused adapters drop from app bundles.
-export {
-    createMemoryRowStore,
-    createMemorySnapshotStore,
-    type MemoryRowStore,
-    type MemorySnapshotStore,
-} from './persist/stores/memory'
 
 export {
     createLocalStorageRowStore,
-    createLocalStorageSnapshotStore,
     createSessionStorageRowStore,
-    createSessionStorageSnapshotStore,
     createWebRowStore,
-    createWebSnapshotStore,
     StorageCodecError,
     StorageUnavailableError,
     type JsonCodec,
     type WebRowStoreOptions,
-    type WebSnapshotStoreOptions,
     type WebStorageLike,
 } from './persist/stores/web-storage'
 
@@ -76,13 +61,17 @@ export {
     type GracefulStopable,
     type GracefulStopOptions,
     type IdleWaitable,
+    type Lease,
     type LoopEvents,
     type LoopMapContext,
     type LoopQueueEvents,
     type Queue,
     type QueueEvents,
     type QueueSlot,
+    type QueueStats,
     type QueueWithWorker,
+    type RecoveryPolicy,
+    type RecoveryPolicyResult,
     type WhenIdleOptions,
     type WithDeadLetterOptions,
     type WithLoopOptions,

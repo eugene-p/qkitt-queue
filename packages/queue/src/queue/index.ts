@@ -3,9 +3,11 @@ export {
     InvalidQueueOptionError,
     QueueFullError,
     type BuildQueueOptions,
+    type Lease,
     type Queue,
     type QueueEvents,
     type QueueSlot,
+    type QueueStats,
 } from './core/queue'
 
 export { getQueueName } from './core/queue-name.util'
@@ -14,6 +16,8 @@ export {
     InvalidWorkerOptionError,
     withWorker,
     type QueueWithWorker,
+    type RecoveryPolicy,
+    type RecoveryPolicyResult,
     type WithWorkerOptions,
     type WorkerControls,
     type WorkerEvents,

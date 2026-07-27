@@ -1,117 +1,45 @@
 /**
- * Public persist contracts: store interfaces, row records, strategy options,
- * and event types. No queue-implementation imports — types only.
+ * Public persist contracts: row records and store interfaces.
+ * No queue-implementation imports — types only.
  */
-
-import type { EventMap, MergeEventMaps } from '../events'
-import type { Queue, QueueEvents } from '../queue/core/queue'
 
 /**
- * One durable row, stable id + payload, ordered head → tail when loaded.
- * `id` must be a non-empty string (not whitespace-only) and unique among rows
- * in the same store/queue.
+ * Durable row: stable numeric id + payload + claim/delay lease fields.
+ * `availableAt === 0` means immediately claimable (no wall-clock on hot path).
  */
 export type RowRecord<T> = {
-    id: string
+    id: number
     item: T
+    /** Earliest claim time (ms epoch), or `0` for immediate. */
+    availableAt: number
+    /** Non-null while a worker owns the row; bumped on each claim. */
+    leaseGeneration: number | null
+    /** Absolute lease deadline when TTL is configured; otherwise null. */
+    leaseExpiresAt: number | null
 }
 
 /**
- * Row-level backend (SQL table, KV with per-job keys, etc.).
- * `loadAll` must return rows in FIFO order (head first) with unique, non-empty
- * (not whitespace-only) ids. `withPersist` hydrate rejects empty,
- * whitespace-only, or duplicate ids before applying the snapshot to memory.
+ * Row-level backend. `loadAll` returns all rows (any order; queue rebuilds
+ * FIFO from id order of available heads). `put` upserts full row state.
  */
 export type RowStore<T> = {
     loadAll: () => readonly RowRecord<T>[] | Promise<readonly RowRecord<T>[]>
-    insert: (record: RowRecord<T>) => void | Promise<void>
-    remove: (id: string) => void | Promise<void>
+    put: (record: RowRecord<T>) => void | Promise<void>
+    remove: (id: number) => void | Promise<void>
     clear: () => void | Promise<void>
+    putBatch?: (records: readonly RowRecord<T>[]) => void | Promise<void>
+    removeBatch?: (ids: readonly number[]) => void | Promise<void>
+    replaceAll?: (records: readonly RowRecord<T>[]) => void | Promise<void>
 }
 
-/** Whole-queue dump/restore backend (file, redis key, etc.). */
-export type SnapshotStore<T> = {
-    /** Load items head → tail. */
-    load: () => readonly T[] | Promise<readonly T[]>
-    /** Replace the stored snapshot with the full queue. */
-    save: (items: readonly T[]) => void | Promise<void>
-}
-
-export type SnapshotPersistOptions = {
-    /**
-     * Automatically `save` after enqueue / dequeue / clear / replaceAll.
-     * Defaults to `true`.
-     */
-    autoSave?: boolean
-    /**
-     * Delay before writing after a mutation when {@link autoSave} is true.
-     *
-     * - `0` or omitted: coalesce synchronous bursts into **one save per
-     *   microtask** (default).
-     * - `> 0`: wait this many milliseconds after the **last** mutation
-     *   (timer resets on each enqueue/dequeue/clear/replaceAll).
-     *
-     * Explicit `persist()` is never debounced.
-     * Call `flush()` (or `hydrate`) to force a pending auto-save onto the
-     * write chain before continuing or exiting.
-     *
-     * Must be a safe integer ≥ 0.
-     */
-    autoSaveDebounceMs?: number
-}
-
-export type RowPersistOptions = {
-    /**
-     * Custom id factory for new rows (enqueue / replaceAll).
-     * Defaults to {@link createId} (nanoid-style URL-safe alphabet).
-     * Must return unique, non-empty ids (not whitespace-only); collisions throw
-     * before memory or store mutation.
-     */
-    createId?: () => string
-}
-
-export type SnapshotStoreHandle<T> = SnapshotStore<T> & {
-    readonly persistOptions?: SnapshotPersistOptions
-}
-
-export type RowStoreHandle<T> = RowStore<T> & {
-    readonly persistOptions?: RowPersistOptions
-}
-
-export type SnapshotPersistEvents = {
+/** Events emitted for durable store lifecycle (not work lifecycle). */
+export type PersistEvents = {
     'persist:loaded': { size: number }
-    'persist:saved': { size: number }
+    'persist:lease-expired': { id: number; item: unknown }
+    'persist:id-space-low': { remaining: number }
     'persist:error': {
-        operation: 'load' | 'save'
+        operation: 'load' | 'put' | 'remove' | 'clear'
         error: unknown
+        id?: number
     }
 }
-
-export type RowPersistEvents<T> = {
-    'persist:loaded': { size: number }
-    'persist:inserted': { id: string; item: T }
-    'persist:removed': { id: string; item: T }
-    'persist:cleared': { removed: number }
-    'persist:error': {
-        operation: 'load' | 'insert' | 'remove' | 'clear'
-        error: unknown
-        id?: string
-    }
-}
-
-export type QueueWithPersist<
-    T,
-    S extends 'snapshot' | 'row',
-    TEvents extends EventMap = QueueEvents<T>,
-> = Queue<
-    T,
-    MergeEventMaps<
-        TEvents,
-        S extends 'snapshot' ? SnapshotPersistEvents : RowPersistEvents<T>
-    >
-> & {
-    hydrate: () => Promise<void>
-    flush: () => Promise<void>
-} & (S extends 'snapshot'
-        ? { persist: () => Promise<void> }
-        : { rowIds: () => string[] })

@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-26
+
+> **BREAKING — read this before upgrading.** Persistence and the core queue API
+> changed substantially. Snapshot stores and `withPersist` are **gone**. Durable
+> mode is `buildQueue({ store })` with a lease-based worker path. Mutating
+> methods return `Promise`. Plan a deliberate migration; this is not a drop-in.
+
+### Breaking
+
+- **Removed `withPersist`.** Pass a store on construction: `buildQueue({ store })`.
+- **Removed snapshot persistence entirely:** `SnapshotStore`, `createMemorySnapshotStore`, snapshot auto-save / `autoSave` / `autoSaveDebounceMs`, and `persist()`.
+- **`RowStore` contract rewritten:**
+  - Ids are **numeric** (safe integers ≥ 1), allocated by the queue — not strings / `createId`.
+  - Methods: `loadAll` / `put` / `remove` / `clear` (optional `putBatch` / `removeBatch` / `replaceAll`).
+  - Records are full `RowRecord` (`id`, `item`, `availableAt`, `leaseGeneration`, `leaseExpiresAt`) — not `{ id, item }` inserts.
+- **Queue API is lease-first for workers:** `claim` / `ack` / `release` / `reschedule`. Admin path remains `dequeue` / `tryDequeue`.
+- **Mutators are async:** `enqueue`, `dequeue`, `tryDequeue`, `clear`, `replaceAll`, `claim`, `ack`, `release`, `reschedule` return `Promise`. Bare (no store) paths still apply memory updates immediately and resolve a shared settled promise.
+- **Always-on durable methods on `Queue`:** `hydrate()`, `flush()`, `rowIds()` (hydrate/flush no-op without a store).
+- **New / renamed errors:** e.g. `HydrateWhileActiveError`, `LeaseMismatchError`, `IdSpaceExhaustedError`, `ConflictingRecoveryError` (replaces older hydrate/persist-only error shapes such as `QueueHydratingError` / `HydrateInProgressError` where applicable).
+- **Worker recovery:** default failure path is drop (or DLQ when registered). `withLoop` / `onFailure` integrate with leases; see failure-routing guide.
+
+### Migration (0.7 → 0.8)
+
+```ts
+// before
+const q = withWorker(
+  withPersist(buildQueue<Job>(), createMemorySnapshotStore()),
+  run,
+)
+await q.hydrate()
+q.enqueue(job)
+
+// after
+const q = withWorker(
+  buildQueue<Job>({ store: createMemoryRowStore() }),
+  run,
+)
+await q.hydrate()
+await q.enqueue(job)
+await q.flush()
+```
+
+Custom snapshot backends must become `RowStore` implementations. Config package **0.6.0** drops `strategy` / snapshot fields — upgrade together.
+
+### Added
+
+- Durable mode via `buildQueue({ store, leaseTtlMs? })` with in-process lease TTL reclaim
+- Inline bare hot path (shared resolved promises, freelist leases) for fast non-durable use
+- Browser Playwright suite + `npm run compare:stores` (bare vs memory `RowStore` vs `localStorage`)
+- Delayed enqueue (`enqueue(item, { delayMs })`), `readyCount()`, `stats()`, lease events
+- Worker recovery events: `worker:requeued`, `worker:dropped` (prefer over deprecated `loop:enqueued`)
+
+### Changed
+
+- Workers process via **claim/ack** (success always acks; failures use recovery policy)
+- **Loop + DLQ chaining:** loop `filter` false falls through to the fail path (DLQ if registered); single recovery path, not dual independent listeners
+- Docs, examples, and benches updated for the constructor-store model
+- Example `fs-snapshot-store` → `fs-row-store` (file-backed `RowStore`)
+- Benchmark tables refreshed (Node 26 / 2026-07-26)
+
 ## [0.7.0] — 2026-07-25
 
 ### Added
@@ -321,6 +381,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.8.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.0
 [0.7.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.7.0
 [0.6.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.5
 [0.6.4]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.4

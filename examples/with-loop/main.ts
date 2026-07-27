@@ -69,12 +69,12 @@ async function main() {
     },
   )
 
-  queue.on('loop:enqueued', ({ item, loopItem }) => {
+  queue.on('worker:requeued', ({ item }) => {
     looped += 1
     line(
       'loop',
       'retry',
-      `job=${item.id}  hops=${getLoopHops(loopItem, 'jobs')}`,
+      `job=${item.id}  hops=${getLoopHops(item, 'jobs')}`,
     )
   })
 

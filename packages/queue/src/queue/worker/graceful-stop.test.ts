@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { withPersist } from '../../persist/with-persist'
+import { createMemoryRowStore } from '../../persist/stores/memory'
 import { buildQueue } from '../core/queue'
 import { InvalidWorkerOptionError } from './invalid-worker-option-error'
 import { LifecycleTimeoutError } from './lifecycle-timeout-error'
@@ -9,6 +9,10 @@ import { withWorker } from './with-worker'
 afterEach(() => {
     vi.useRealTimers()
 })
+
+const flushMicro = async (n = 3) => {
+    for (let i = 0; i < n; i += 1) await Promise.resolve()
+}
 
 describe('gracefulStop', () => {
     it('stops and waits for in-flight work; leaves remaining items queued', async () => {
@@ -29,7 +33,7 @@ describe('gracefulStop', () => {
 
         queue.enqueue(1)
         queue.enqueue(2)
-        await Promise.resolve()
+        await flushMicro(5)
         expect(queue.isProcessing()).toBe(true)
 
         const stopping = gracefulStop(queue)
@@ -64,7 +68,7 @@ describe('gracefulStop', () => {
             return s
         })
         queue.enqueue('a')
-        await Promise.resolve()
+        await flushMicro(5)
 
         const stopping = queue.gracefulStop()
         release()
@@ -72,45 +76,21 @@ describe('gracefulStop', () => {
         expect(queue.isRunning()).toBe(false)
     })
 
-    it('does not call flush by default', async () => {
-        const save = vi.fn(async () => {})
-        const store = {
-            load: async () => [] as string[],
-            save,
-            persistOptions: { autoSave: false as const },
-        }
-        const base = withPersist(buildQueue<string>(), store)
-        await base.hydrate()
-        const queue = withWorker(base, async (s) => s, { autoStart: false })
-        queue.enqueue('x')
-        await gracefulStop(queue)
-        expect(save).not.toHaveBeenCalled()
-    })
-
-    it('flush: true writes pending snapshot after settle', async () => {
-        const items: string[] = []
-        const store = {
-            load: async () => [...items],
-            save: async (next: readonly string[]) => {
-                items.length = 0
-                items.push(...next)
-            },
-            persistOptions: { autoSaveDebounceMs: 60_000 },
-        }
-        const base = withPersist(buildQueue<string>(), store)
-        await base.hydrate()
-        const queue = withWorker(base, async (s) => s, { autoStart: false })
-
-        queue.enqueue('pending')
-        expect(items).toEqual([])
-
+    it('flush: true drains write chain on durable queue', async () => {
+        const store = createMemoryRowStore<string>()
+        const queue = withWorker(
+            buildQueue<string>({ store }),
+            async (s) => s,
+            { autoStart: false },
+        )
+        await queue.enqueue('pending')
         await gracefulStop(queue, { flush: true })
-        expect(items).toEqual(['pending'])
         expect(queue.isRunning()).toBe(false)
         expect(queue.size()).toBe(1)
+        expect(store.rows).toHaveLength(1)
     })
 
-    it('flush: true is a no-op when queue has no flush', async () => {
+    it('flush: true is a no-op when flush resolves', async () => {
         const queue = withWorker(buildQueue<number>(), async (n) => n)
         await expect(
             gracefulStop(queue, { flush: true }),
@@ -124,7 +104,7 @@ describe('gracefulStop', () => {
             return n
         })
         queue.enqueue(1)
-        await Promise.resolve()
+        await flushMicro(5)
 
         const stopping = gracefulStop(queue, { timeoutMs: 40 })
         const expectation = expect(stopping).rejects.toBeInstanceOf(
@@ -148,12 +128,11 @@ describe('gracefulStop', () => {
             },
             { concurrency: 2 },
         )
-        // Attach a custom flush on the outer surface for the standalone helper
         const target = Object.assign(queue, { flush })
 
         queue.enqueue(1)
         queue.enqueue(2)
-        await Promise.resolve()
+        await flushMicro(5)
         expect(queue.activeCount()).toBe(2)
 
         const stopping = gracefulStop(target, { flush: true })
@@ -172,7 +151,7 @@ describe('gracefulStop', () => {
             throw new Error('boom')
         })
         queue.enqueue(1)
-        await Promise.resolve()
+        await flushMicro(5)
 
         const stopping = gracefulStop(queue)
         release()

@@ -36,7 +36,7 @@ In-process queue toolkit. Start bare, add a layer as requirements change:
 - **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
 - **Retries** — survive flaky third-party calls (payment capture, carrier API, email or SMS gateway).
 - **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
-- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Built-in memory and Web Storage; custom stores if you implement `SnapshotStore` / `RowStore`.
+- **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Pass a `RowStore` to `buildQueue({ store })`. Built-in memory and Web Storage; custom stores implement `RowStore`.
 - **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
 - **Failure routing** — re-enter the same queue with hop meta (`withLoop`) or forward failed items to a dead-letter sink (`withDeadLetter` / `withDlq`).
 - **Declarative config** — stand up a multi-queue system from one object (`@qkitt/queue-config`).
@@ -75,26 +75,27 @@ const queue = withWorker(
 queue.enqueue({ id: '1' })
 ```
 
-Add persistence when you need it (stack: **bare → persist → worker**):
+Add persistence when you need it (`store` on the constructor):
 
 ```ts
 import {
   buildQueue,
   withWorker,
-  withPersist,
-  createMemorySnapshotStore,
+  createMemoryRowStore,
 } from '@qkitt/queue'
 
+const base = buildQueue<Job>({ store: createMemoryRowStore() })
+await base.hydrate() // after restart: before withWorker
+
 const queue = withWorker(
-  withPersist(buildQueue<Job>(), createMemorySnapshotStore()),
+  base,
   async (job) => {
     // handle job
   },
   { concurrency: 2 },
 )
 
-await queue.hydrate()
-queue.enqueue({ id: '1' })
+await queue.enqueue({ id: '1' })
 await queue.flush() // before process exit
 ```
 
@@ -139,8 +140,8 @@ const system = await buildFromConfig(
 | [`worker-drain`](./examples/worker-drain/main.ts) | Concurrent jobs + drain wait |
 | [`lifecycle`](./examples/lifecycle/main.ts) | `whenIdle` drain vs `gracefulStop` + flush |
 | [`retry-pipeline`](./examples/retry-pipeline/main.ts) | Retries / multi-step |
-| [`persist-restart`](./examples/persist-restart/main.ts) | Survive restart (snapshot) |
-| [`fs-snapshot-store`](./examples/fs-snapshot-store/main.ts) | File snapshot store |
+| [`persist-restart`](./examples/persist-restart/main.ts) | Survive restart (row store) |
+| [`fs-row-store`](./examples/fs-row-store/main.ts) | Custom file row store |
 | [`router-topics`](./examples/router-topics/main.ts) | Topic fan-out |
 | [`with-config`](./examples/with-config/main.ts) | Declarative multi-queue |
 | [`with-loop`](./examples/with-loop/main.ts) | Same-queue re-entry, hop cap, hop-based `delay` |
@@ -162,7 +163,7 @@ Full task index: [`examples/README.md`](./examples/README.md).
 | --- | --- |
 | [`@qkitt/queue`](./packages/queue/README.md) | Install, quick start, recipes, bench summary |
 | [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) | Layers, worker helpers, pitfalls |
-| [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) | Snapshot / row, custom stores |
+| [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) | `buildQueue({ store })`, row stores, custom backends |
 | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) | MQTT-style patterns, unmatched sink |
 | [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) | Loop, DLQ, chaining |
 | [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) | Drain and graceful stop |
@@ -186,29 +187,41 @@ npm run bench
 
 Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run bench` · summary also in the [queue package README](./packages/queue/README.md#benchmark-summary).
 
-> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 22.23.1 · `tinybench` via `tsx --expose-gc` · 2026-07-22 · YMMV
+> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-26 · YMMV
 
-**Worker drain is the strength** — high ops/s and low retained memory under a backlog. Bare FIFO is competitive on heap and far faster than `Array#shift`; pure enqueue/dequeue ops trail dedicated structures like denque / yocto-queue.
+**Worker drain is the strength** — high ops/s and very low retained memory under a backlog. Bare FIFO is competitive on heap and far faster than `Array#shift`; pure enqueue/dequeue ops trail dedicated structures like denque / yocto-queue.
 
 ### Worker drain — N async no-op jobs, concurrency C
 
 | Library | 1k c=1 | 1k c=4 | 10k c=1 | 10k c=4 | heap Δ (10k c=1) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **7,622** | **9,671** | **846** | **874** | **247 KiB** |
-| fastq | 3,998 | 4,223 | 107 | 100 | 6.80 MiB |
-| async.queue | 2,744 | 2,757 | 195 | 220 | 4.94 MiB |
-| p-queue | 1,063 | 1,286 | 82 | 71 | 11.04 MiB |
+| **@qkitt/queue** `withWorker` | **4,367** | **4,715** | **439** | **490** | **95 KiB** |
+| fastq | 3,962 | 4,310 | 316 | 280 | 6.12 MiB |
+| async.queue | 3,855 | 4,189 | 347 | 374 | 3.95 MiB |
+| p-queue | 1,342 | 1,413 | 104 | 95 | 6.19 MiB |
 
 ### Bare queue — 50k enqueue + dequeue
 
 | Library | ops/s (med) | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 789 | 1.19 MiB |
-| denque | 1,462 | 1.73 MiB |
-| yocto-queue | 2,161 | 1.92 MiB |
-| native `Array` push/shift | 7 | 1.18 MiB |
+| **@qkitt/queue** `buildQueue` | 783 | 413 KiB |
+| denque | 2,349 | 518 KiB |
+| yocto-queue | 2,409 | 1.92 MiB |
+| native `Array` push/shift | 8 | 399 KiB |
 
 Median ops/s, higher is better. Heap Δ = retained memory measured with all items still held (worker paused).
+
+### Browser — bare vs durable (Chromium)
+
+Illustrative wall times only (`npm run compare:stores`). Not a peer bench.
+
+| Mode (5k jobs, c=1) | Drain |
+| --- | ---: |
+| Bare `buildQueue()` | ~2 ms |
+| Memory `RowStore` | ~9 ms |
+| `localStorage` rows | ~410 ms |
+
+Store put N=5k: memory ~1 ms · localStorage ~245 ms. Full matrix: [persistence — browser](./packages/queue/docs/persistence.md#browser-integration-checks).
 
 ## Contributing
 

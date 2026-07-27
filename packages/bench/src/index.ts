@@ -6,6 +6,9 @@ const suite = (process.argv[2] ?? 'all').toLowerCase()
 const main = async (): Promise<void> => {
   console.log('@qkitt/queue-bench')
   console.log(`Node ${process.version} · suite=${suite}`)
+  console.log(
+    'Each row reports ops/s (throughput) and heap Δ (size while holding N). See suite legends.',
+  )
 
   if (suite === 'all' || suite === 'fifo') {
     await runFifoBench()

@@ -4,7 +4,6 @@ import type {
     Queue,
     Router,
     RowStore,
-    SnapshotStore,
     WebStorageLike,
     WithWorkerOptions,
     WorkerControls,
@@ -13,8 +12,8 @@ import type {
 
 /**
  * Built-in store **adapters** the library can construct for you.
- * Custom backends do not appear here — implement {@link SnapshotStore} or
- * {@link RowStore} and register the instance under `stores`.
+ * Custom backends do not appear here — implement {@link RowStore} and register
+ * the instance under `stores`.
  */
 export type BuiltinStoreAdapter = 'memory' | 'localStorage' | 'sessionStorage'
 
@@ -23,8 +22,7 @@ type BuiltinStoreDefinitionBase = {
     adapter: BuiltinStoreAdapter
     /**
      * Required when `adapter` is `localStorage` or `sessionStorage`.
-     * Snapshot: storage key for the full JSON array.
-     * Row: key prefix for order list + per-row keys.
+     * Key prefix for order list + per-record keys.
      */
     key?: string
 }
@@ -32,24 +30,11 @@ type BuiltinStoreDefinitionBase = {
 /**
  * Named entry in `config.stores`.
  *
- * - **Built-in**: `{ adapter, strategy, key? }` — library creates the store.
- * - **Custom**: `{ strategy, impl }` — your {@link SnapshotStore} / {@link RowStore}.
- *
- * Web adapters accept optional codecs (JS only — not JSON-serializable).
+ * - **Built-in**: `{ adapter: 'memory' | 'localStorage' | 'sessionStorage', key? }`
+ * - **Custom**: `{ impl }` — your {@link RowStore}
  */
 export type StoreDefinition =
     | ({
-          strategy: 'snapshot'
-          /**
-           * JS only — custom JSON codec for the snapshot array.
-           * Only used with `localStorage` / `sessionStorage`.
-           */
-          // Item type is app-specific; config stores stay untyped at this layer.
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          codec?: JsonCodec<any[]>
-      } & BuiltinStoreDefinitionBase)
-    | ({
-          strategy: 'row'
           /**
            * JS only — custom JSON codec for each row item.
            * Only used with `localStorage` / `sessionStorage`.
@@ -58,56 +43,24 @@ export type StoreDefinition =
           itemCodec?: JsonCodec<any>
       } & BuiltinStoreDefinitionBase)
     | {
-          strategy: 'snapshot'
-          /** JS config only — custom snapshot backend. */
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          impl: SnapshotStore<any>
-      }
-    | {
-          strategy: 'row'
-          /** JS config only — custom row backend. */
+          /** JS config only — custom store backend. */
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           impl: RowStore<any>
       }
 
 /**
  * Queue-level persistence: pick a named store from `config.stores`.
- * Strategy comes from the store definition, not from the queue.
- *
- * Snapshot-only: `autoSave`, `autoSaveDebounceMs`.
- * Row-only: `createId` (JS only).
+ * The store is passed to `buildQueue({ store })`.
  */
 export type PersistConfig = {
     /** Name of an entry in `config.stores`. */
     store: string
-    /**
-     * Snapshot stores only: auto-save after mutations.
-     * Defaults to `true`. Rejected for row stores.
-     */
-    autoSave?: boolean
-    /**
-     * Snapshot stores only: debounce auto-save after mutations (ms).
-     * `0` / omitted = one save per microtask; `> 0` waits after the last mutation.
-     * Rejected for row stores. Must be a safe integer ≥ 0.
-     */
-    autoSaveDebounceMs?: number
-    /**
-     * Row stores only (JS config): custom id factory for new rows.
-     * Defaults to core `createId`. Rejected for snapshot stores.
-     */
-    createId?: () => string
+    /** Optional in-process lease TTL (ms). */
+    leaseTtlMs?: number
 }
 
 /**
  * Worker attachment for a queue (JS config only — functions are not JSON).
- *
- * ```ts
- * import { handleJob } from './workers/job'
- *
- * worker: handleJob
- * // or
- * worker: { run: handleJob, concurrency: 4, autoStart: false }
- * ```
  */
 export type WorkerConfig =
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -119,11 +72,7 @@ export type WorkerConfig =
 
 /**
  * Same-queue failure re-entry via `withLoop` (requires `worker`).
- * `true` / `{}` use library defaults. `map` / `filter` / function `delay` are JS-only.
- * Static numeric `delay` (ms) is valid in JSON.
- *
- * Both `loop` and `dlq` fire on every `worker:failed` independently.
- * Chain with complementary filters (see package README).
+ * Sets recovery policy to `loop` with optional map/filter/delay.
  */
 export type LoopConfig =
     | true
@@ -132,25 +81,16 @@ export type LoopConfig =
           map?: (item: any, error: unknown, ctx: LoopMapContext) => any
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           filter?: (item: any, error: unknown, ctx: LoopMapContext) => boolean
-          /**
-           * Delay before re-enqueue: static ms, or `(hops) => ms` (1-based hop
-           * count only). Function form is JS-only.
-           * Not durable — restart/crash drops items still waiting on the timer.
-           */
           delay?: number | ((hops: number) => number)
       }
 
 /**
  * Distinct dead-letter destination via `withDlq` (requires `worker`).
- * String form is the target queue name under `queues`.
- * `map` / `filter` are JS-only.
- *
- * Destination must differ from the source queue (use `loop` for same-queue).
+ * Used when recovery policy is `fail` (default).
  */
 export type DlqConfig =
     | string
     | {
-          /** Name of a queue under `queues` (must not be the source). */
           queue: string
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           map?: (item: any, error: unknown) => any
@@ -159,141 +99,52 @@ export type DlqConfig =
       }
 
 export type QueueConfig = {
-    /**
-     * Maximum items in the in-memory queue (backpressure).
-     * Same semantics as `buildQueue({ maxSize })` — enqueue throws
-     * `QueueFullError` when exceeded.
-     */
     maxSize?: number
-    /** Optional persistence via a named store in `config.stores`. */
+    /** Optional durable store via a named entry in `config.stores`. */
     persist?: PersistConfig
-    /**
-     * JS config only — process items with withWorker.
-     * Import the function from your app and pass it here.
-     */
     worker?: WorkerConfig
-    /**
-     * Re-enqueue worker failures onto this queue (`withLoop`).
-     * Requires `worker`. Queue key is passed as `buildQueue({ name })`.
-     */
     loop?: LoopConfig
-    /**
-     * Forward worker failures to another named queue (`withDlq`).
-     * Requires `worker`. Destination must exist and differ from this queue.
-     */
     dlq?: DlqConfig
 }
 
 export type BindingConfig = {
-    /** Topic pattern (`orders.*`, `mail.#`, …). */
     pattern: string
-    /** Name of a queue defined under `queues`. */
     queue: string
 }
 
 export type RouterConfig = {
     bindings?: BindingConfig[]
-    /**
-     * Named queue that receives route-message envelopes when a publish
-     * matches **no** bindings (unrouted). Must exist under `queues`.
-     * The queue is not auto-bound as a pattern — it is only the unmatched sink.
-     */
     unmatchedQueue?: string
 }
 
-/**
- * Single system config: **stores** (adapters) + **queues** (+ optional router).
- *
- * Prefer a JS/TS module so workers and custom store `impl`s can be imported.
- * A JSON subset (built-in adapters only, no workers) works via
- * {@link parseSystemConfig} / {@link buildFromJson}.
- *
- * @example
- * ```ts
- * import { defineConfig } from '@qkitt/queue-config'
- * import { handleMail } from './workers/mail'
- * import { createRedisRowStore } from './stores/redis'
- *
- * export default defineConfig({
- *   stores: {
- *     mailDb: { adapter: 'localStorage', strategy: 'row', key: 'mail' },
- *     redis: { strategy: 'row', impl: createRedisRowStore() },
- *   },
- *   queues: {
- *     mail: {
- *       persist: { store: 'mailDb' },
- *       worker: { run: handleMail, concurrency: 2 },
- *     },
- *   },
- *   router: {
- *     bindings: [{ pattern: 'mail.#', queue: 'mail' }],
- *     unmatchedQueue: 'unrouted',
- *   },
- * })
- * ```
- */
 export type SystemConfig = {
-    /**
-     * Named store adapters. Queues reference them with `persist.store`.
-     * Omit (or `{}`) when no queue uses persistence.
-     * Every named store must be referenced by exactly one queue.
-     */
     stores?: Record<string, StoreDefinition>
     queues: Record<string, QueueConfig>
-    /**
-     * When present, a router is created and bindings applied.
-     * Use `{}` or `{ bindings: [] }` for an empty router.
-     * Optional `unmatchedQueue` parks unrouted publishes.
-     */
     router?: RouterConfig
     /**
-     * Hydrate all persisted queues after construction (and after workers
-     * are attached, so restored items can be processed when autoStart is on).
+     * Hydrate all durable queues after construction.
      * Defaults to `true` when any queue has `persist`.
      */
     hydrate?: boolean
 }
 
-/** Build-time options that cannot live in config data. */
 export type BuildFromConfigOptions = {
-    /**
-     * Inject Web Storage (tests, Node, custom backends).
-     * Used when a store's `adapter` is `localStorage` or `sessionStorage`.
-     */
     storage?: WebStorageLike
-    /**
-     * Skip re-validation (advanced). Use only when `config` was already
-     * returned from {@link defineConfig}, {@link validateJsConfig},
-     * {@link validateSystemConfig}, or {@link parseSystemConfig}.
-     */
     skipValidate?: boolean
 }
 
-/** Resolved store instance after build (custom or built-in). */
-export type ResolvedStore<T = unknown> = SnapshotStore<T> | RowStore<T>
+export type ResolvedStore<T = unknown> = RowStore<T>
 
-/** Persist helpers attached by `withPersist`. */
 export type ConfiguredPersistMethods = {
     hydrate: () => Promise<void>
     flush: () => Promise<void>
-    /** Snapshot strategy only. */
-    persist?: () => Promise<void>
-    /** Row strategy only. */
-    rowIds?: () => string[]
+    rowIds: () => number[]
 }
 
-/**
- * Queue surface returned by the config builder.
- * Persist / worker helpers are present only when configured.
- */
 export type ConfiguredQueue<T = unknown> = Queue<T> &
     Partial<WorkerControls> &
     Partial<ConfiguredPersistMethods>
 
-/**
- * Precise queue type from a single {@link QueueConfig} entry.
- * Worker and persist method sets become required when those fields are set.
- */
 export type ConfiguredQueueFor<
     Q extends QueueConfig,
     T = unknown,
@@ -322,34 +173,11 @@ export type ConfiguredSystem<
     T = unknown,
 > = {
     queues: ConfiguredSystemQueues<TConfig, T>
-    /**
-     * Resolved store instances keyed by `config.stores` names.
-     * Empty object when no stores were defined.
-     */
     stores: {
         [K in keyof NonNullable<TConfig['stores']>]: ResolvedStore<T>
     } & Record<string, ResolvedStore<T>>
-    /**
-     * Present when `router` was set in config.
-     * Always defined for that case; `undefined` when no router was requested.
-     */
     router: ConfiguredSystemRouter<TConfig>
-    /** Hydrate every queue that exposes `hydrate`. */
     hydrateAll: () => Promise<void>
-    /**
-     * Flush every queue that exposes `flush` (drains pending auto-saves /
-     * write chains). Does not force a full snapshot write when `autoSave` is
-     * false — use {@link persistAll} or per-queue `persist()` for that.
-     */
     flushAll: () => Promise<void>
-    /**
-     * Call `persist()` on every snapshot-persisted queue that exposes it.
-     * No-op for row stores and non-persisted queues.
-     */
-    persistAll: () => Promise<void>
-    /**
-     * The config used to build this system (nested plain data frozen).
-     * Function references (workers, store impls) are preserved.
-     */
     config: Readonly<TConfig>
 }

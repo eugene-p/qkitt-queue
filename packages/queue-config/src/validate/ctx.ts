@@ -11,5 +11,4 @@ export type ParseJsOptions = {
 /** Full context for queue-level parsing after store inventory is known. */
 export type ParseCtx = ParseJsOptions & {
     storeNames: ReadonlySet<string>
-    storeStrategies: ReadonlyMap<string, 'snapshot' | 'row'>
 }

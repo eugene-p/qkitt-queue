@@ -11,6 +11,14 @@ out/
 # Test coverage
 coverage/
 
+# Playwright / Vitest browser artifacts
+test-results/
+**/test-results/
+playwright-report/
+**/playwright-report/
+blob-report/
+**/blob-report/
+
 # Vitest / Vite cache
 .vitest/
 .vite/

@@ -19,8 +19,8 @@ Guides live on GitHub (not in the npm tarball). Suggested path: [Composition](ht
 
 | Guide | Covers |
 | --- | --- |
-| [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) | Bare queue → worker → persist → helpers → config |
-| [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) | Snapshot / row, stores, custom backends |
+| [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) | Bare / durable queue → worker → helpers → config |
+| [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) | `buildQueue({ store })`, row stores, custom backends |
 | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) | MQTT-style patterns, unmatched sink |
 | [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) | `withLoop`, `withDlq`, chaining |
 | [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) | `whenIdle`, `gracefulStop` |
@@ -36,12 +36,11 @@ npm install @qkitt/queue
 import {
   buildQueue,
   withWorker,
-  withPersist,
   pipelineWorker,
   retryWorker,
   buildRouter,
-  createMemorySnapshotStore,
   createMemoryRowStore,
+  createLocalStorageRowStore,
 } from '@qkitt/queue'
 ```
 
@@ -64,29 +63,30 @@ const queue = withWorker(
   { concurrency: 2 },
 )
 
-queue.enqueue({ id: '1' })
+await queue.enqueue({ id: '1' })
 ```
 
-Add persistence (stack: **bare → persist → worker**):
+Add persistence (`store` on the constructor — no decorator):
 
 ```ts
 import {
   buildQueue,
   withWorker,
-  withPersist,
-  createMemorySnapshotStore,
+  createMemoryRowStore,
 } from '@qkitt/queue'
 
+const base = buildQueue<Job>({ store: createMemoryRowStore() })
+await base.hydrate() // after restart: before withWorker
+
 const queue = withWorker(
-  withPersist(buildQueue<Job>(), createMemorySnapshotStore()),
+  base,
   async (job) => {
     // handle job
   },
   { concurrency: 2 },
 )
 
-await queue.hydrate()
-queue.enqueue({ id: '1' })
+await queue.enqueue({ id: '1' })
 await queue.flush() // before process exit
 ```
 
@@ -119,9 +119,9 @@ When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](h
 | Concurrent jobs | [Composition §2](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#2-add-a-worker) |
 | Drain / graceful stop | [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) |
 | Retries / multi-step | [Composition §4](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers) |
-| Survive restart (snapshot) | [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) · [Composition §3](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#3-add-persistence) |
-| DB-style row persist | [Row](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#row) |
-| Custom store (file, etc.) | [Custom stores](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#custom-stores) |
+| Survive restart | [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) · [Composition §3](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#3-add-persistence) |
+| Browser Web Storage | [Browser storage](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#browser-storage) |
+| Custom store (file, etc.) | [Custom stores](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#custom-stores)
 | Topic fan-out | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) |
 | Same-queue re-entry / loop delay | [Loop](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop) |
 | Dead-letter sink | [Dead letter](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#dead-letter-withdeadletter--withdlq) |
@@ -140,21 +140,23 @@ In-process peers only. Full tables and setup: [root README](https://github.com/e
 
 | Library | c=1 | c=4 | heap Δ (c=1) |
 | --- | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **846** | **874** | **247 KiB** |
-| fastq | 107 | 100 | 6.80 MiB |
-| async.queue | 195 | 220 | 4.94 MiB |
-| p-queue | 82 | 71 | 11.04 MiB |
+| **@qkitt/queue** `withWorker` | **439** | **490** | **95 KiB** |
+| fastq | 316 | 280 | 6.12 MiB |
+| async.queue | 347 | 374 | 3.95 MiB |
+| p-queue | 104 | 95 | 6.19 MiB |
 
 **Bare queue** — 50 000 enqueue + dequeue (ops/s median · retained heap)
 
 | Library | ops/s | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 789 | 1.19 MiB |
-| denque | 1,462 | 1.73 MiB |
-| yocto-queue | 2,161 | 1.92 MiB |
-| native `Array` push/shift | 7 | 1.18 MiB |
+| **@qkitt/queue** `buildQueue` | 783 | 413 KiB |
+| denque | 2,349 | 518 KiB |
+| yocto-queue | 2,409 | 1.92 MiB |
+| native `Array` push/shift | 8 | 399 KiB |
 
-Relative numbers (Node 22.23.1, Windows laptop, 2026-07-22). YMMV.
+**Browser (Chromium)** — bare vs durable worker drain, 5k jobs c=1: bare ~2 ms · memory store ~9 ms · localStorage ~410 ms (`npm run compare:stores`).
+
+Relative numbers (Node 26.5.0, Windows laptop, 2026-07-26). YMMV.
 
 ## Changelog
 

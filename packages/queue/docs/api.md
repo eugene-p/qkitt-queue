@@ -4,9 +4,9 @@ Guides show composition patterns; this page covers public signatures.
 
 [README](../README.md) · [Composition](./composition.md) · [Persistence](./persistence.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md)
 
-**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, `withPersist`, memory/web store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RouteMessage`, store interfaces).
+**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, memory/web row store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RowStore`, `RouteMessage`).
 
-Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `emit`) is for specialized use — see individual entries below.
+Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `claim` / `ack`, `emit`) is for specialized use — see individual entries below.
 
 ## `buildQueue`
 
@@ -18,27 +18,40 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | --- | --- | --- | --- |
 | `maxSize` | `number` | — | Safe integer ≥ 1. `enqueue` / `replaceAll` throw `QueueFullError` when full. |
 | `name` | `string` | — | Logical id (trimmed, non-empty). Used by `withLoop` hop meta and tracking (`getQueueName`). |
+| `store` | `RowStore<T>` | — | Durable backend. When set, mutations write rows; call `hydrate()` / `flush()`. |
+| `leaseTtlMs` | `number` | — | In-process lease TTL (safe integer ≥ 1). Omitted → reclaim leases on hydrate/restart only. |
 
 **Methods**
 
 | Method | Returns | Description |
 | --- | --- | --- |
-| `enqueue(item)` | `void` | Add to tail |
-| `dequeue()` | `T \| undefined` | Remove head (`undefined` if empty; ambiguous when `T` may be `undefined`) |
+| `enqueue(item, opts?)` | `Promise<void>` | Add to tail; optional `{ delayMs }` |
+| `claim()` | `Promise<Lease<T> \| undefined>` | Worker path: take head under a lease |
+| `ack(lease)` | `Promise<void>` | Complete lease (remove durable row) |
+| `release(lease)` | `Promise<void>` | Return leased item to available |
+| `reschedule(lease, next)` | `Promise<void>` | Settle lease with a new item / delay |
+| `dequeue()` | `Promise<T \| undefined>` | Admin drop of head available (`undefined` if empty; ambiguous when `T` may be `undefined`) |
+| `tryDequeue()` | `Promise<QueueSlot<T> \| undefined>` | Nullish-safe admin drop: `{ value }` or `undefined` if empty |
 | `peek()` | `T \| undefined` | Head without removing (same ambiguity as `dequeue`) |
-| `tryDequeue()` | `QueueSlot<T> \| undefined` | Nullish-safe: `{ value }` or `undefined` if empty |
 | `tryPeek()` | `QueueSlot<T> \| undefined` | Nullish-safe peek |
-| `size()` | `number` | Item count |
+| `size()` | `number` | Non-acked rows (available + delayed + leased) |
+| `readyCount()` | `number` | Claimable available rows only |
+| `stats()` | `QueueStats` | `{ available, delayed, leased }` |
 | `isEmpty()` | `boolean` | |
-| `clear()` | `void` | Remove all; emits `queue:cleared` |
-| `replaceAll(items)` | `void` | Silent replace (no queue events). Used by persist hydrate — not a substitute for looping `enqueue`. |
-| `toArray()` | `T[]` | Snapshot head → tail |
+| `clear()` | `Promise<void>` | Remove all; emits `queue:cleared` |
+| `replaceAll(items)` | `Promise<void>` | Silent replace (no queue events) |
+| `toArray()` | `T[]` | Snapshot available → delayed → leased |
+| `rowIds()` | `number[]` | Durable / delayed / leased ids (bare available has no stable ids until claim) |
+| `hydrate()` | `Promise<void>` | Load from `store` (no-op without store) |
+| `flush()` | `Promise<void>` | Await durable write chain (no-op without store) |
 | `on` | `() => void` | Subscribe; returns unsubscribe |
 | `emit` | `void` | Advanced; prefer domain methods so invariants hold |
 
 `null` / `undefined` are valid payloads. Prefer `tryDequeue` / `tryPeek` when `T` may be nullish so emptiness is structural (`undefined` return) rather than inferred from the value.
 
-**Errors:** `QueueFullError` (`maxSize`); `InvalidQueueOptionError` for invalid `maxSize`.
+Bare (no `store`) mutators resolve immediately after the in-memory update. Durable mutators serialize through a write chain.
+
+**Errors:** `QueueFullError` (`maxSize`); `InvalidQueueOptionError` for bad options; `InvalidStoreError` if `store` is not a `RowStore`; `HydrateWhileActiveError` during hydrate or with active leases; `LeaseMismatchError` on stale leases; `InvalidRowIdError` / `DuplicateRowIdError` on bad hydrate rows; `IdSpaceExhaustedError` when ids run out.
 
 **Events**
 
@@ -48,6 +61,12 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `queue:dequeued` | `{ item, size }` |
 | `queue:emptied` | `undefined` |
 | `queue:cleared` | `{ removed }` |
+| `persist:loaded` | `{ size }` |
+| `persist:lease-expired` | `{ id, item }` |
+| `persist:id-space-low` | `{ remaining }` |
+| `persist:error` | `{ operation, error, id? }` |
+
+Guide: [Persistence](./persistence.md).
 
 ---
 
@@ -65,6 +84,7 @@ withWorker<T, R>(
 | --- | --- | --- | --- |
 | `concurrency` | `number` | `1` | Safe integer ≥ 1 |
 | `autoStart` | `boolean` | `true` | If `false`, no pump until `start()` |
+| `onFailure` | `RecoveryPolicy<T>` | `'fail'` | `'fail'` (DLQ if registered, else drop), `'loop'`, or custom |
 
 **Controls** (added to the queue)
 
@@ -77,21 +97,23 @@ withWorker<T, R>(
 | `isProcessing()` | Any in-flight items |
 | `activeCount()` | In-flight count |
 
-Methods added by inner layers (e.g. `flush`, `hydrate`) remain accessible on the decorated queue. See also standalone [`whenIdle`](#whenidle--gracefulstop) / `gracefulStop` and the [lifecycle guide](./lifecycle.md).
+Queue methods (`hydrate`, `flush`, `enqueue`, …) remain on the decorated queue. See also standalone [`whenIdle`](#whenidle--gracefulstop) / `gracefulStop` and the [lifecycle guide](./lifecycle.md).
 
 **Events**
 
 | Event | Payload | When |
 | --- | --- | --- |
 | `worker:started` | `{ item }` | Before run |
-| `worker:completed` | `{ item, result }` | Resolved |
-| `worker:failed` | `{ item, error }` | Rejected |
+| `worker:completed` | `{ item, result }` | Resolved (lease acked) |
+| `worker:failed` | `{ item, error }` | Rejected after recovery path |
+| `worker:requeued` | `{ item, error?, delayMs? }` | Failure re-entered the queue |
+| `worker:dropped` | `{ item, error? }` | Failure dropped (no DLQ / filter) |
 | `worker:idle` | `undefined` | Empty and nothing in flight |
-| `worker:pump-error` | `{ error }` | Unexpected `tryDequeue` failure (worker stops) |
+| `worker:pump-error` | `{ error }` | Unexpected claim/ack failure (worker stops) |
 
-The pump uses `tryDequeue` so nullish payloads are processed. While a stacked persist layer is hydrating, `tryDequeue` throws `QueueHydratingError`; the pump waits for the post-hydrate kick. Other unexpected dequeue failures emit `worker:pump-error` and stop the worker — call `start()` after fixing the cause.
+The pump uses **leases** (`claim` → run → `ack` on success). Default recovery is `'fail'`: forward to a DLQ registered via `withDeadLetter`, else drop. Use `onFailure: 'loop'` or [`withLoop`](#withloop) to requeue.
 
-**Errors:** `InvalidWorkerOptionError` for invalid `concurrency` / invalid lifecycle `timeoutMs`; `LifecycleTimeoutError` when `whenIdle` / `gracefulStop` exceed `timeoutMs`.
+**Errors:** `InvalidWorkerOptionError` for invalid `concurrency` / invalid lifecycle `timeoutMs`; `LifecycleTimeoutError` when `whenIdle` / `gracefulStop` exceed `timeoutMs`; `ConflictingRecoveryError` when recovery composition conflicts.
 
 ---
 
@@ -173,49 +195,13 @@ Requires a **named** queue (`buildQueue({ name })`). Hop bookkeeping under `__qk
 
 ### Chaining `withLoop` + `withDlq`
 
-Both layers subscribe to the **same** `worker:failed` event independently — not “loop until filter fails, then DLQ.” Default filters on both sides **duplicate** (re-enqueue and dead-letter every failure). Complementary filters: [Failure routing — chaining](./failure-routing.md#chaining-withloop--withdlq).
+Single recovery path: loop policy first; loop `filter` false → fail path (DLQ if registered). See [Failure routing — chaining](./failure-routing.md#chaining-withloop--withdlq).
 
 ---
 
-## `withPersist`
+## Persistence (via `buildQueue`)
 
-```ts
-withPersist<T>(queue: Queue<T>, store: SnapshotStore<T>): QueueWithPersist<T, 'snapshot'>
-withPersist<T>(queue: Queue<T>, store: RowStore<T>): QueueWithPersist<T, 'row'>
-```
-
-Strategy is inferred from the store's method shape at runtime:
-- `load` + `save` → snapshot
-- `loadAll` + `insert` + `remove` + `clear` → row
-
-Strategy options are read from `store.persistOptions` (set by factories, or on your store). Omitted options use defaults.
-
-**Snapshot options** (via factory or `persistOptions`):
-
-| Option | Type | Default |
-| --- | --- | --- |
-| `autoSave` | `boolean` | `true` |
-| `autoSaveDebounceMs` | `number` | `0` (microtask coalesce) |
-
-**Row options** (via factory or `persistOptions`):
-
-| Option | Type | Default |
-| --- | --- | --- |
-| `createId` | `() => string` | Library default (nanoid-style) |
-
-When `autoSave` is true, burst mutations are coalesced: `0` (default) schedules one save per microtask; `> 0` waits that many ms after the last mutation.
-
-**Snapshot added methods:** `hydrate()`, `persist()`, `flush()`.
-
-**Row added methods:** `hydrate()`, `flush()`, `rowIds()`.
-
-**Snapshot events:** `persist:loaded`, `persist:saved`, `persist:error` (`operation`: `'load' | 'save'`).
-
-**Row events:** `persist:loaded`, `persist:inserted`, `persist:removed`, `persist:cleared`, `persist:error`.
-
-**Errors:** `QueueHydratingError` on concurrent mutation during hydrate; `HydrateInProgressError` if a second `hydrate()` starts while one is running; `InvalidQueueCompositionError` for wrong stack order or double persist; `InvalidStoreError` if the store matches both shapes or neither; `InvalidPersistOptionError` for bad snapshot options; `InvalidRowIdError` / `DuplicateRowIdError` for bad or colliding row ids.
-
-Guide: [Persistence](./persistence.md).
+There is **no** `withPersist` decorator. Pass `store` (and optional `leaseTtlMs`) to [`buildQueue`](#buildqueue). Snapshot stores, `autoSave`, and `persist()` are removed — see [Persistence](./persistence.md#migration-from-withpersist--snapshot--07).
 
 ---
 
@@ -285,17 +271,16 @@ Guide: [Topics & routing](./routing.md).
 
 ## Stores
 
-| Factory | Strategy |
+| Factory | Notes |
 | --- | --- |
-| `createMemorySnapshotStore<T>()` | Snapshot |
-| `createMemoryRowStore<T>()` | Row |
-| `createLocalStorageSnapshotStore(key, options?)` | Snapshot |
-| `createLocalStorageRowStore(key, options?)` | Row |
-| `createSessionStorageSnapshotStore(key, options?)` | Snapshot |
-| `createSessionStorageRowStore(key, options?)` | Row |
-| `createWebSnapshotStore` / `createWebRowStore` | Custom `WebStorageLike` |
+| `createMemoryRowStore<T>(initial?)` | In-process `RowStore` (`store.rows` for inspection) |
+| `createLocalStorageRowStore(key, options?)` | Browser `localStorage` rows |
+| `createSessionStorageRowStore(key, options?)` | Browser `sessionStorage` rows |
+| `createWebRowStore({ key, storage?, itemCodec? })` | Custom `WebStorageLike` |
 
-**Errors:** `StorageCodecError` on bad JSON in web stores; `StorageUnavailableError` when `localStorage` / `sessionStorage` is missing and no explicit `storage` was passed.
+`RowStore` requires `loadAll` / `put` / `remove` / `clear` (optional batch helpers). Records use **numeric** ids and lease fields — see [Persistence](./persistence.md#row-records).
+
+**Errors:** `StorageCodecError` on bad JSON in web stores; `StorageUnavailableError` when `localStorage` / `sessionStorage` is missing and no explicit `storage` was passed; `InvalidStoreError` when `buildQueue({ store })` receives a non-`RowStore`.
 
 ---
 
@@ -318,15 +303,16 @@ Also: `createTypedEmit`, types `EventEmitter`, `EventMap`, `EventCallback`, `Mer
 | Type | Role |
 | --- | --- |
 | `QueueSlot<T>` | `{ value: T }` — structural wrapper for `tryDequeue` / `tryPeek` |
-| `Queue<T>` | Bare queue surface |
+| `Lease<T>` | `{ id, item, generation }` — worker ownership token |
+| `QueueStats` | `{ available, delayed, leased }` |
+| `Queue<T>` | Queue surface (FIFO + leases + optional durable store) |
 | `QueueWithWorker<T, R>` | Queue + worker controls |
-| `QueueWithPersist<T, S>` | Persist-decorated queue (`S` = `'snapshot'` or `'row'`) |
 | `WorkerFn<T, R>` | `(item) => R \| Promise<R>` |
 | `WorkerControls` | `start` / `stop` / `gracefulStop` / … |
 | `WhenIdleOptions`, `GracefulStopOptions` | Lifecycle helper options |
 | `WithWorkerOptions`, `BuildQueueOptions` | Options objects |
-| `RowRecord<T>`, `RowStore<T>`, `SnapshotStore<T>` | Persist contracts |
-| `RowPersistEvents<T>`, `SnapshotPersistEvents` | Persist event maps for `.on('persist:…')` |
+| `RowRecord<T>`, `RowStore<T>` | Durable row contracts |
+| `PersistEvents` | Persist event map (`persist:loaded`, …) |
 | `RouteMessage<T>`, `Router`, `Binding` | Router |
 | `DeadLetterTarget<U>`, `WithDeadLetterOptions<T, U>` | Dead-letter destination / options |
 | `LoopMapContext`, `WithLoopOptions<T, U>` | Loop hop context / options |
@@ -342,15 +328,15 @@ Internals (`*.util`, codecs, write chain) are not part of the public contract.
 | Subpath | Exports | Does *not* contain |
 | --- | --- | --- |
 | `@qkitt/queue` | Everything | — |
-| `@qkitt/queue/queue` | `buildQueue`, `getQueueName`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, queue + worker types | Persist, stores |
+| `@qkitt/queue/queue` | `buildQueue`, `getQueueName`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, queue + worker types | Store factories |
 | `@qkitt/queue/worker` | `pipelineWorker`, `pipelineDone`, `retryWorker`, related errors/types | `withWorker` |
 | `@qkitt/queue/router` | `buildRouter`, router types | — |
-| `@qkitt/queue/persist` | `withPersist`, stores, contracts, event types, `QueueHydratingError` | `buildQueue`, `withWorker` |
-| `@qkitt/queue/persist/stores` | Memory + web store factories only | `withPersist`, strategy runtime |
-| `@qkitt/queue/persist/stores/memory` | Memory store factories | Web storage |
+| `@qkitt/queue/persist` | `RowStore` contracts, errors, store factories | `buildQueue`, `withWorker` |
+| `@qkitt/queue/persist/stores` | Memory + web store factories only | Contracts-only usage |
+| `@qkitt/queue/persist/stores/memory` | Memory store factory | Web storage |
 | `@qkitt/queue/persist/stores/web-storage` | Web storage factories + `StorageCodecError` | Memory stores |
 | `@qkitt/queue/events` | `buildEventEmitter`, … | — |
 
 Companion: [`@qkitt/queue-config`](../../queue-config) — declarative `defineConfig` / `buildFromConfig`.
 
-`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. The persist decorator (`withPersist`) and all store factories live under `@qkitt/queue/persist`. Prefer `@qkitt/queue/persist/stores/*` when you want store factories without pulling strategy code via a narrow subpath (root and `/persist` still re-export stores for convenience; modern bundlers tree-shake unused chunks when `sideEffects` is false).
+`@qkitt/queue/worker` is worker **helpers** only. The queue worker decorator (`withWorker`) lives under `@qkitt/queue/queue`. Store factories live under `@qkitt/queue/persist` (and root). Prefer `@qkitt/queue/persist/stores/*` for narrow imports (root and `/persist` still re-export stores; modern bundlers tree-shake unused chunks when `sideEffects` is false).
