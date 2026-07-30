@@ -72,6 +72,47 @@ Guide: [Persistence](./persistence.md).
 
 ---
 
+## `Job` / `createJob`
+
+The queue stays payload-agnostic. When a persisted job needs a stable
+application id and correlation metadata, use the opt-in envelope rather than
+putting queue bookkeeping into the payload:
+
+```ts
+import { buildQueue, createJob, type Job } from '@qkitt/queue'
+
+type Email = { to: string; body: string }
+
+const queue = buildQueue<Job<Email>>()
+await queue.enqueue(
+  createJob(
+    { to: 'a@example.com', body: 'Hello' },
+    { id: 'mail_01H...', metadata: { traceId: 'trace_123' } },
+  ),
+)
+```
+
+```ts
+type Job<T, TMetadata = Record<string, unknown>> = {
+  id: string
+  payload: T
+  enqueuedAt: number
+  metadata?: TMetadata
+}
+
+createJob(payload, { id, metadata?, enqueuedAt? }): Job
+```
+
+`id` is application-owned and intended for idempotency at external side
+effects; it is distinct from the queue's internal numeric row id. `createJob`
+trims and validates a non-empty id and assigns `Date.now()` unless
+`enqueuedAt` is supplied (useful for imports and tests). `isJob` is a
+structural guard. Retry attempts and worker execution context will be added as
+separate job-system features; this envelope intentionally does not alter
+`Queue<T>` semantics.
+
+---
+
 ## `withWorker`
 
 ```ts
@@ -310,6 +351,7 @@ Also: `createTypedEmit`, types `EventEmitter`, `EventMap`, `EventCallback`, `Mer
 | Type | Role |
 | --- | --- |
 | `QueueSlot<T>` | `{ value: T }` — structural wrapper for `tryDequeue` / `tryPeek` |
+| `Job<T>` / `CreateJobOptions<TMetadata>` | Opt-in application job envelope / factory options |
 | `Lease<T>` | `{ id, item, generation }` — worker ownership token |
 | `QueueStats` | `{ available, delayed, leased }` |
 | `Queue<T>` | Queue surface (FIFO + leases + optional durable store) |

@@ -13,6 +13,14 @@ export {
 export { getQueueName } from './core/queue-name.util'
 
 export {
+    createJob,
+    InvalidJobOptionError,
+    isJob,
+    type CreateJobOptions,
+    type Job,
+} from './jobs'
+
+export {
     InvalidWorkerOptionError,
     withWorker,
     type QueueWithWorker,

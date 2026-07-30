@@ -30,16 +30,23 @@ import { dlqTargetName } from './validate/queue'
 
 const resolveWorker = <T>(
     worker: WorkerConfig,
+    deferStart: boolean,
 ): { run: WorkerFn<T, unknown>; options: WithWorkerOptions<T> } => {
     if (typeof worker === 'function') {
-        return { run: worker as WorkerFn<T, unknown>, options: {} }
+        return {
+            run: worker as WorkerFn<T, unknown>,
+            options: deferStart ? { autoStart: false } : {},
+        }
     }
     const { run, concurrency, autoStart, onFailure } = worker
+    const resolvedAutoStart = deferStart ? false : autoStart
     return {
         run: run as WorkerFn<T, unknown>,
         options: {
             ...(concurrency !== undefined ? { concurrency } : {}),
-            ...(autoStart !== undefined ? { autoStart } : {}),
+            ...(resolvedAutoStart !== undefined
+                ? { autoStart: resolvedAutoStart }
+                : {}),
             ...(onFailure !== undefined
                 ? { onFailure: onFailure as WithWorkerOptions<T>['onFailure'] }
                 : {}),
@@ -78,6 +85,7 @@ const buildQueueFromConfig = <T>(
     queueConfig: QueueConfig,
     storeDefs: Record<string, unknown> | undefined,
     resolvedStores: Record<string, ResolvedStore<T>>,
+    deferWorkerStart: boolean,
 ): ConfiguredQueue<T> => {
     const buildOptions: {
         name: string
@@ -112,6 +120,7 @@ const buildQueueFromConfig = <T>(
     if (queueConfig.worker) {
         const { run, options: workerOptions } = resolveWorker<T>(
             queueConfig.worker,
+            deferWorkerStart,
         )
         queue = withWorker(queue, run, workerOptions)
     }
@@ -157,6 +166,7 @@ const applyDlqLayers = <T>(
 const buildQueues = <TConfig extends SystemConfig, T>(
     validated: SystemConfig,
     resolvedStores: Record<string, ResolvedStore<T>>,
+    deferWorkerStart: boolean,
 ): ConfiguredSystem<TConfig, T>['queues'] => {
     const queues = {} as ConfiguredSystem<TConfig, T>['queues']
     const queueMap = queues as Record<string, ConfiguredQueue<T>>
@@ -167,6 +177,7 @@ const buildQueues = <TConfig extends SystemConfig, T>(
             queueConfig,
             validated.stores,
             resolvedStores,
+            deferWorkerStart,
         )
     }
 
@@ -224,19 +235,43 @@ const runOnQueues = async <T>(
     await Promise.all(tasks)
 }
 
-/**
- * Build queues (and optional router) from a system config.
- */
-export const buildFromConfig = <TConfig extends SystemConfig, T = unknown>(
-    config: TConfig,
-    options: BuildFromConfigOptions = {},
-): ConfiguredSystem<TConfig, T> => {
-    const validated = options.skipValidate
-        ? config
-        : validateJsConfig(config)
+const shouldHydrate = (config: SystemConfig): boolean =>
+    config.hydrate ??
+    Object.values(config.queues).some(
+        (queueConfig) => queueConfig.persist !== undefined,
+    )
 
+const startAutoWorkers = <T>(
+    config: SystemConfig,
+    queues: Record<string, ConfiguredQueue<T>>,
+): void => {
+    for (const [name, queueConfig] of Object.entries(config.queues)) {
+        const worker = queueConfig.worker
+        if (
+            !worker ||
+            (typeof worker !== 'function' && worker.autoStart === false)
+        ) {
+            continue
+        }
+        const queue = queues[name]
+        if (queue && typeof queue.start === 'function') {
+            queue.start()
+        }
+    }
+}
+
+/** Build queues (and an optional router) without running async hydration. */
+const buildSystem = <TConfig extends SystemConfig, T>(
+    validated: TConfig,
+    options: BuildFromConfigOptions = {},
+    deferWorkerStart: boolean,
+): ConfiguredSystem<TConfig, T> => {
     const resolvedStores = resolveAllStores<T>(validated.stores, options)
-    const queues = buildQueues<TConfig, T>(validated, resolvedStores)
+    const queues = buildQueues<TConfig, T>(
+        validated,
+        resolvedStores,
+        deferWorkerStart,
+    )
     const queueMap = queues as Record<string, ConfiguredQueue<T>>
 
     const router =
@@ -254,14 +289,60 @@ export const buildFromConfig = <TConfig extends SystemConfig, T = unknown>(
     }
 }
 
-export const buildFromConfigSync = buildFromConfig
+/**
+ * Build a configured system and hydrate durable queues before auto-start
+ * workers can claim restored rows.
+ */
+export const buildFromConfig = async <
+    TConfig extends SystemConfig,
+    T = unknown,
+>(
+    config: TConfig,
+    options: BuildFromConfigOptions = {},
+): Promise<ConfiguredSystem<TConfig, T>> => {
+    const validated = options.skipValidate ? config : validateJsConfig(config)
+    const hydrate = shouldHydrate(validated)
+    const system = buildSystem<TConfig, T>(validated, options, hydrate)
 
-export const buildFromJson = <T = unknown>(
+    if (hydrate) {
+        await system.hydrateAll()
+        startAutoWorkers(
+            validated,
+            system.queues as Record<string, ConfiguredQueue<T>>,
+        )
+    }
+
+    return system
+}
+
+/**
+ * Build without hydration. Use only when durable queues are explicitly
+ * configured with `hydrate: false` and their startup is managed by the app.
+ */
+export const buildFromConfigSync = <
+    TConfig extends SystemConfig,
+    T = unknown,
+>(
+    config: TConfig,
+    options: BuildFromConfigOptions = {},
+): ConfiguredSystem<TConfig, T> => {
+    const validated = options.skipValidate ? config : validateJsConfig(config)
+    if (shouldHydrate(validated)) {
+        return configError(
+            'ASYNC_REQUIRED',
+            'buildFromConfigSync requires hydrate: false when a queue uses persist; use buildFromConfig for automatic hydration',
+            'config.hydrate',
+        )
+    }
+    return buildSystem<TConfig, T>(validated, options, false)
+}
+
+export const buildFromJson = async <T = unknown>(
     json: string,
     options?: BuildFromConfigOptions,
-): ConfiguredSystem<SystemConfig, T> => {
+): Promise<ConfiguredSystem<SystemConfig, T>> => {
     const config = parseSystemConfig(json)
-    return buildFromConfig(config, options)
+    return buildFromConfig<SystemConfig, T>(config, options)
 }
 
 export const defineConfig = <TConfig extends SystemConfig>(

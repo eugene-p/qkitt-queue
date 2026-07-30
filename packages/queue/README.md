@@ -86,6 +86,22 @@ await queue.enqueue({ id: '1' })
 
 Need a different outcome? Persist jobs across restart with [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md); retry a flaky call with [worker helpers](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers); or decide where permanent failures go with [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md).
 
+When a durable job needs an application id for idempotency or correlation,
+queue an opt-in `Job<T>` envelope. Its id is separate from the queue's internal
+row id:
+
+```ts
+import { buildQueue, createJob, type Job } from '@qkitt/queue'
+
+const jobs = buildQueue<Job<{ to: string }>>()
+await jobs.enqueue(
+  createJob({ to: 'a@example.com' }, { id: 'mail_01H...', metadata: { traceId: 'trace_123' } }),
+)
+```
+
+See [`Job` / `createJob`](./docs/api.md#job--createjob) for the complete
+contract.
+
 Add persistence (`store` on the constructor — no decorator):
 
 ```ts

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-30
+
+### Added
+
+- Opt-in `Job<T>` envelopes with `createJob` and `isJob`. Applications can
+  persist a stable id, enqueue timestamp, and correlation metadata separately
+  from their work payload.
+
 ## [0.8.1] — 2026-07-30
 
 ### Fixed
@@ -402,6 +410,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.9.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.9.0
 [0.8.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.1
 [0.8.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.0
 [0.7.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.7.0

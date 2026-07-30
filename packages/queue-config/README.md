@@ -216,7 +216,11 @@ router: {
 
 ### `hydrate`
 
-Load all durable queues after build (and after workers attach, so restored items can run when `autoStart` is on). Defaults to `true` when any queue has `persist`. Set `false` to hydrate yourself via `system.hydrateAll()` or per-queue `hydrate()`.
+Load all durable queues after build. `buildFromConfig` attaches workers in a
+paused state, hydrates, then starts workers whose `autoStart` is on. This is the
+default when any queue has `persist`. Set `false` to use
+`buildFromConfigSync`; then keep durable workers at `autoStart: false`, hydrate
+them yourself, and call `start()` only after hydration succeeds.
 
 ### Build rules
 

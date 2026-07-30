@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-30
+
+### Breaking
+
+- `buildFromConfig` and `buildFromJson` now return `Promise`s at runtime, as
+  documented. Await them before accessing the configured system.
+- `buildFromConfigSync` rejects durable configurations unless
+  `hydrate: false` is set. Use the async builder for automatic hydration.
+- Peer dependency `@qkitt/queue` is now `^0.9.0`.
+
+### Fixed
+
+- Durable configured queues now attach workers paused, hydrate restored rows,
+  then start workers whose `autoStart` option is enabled. Restored work can no
+  longer be claimed before hydration completes.
+
 ## [0.6.0] — 2026-07-26
 
 > **BREAKING — pairs with `@qkitt/queue` 0.8.** Snapshot config, `strategy`, and
@@ -183,6 +199,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.7.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.7.0
 [0.6.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.6.0
 [0.5.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.1
 [0.5.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.0

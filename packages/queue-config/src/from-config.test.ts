@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createMemoryRowStore } from '@qkitt/queue'
+import { createMemoryRowStore, whenIdle } from '@qkitt/queue'
 import {
     buildFromConfig,
     buildFromConfigSync,
@@ -9,7 +9,7 @@ import { ConfigValidationError } from './errors'
 
 describe('buildFromConfig', () => {
     it('builds a bare named queue', async () => {
-        const system = buildFromConfig({
+        const system = await buildFromConfig({
             queues: { jobs: {} },
         })
         await system.queues.jobs.enqueue(1)
@@ -19,7 +19,7 @@ describe('buildFromConfig', () => {
 
     it('wires memory store and hydrate reclaim', async () => {
         const store = createMemoryRowStore<number>()
-        const system = buildFromConfig({
+        const system = await buildFromConfig({
             stores: { db: { impl: store } },
             queues: {
                 jobs: { persist: { store: 'db' } },
@@ -29,7 +29,7 @@ describe('buildFromConfig', () => {
         await system.queues.jobs.enqueue(42)
         await system.queues.jobs.flush()
 
-        const system2 = buildFromConfig({
+        const system2 = await buildFromConfig({
             stores: { db: { impl: store } },
             queues: {
                 jobs: { persist: { store: 'db' } },
@@ -43,7 +43,7 @@ describe('buildFromConfig', () => {
 
     it('attaches worker and processes items', async () => {
         const seen: number[] = []
-        const system = buildFromConfig({
+        const system = await buildFromConfig({
             queues: {
                 jobs: {
                     worker: {
@@ -68,7 +68,7 @@ describe('buildFromConfig', () => {
 
     it('withLoop requeues failures', async () => {
         let attempts = 0
-        const system = buildFromConfig({
+        const system = await buildFromConfig({
             queues: {
                 jobs: {
                     worker: async () => {
@@ -112,16 +112,16 @@ describe('buildFromConfig', () => {
         expect(system.queues.a).toBeDefined()
     })
 
-    it('rejects unknown store reference', () => {
-        expect(() =>
+    it('rejects unknown store reference', async () => {
+        await expect(
             buildFromConfig({
                 queues: { q: { persist: { store: 'missing' } } },
             }),
-        ).toThrow(ConfigValidationError)
+        ).rejects.toBeInstanceOf(ConfigValidationError)
     })
 
     it('memory adapter works without strategy field', async () => {
-        const system = buildFromConfig({
+        const system = await buildFromConfig({
             stores: { mem: { adapter: 'memory' } },
             queues: { q: { persist: { store: 'mem' } } },
             hydrate: false,
@@ -129,5 +129,54 @@ describe('buildFromConfig', () => {
         await system.queues.q.enqueue('x')
         await system.flushAll()
         expect(system.stores.mem).toBeDefined()
+    })
+
+    it('hydrates before auto-start workers claim restored rows', async () => {
+        const store = createMemoryRowStore<number>()
+        const writer = buildFromConfigSync({
+            stores: { db: { impl: store } },
+            queues: { jobs: { persist: { store: 'db' } } },
+            hydrate: false,
+        })
+        await writer.queues.jobs.enqueue(42)
+        await writer.flushAll()
+
+        const seen: number[] = []
+        let started!: () => void
+        const startedWorker = new Promise<void>((resolve) => {
+            started = resolve
+        })
+        let release!: () => void
+        const releaseWorker = new Promise<void>((resolve) => {
+            release = resolve
+        })
+        const system = await buildFromConfig({
+            stores: { db: { impl: store } },
+            queues: {
+                jobs: {
+                    persist: { store: 'db' },
+                    worker: async (item: number) => {
+                        seen.push(item)
+                        started()
+                        await releaseWorker
+                    },
+                },
+            },
+        })
+
+        await startedWorker
+        expect(system.queues.jobs.isProcessing?.()).toBe(true)
+        release()
+        await whenIdle(system.queues.jobs as never)
+        expect(seen).toEqual([42])
+    })
+
+    it('sync build requires hydrate: false for durable queues', () => {
+        expect(() =>
+            buildFromConfigSync({
+                stores: { db: { impl: createMemoryRowStore() } },
+                queues: { jobs: { persist: { store: 'db' } } },
+            }),
+        ).toThrow(expect.objectContaining({ code: 'ASYNC_REQUIRED' }))
     })
 })
