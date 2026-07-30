@@ -42,6 +42,12 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `replaceAll(items)` | `Promise<void>` | Silent replace (no queue events) |
 | `toArray()` | `T[]` | Snapshot available → delayed → leased |
 | `rowIds()` | `number[]` | Durable / delayed / leased ids (bare available has no stable ids until claim) |
+| `getJob(id)` | `QueueJob<T> \| undefined` | Inspect an opt-in `Job` by application id |
+| `listJobs({ state?, cursor?, limit? })` | `QueueJobPage<T>` | Page opt-in jobs; state is `ready`, `delayed`, or `leased` |
+| `cancelJob(id)` | `Promise<boolean>` | Remove a ready or delayed job; leased work is never interrupted |
+| `rescheduleJob(id, delayMs)` | `Promise<boolean>` | Move a ready or delayed job to a new availability time |
+| `promoteJob(id)` | `Promise<boolean>` | Move a delayed job to ready immediately |
+| `replayJob(id, target)` | `Promise<boolean>` | Enqueue-first move to another queue, intended for a DLQ replay |
 | `hydrate()` | `Promise<void>` | Load from `store` (no-op without store) |
 | `flush()` | `Promise<void>` | Await durable write chain (no-op without store) |
 | `on` | `() => void` | Subscribe; returns unsubscribe |
@@ -52,6 +58,18 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 Treat a `Lease` as invalid after `ack`, `release`, or `reschedule`; the queue may recycle it and release its payload reference immediately.
 
 Bare (no `store`) mutators resolve immediately after the in-memory update. Durable mutators serialize through a write chain.
+
+### Job operations
+
+The operations methods recognize the opt-in `Job` envelope and use its stable
+application `id`; plain payloads are not listed or changed by them. `listJobs`
+returns `{ items, nextCursor? }`, so pass `nextCursor` back with the same state
+filter for the next page. Apply it to a DLQ queue to page dead-letter jobs.
+
+Leased jobs remain visible but cannot be cancelled, rescheduled, promoted, or
+replayed: a handler may already have made an external side effect. `replayJob`
+is enqueue-first, then removes the source row. It is consequently at-least-once
+across queues; use the same `Job.id` idempotency key at the replay target.
 
 **Errors:** `QueueFullError` (`maxSize`); `InvalidQueueOptionError` for bad options; `InvalidStoreError` if `store` is not a `RowStore`; `HydrateWhileActiveError` during hydrate or with active leases; `LeaseMismatchError` on stale leases; `InvalidRowIdError` / `DuplicateRowIdError` on bad hydrate rows; `IdSpaceExhaustedError` when ids run out.
 
@@ -67,6 +85,7 @@ Bare (no `store`) mutators resolve immediately after the in-memory update. Durab
 | `persist:lease-expired` | `{ id, item }` |
 | `persist:id-space-low` | `{ remaining }` |
 | `persist:error` | `{ operation, error, id? }` |
+| `persist:operation` | `{ operation: 'load' \| 'put' \| 'remove' \| 'clear' \| 'replace', durationMs, id? }` (while observed) |
 
 Guide: [Persistence](./persistence.md).
 
@@ -167,6 +186,7 @@ withWorker(queue, async (job, { jobId, attempt, signal }) => {
 | `worker:started` | `{ item }` | Before run |
 | `worker:completed` | `{ item, result }` | Resolved (lease acked) |
 | `worker:failed` | `{ item, error }` | Rejected after recovery path |
+| `worker:handled` | `{ item, outcome, durationMs }` | Handler time (success or failure) |
 | `worker:requeued` | `{ item, error?, delayMs? }` | Failure re-entered the queue |
 | `worker:dropped` | `{ item, error? }` | Failure dropped (no DLQ / filter) |
 | `worker:idle` | `undefined` | Empty and nothing in flight |
@@ -224,6 +244,24 @@ Apply **after** `withWorker`. Destination must be a **distinct** reference (same
 | `dlq:error` | `{ item, error, cause }` | `filter`, `map`, or destination `enqueue` threw (`cause` is `DeadLetterEnqueueError`) |
 
 **Errors:** `InvalidQueueCompositionError` (no worker layer); `InvalidDeadLetterOptionError` (destination is the same reference as source); `DeadLetterEnqueueError` on the `dlq:error` path.
+
+---
+
+## `withObservability`
+
+```ts
+withObservability(queue, {
+  onMetrics(metrics) {},
+  onTrace(event) {},
+})
+```
+
+Returns the same queue composition plus `metrics()`. Its snapshot exposes
+`depth` (`available`, `delayed`, `leased`), the oldest opt-in `Job` age,
+completion/failure/retry/DLQ counters, and count/total/average handler and
+store timings. The optional hooks are isolated from queue delivery, making
+them suitable adapters for metrics and tracing SDKs. Compose it anywhere;
+worker, retry, DLQ, and durable-store events flow through the shared queue.
 
 ---
 

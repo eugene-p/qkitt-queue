@@ -65,6 +65,8 @@ export type WorkerEvents<T, R = unknown> = {
     'worker:started': { item: T }
     'worker:completed': { item: T; result: R }
     'worker:failed': { item: T; error: unknown }
+    /** Handler duration, separate to keep completion/failure event payloads stable. */
+    'worker:handled': { item: T; outcome: 'completed' | 'failed'; durationMs: number }
     'worker:requeued': { item: T; error?: unknown; delayMs?: number }
     'worker:dropped': { item: T; error?: unknown }
     'worker:idle': undefined
@@ -200,6 +202,7 @@ export const withWorker = <
         started: 'worker:started',
         completed: 'worker:completed',
         failed: 'worker:failed',
+        handled: 'worker:handled',
         requeued: 'worker:requeued',
         dropped: 'worker:dropped',
         idle: 'worker:idle',
@@ -452,7 +455,12 @@ export const withWorker = <
         }
     }
 
-    const failLease = (lease: Lease<T>, item: T, error: unknown): void => {
+    const failLease = (
+        lease: Lease<T>,
+        item: T,
+        error: unknown,
+        durationMs: number,
+    ): void => {
         void applyRecovery(lease, item, error)
             .catch(async (err) => {
                 if (err instanceof LeaseMismatchError) return
@@ -472,10 +480,22 @@ export const withWorker = <
                 if (subs.failed > 0) {
                     emitInner('worker:failed', { item, error })
                 }
+                if (subs.handled > 0) {
+                    emitInner('worker:handled', {
+                        item,
+                        outcome: 'failed',
+                        durationMs,
+                    })
+                }
             })
     }
 
-    const completeLease = (lease: Lease<T>, item: T, result: R): void => {
+    const completeLease = (
+        lease: Lease<T>,
+        item: T,
+        result: R,
+        durationMs: number,
+    ): void => {
         // Inline: ack is sync — finish without Promise hops.
         if (inlineOps) {
             try {
@@ -483,6 +503,13 @@ export const withWorker = <
                 finishItem()
                 if (subs.completed > 0) {
                     emitInner('worker:completed', { item, result })
+                }
+                if (subs.handled > 0) {
+                    emitInner('worker:handled', {
+                        item,
+                        outcome: 'completed',
+                        durationMs,
+                    })
                 }
             } catch (err) {
                 finishItem()
@@ -501,6 +528,13 @@ export const withWorker = <
                 finishItem()
                 if (subs.completed > 0) {
                     emitInner('worker:completed', { item, result })
+                }
+                if (subs.handled > 0) {
+                    emitInner('worker:handled', {
+                        item,
+                        outcome: 'completed',
+                        durationMs,
+                    })
                 }
             })
             .catch((err) => {
@@ -567,6 +601,8 @@ export const withWorker = <
             emitInner('worker:started', { item })
         }
 
+        const startedAt = Date.now()
+        const duration = (): number => Math.max(0, Date.now() - startedAt)
         let ret: R | PromiseLike<R>
         let dispose: () => void = () => {}
         try {
@@ -577,23 +613,23 @@ export const withWorker = <
                 Promise.resolve(ret).then(
                     (result) => {
                         dispose()
-                        completeLease(lease, item, result as R)
+                        completeLease(lease, item, result as R, duration())
                     },
                     (error: unknown) => {
                         dispose()
-                        failLease(lease, item, error)
+                        failLease(lease, item, error, duration())
                     },
                 )
                 return
             }
         } catch (error) {
             dispose?.()
-            failLease(lease, item, error)
+            failLease(lease, item, error, duration())
             return
         }
 
         dispose!()
-        completeLease(lease, item, ret)
+        completeLease(lease, item, ret, duration())
     }
 
     let unsubscribeEnqueued: (() => void) | undefined

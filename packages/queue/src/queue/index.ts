@@ -8,6 +8,9 @@ export {
     type QueueEvents,
     type QueueSlot,
     type QueueStats,
+    type QueueJob,
+    type QueueJobPage,
+    type ListJobsOptions,
 } from './core/queue'
 
 export { getQueueName } from './core/queue-name.util'
@@ -67,6 +70,15 @@ export {
     type DeadLetterTarget,
     type WithDeadLetterOptions,
 } from './dlq/with-dead-letter'
+
+export {
+    withObservability,
+    type QueueMetrics,
+    type QueueTraceEvent,
+    type QueueWithObservability,
+    type TimingMetrics,
+    type WithObservabilityOptions,
+} from './observability'
 
 export {
     getLoopHops,

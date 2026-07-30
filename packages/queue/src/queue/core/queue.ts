@@ -26,6 +26,7 @@ import { attachInlineOps } from './inline-ops'
 import { createMinHeap, type MinHeap } from './min-heap.util'
 import { markQueueMaxSize } from './queue-max-size.util'
 import { markQueueName } from './queue-name.util'
+import { isJob } from '../jobs/job'
 
 export type QueueEvents<T> = {
     /** Fired after an item is added (available or delayed). */
@@ -52,6 +53,29 @@ export type QueueStats = {
     available: number
     delayed: number
     leased: number
+}
+
+/** A job-envelope row as seen by queue administration. */
+export type QueueJob<T> = {
+    /** Application-owned {@link Job.id}; numeric row ids stay internal. */
+    id: string
+    item: T
+    state: 'ready' | 'delayed' | 'leased'
+    attempt: number
+    availableAt?: number
+    leaseDeadline?: number
+}
+
+export type QueueJobPage<T> = {
+    items: QueueJob<T>[]
+    /** Pass this value as `cursor` to read the following page. */
+    nextCursor?: number
+}
+
+export type ListJobsOptions = {
+    state?: QueueJob<unknown>['state']
+    cursor?: number
+    limit?: number
 }
 
 /**
@@ -115,6 +139,18 @@ export type Queue<
     replaceAll: (items: readonly T[]) => Promise<void>
     toArray: () => T[]
     rowIds: () => number[]
+    /** Inspect one opt-in {@link Job} by its stable application id. */
+    getJob: (id: string) => QueueJob<T> | undefined
+    /** Page opt-in {@link Job} envelopes in ready, delayed, or leased state. */
+    listJobs: (options?: ListJobsOptions) => QueueJobPage<T>
+    /** Remove a ready or delayed job. Leased jobs are intentionally untouched. */
+    cancelJob: (id: string) => Promise<boolean>
+    /** Move a ready or delayed job to its next available time. */
+    rescheduleJob: (id: string, delayMs: number) => Promise<boolean>
+    /** Make a delayed job immediately claimable. */
+    promoteJob: (id: string) => Promise<boolean>
+    /** Enqueue a DLQ job on another queue, then remove its source row. */
+    replayJob: (id: string, target: Pick<Queue<T>, 'enqueue'>) => Promise<boolean>
     hydrate: () => Promise<void>
     flush: () => Promise<void>
     on: EventEmitter<TEvents>['on']
@@ -270,6 +306,7 @@ export const buildQueue = <T>(
         leaseExpired: 'persist:lease-expired',
         idSpaceLow: 'persist:id-space-low',
         persistError: 'persist:error',
+        persistOperation: 'persist:operation',
     })
     const on = wrapOn(emitter.on)
 
@@ -393,6 +430,22 @@ export const buildQueue = <T>(
     const runStore = (op: () => void | PromiseLike<void>): Promise<void> =>
         withChain(op)
 
+    const callStore = async <R>(
+        operation: 'load' | 'put' | 'remove' | 'clear' | 'replace',
+        id: number | undefined,
+        op: () => R | PromiseLike<R>,
+    ): Promise<R> => {
+        if (subs.persistOperation === 0) return op()
+        const startedAt = nowMs()
+        const result = await op()
+        emitter.emit('persist:operation', {
+            operation,
+            durationMs: Math.max(0, nowMs() - startedAt),
+            ...(id !== undefined ? { id } : {}),
+        })
+        return result
+    }
+
     const armDelayTimer = (): void => {
         if (delayTimer !== undefined) {
             cancelTimeout(delayTimer)
@@ -490,9 +543,9 @@ export const buildQueue = <T>(
             return
         }
         if (durable && store) {
-            await store.put(
+            await callStore('put', id, () => store.put(
                 toRecord(id, entry.item, 0, null, null, entry.attempt),
-            )
+            ))
         }
         // Re-check after await — another op may have settled this lease.
         const still = leased.get(id)
@@ -607,7 +660,7 @@ export const buildQueue = <T>(
 
         if (durable && store) {
             try {
-                await store.put(
+                await callStore('put', id, () => store.put(
                     toRecord(
                         id,
                         head.item,
@@ -616,7 +669,7 @@ export const buildQueue = <T>(
                         expiresAt,
                         head.attempt,
                     ),
-                )
+                ))
             } catch (error) {
                 pushAvailable(
                     head.item,
@@ -785,9 +838,9 @@ export const buildQueue = <T>(
         }
 
         return runStore(async () => {
-            await store.put(
+            await callStore('put', id, () => store.put(
                 toRecord(id, item, availableAt, null, null),
-            )
+            ))
             applyMemory()
         })
     }
@@ -826,7 +879,7 @@ export const buildQueue = <T>(
         return withChain(async () => {
             requireLease(lease)
             if (store) {
-                await store.remove(lease.id)
+                await callStore('remove', lease.id, () => store.remove(lease.id))
             }
             const entry = leased.get(lease.id)
             if (
@@ -860,7 +913,7 @@ export const buildQueue = <T>(
         return withChain(async () => {
             const entry = requireLease(lease)
             if (store) {
-                await store.put(
+                await callStore('put', lease.id, () => store.put(
                     toRecord(
                         lease.id,
                         entry.item,
@@ -869,7 +922,7 @@ export const buildQueue = <T>(
                         null,
                         entry.attempt,
                     ),
-                )
+                ))
             }
             const still = leased.get(lease.id)
             if (
@@ -921,9 +974,9 @@ export const buildQueue = <T>(
         return withChain(async () => {
             requireLease(lease)
             if (store) {
-                await store.put(
+                await callStore('put', lease.id, () => store.put(
                     toRecord(lease.id, item, availableAt, null, null, attempt),
-                )
+                ))
             }
             const still = leased.get(lease.id)
             if (
@@ -976,7 +1029,7 @@ export const buildQueue = <T>(
             if (head === undefined) return undefined
             const id = head.id as number
             try {
-                await store!.remove(id)
+                await callStore('remove', id, () => store!.remove(id))
             } catch (error) {
                 pushAvailable(head.item, id, head.attempt)
                 throw error
@@ -1065,7 +1118,7 @@ export const buildQueue = <T>(
         }
 
         return runStore(async () => {
-            await store.clear()
+            await callStore('clear', undefined, () => store.clear())
             applyMemory()
         })
     }
@@ -1124,11 +1177,11 @@ export const buildQueue = <T>(
 
         return withChain(async () => {
             if (store.replaceAll) {
-                await store.replaceAll(planned)
+                await callStore('replace', undefined, () => store.replaceAll!(planned))
             } else {
-                await store.clear()
+                await callStore('clear', undefined, () => store.clear())
                 for (const rec of planned) {
-                    await store.put(rec)
+                    await callStore('put', rec.id, () => store.put(rec))
                 }
             }
             applyMemory()
@@ -1188,6 +1241,277 @@ export const buildQueue = <T>(
         return out
     }
 
+    type ReadyEntry = { item: T; id: number | undefined; attempt: number }
+
+    const readyEntries = (): ReadyEntry[] => {
+        const entries: ReadyEntry[] = []
+        for (let i = availableOutItems.length - 1; i >= 0; i -= 1) {
+            entries.push({
+                item: availableOutItems[i]!,
+                id: trackAvailableIds ? availableOutIds[i] : undefined,
+                attempt: availableOutAttempts[i]!,
+            })
+        }
+        for (let i = 0; i < availableItems.length; i += 1) {
+            entries.push({
+                item: availableItems[i]!,
+                id: trackAvailableIds ? availableIds[i] : undefined,
+                attempt: availableAttempts[i]!,
+            })
+        }
+        return entries
+    }
+
+    const replaceReady = (entries: readonly ReadyEntry[]): void => {
+        availableItems = []
+        availableIds = []
+        availableAttempts = []
+        availableOutItems = []
+        availableOutIds = []
+        availableOutAttempts = []
+        availableCount = 0
+        for (const entry of entries) {
+            pushAvailable(entry.item, entry.id, entry.attempt)
+        }
+    }
+
+    const requireApplicationId = (id: string): string => {
+        if (typeof id !== 'string' || id.trim() === '') {
+            throw new InvalidQueueOptionError(
+                'job id must be a non-empty string',
+            )
+        }
+        return id.trim()
+    }
+
+    const makeJobView = (
+        item: T,
+        state: QueueJob<T>['state'],
+        attempt: number,
+        availableAt?: number,
+        leaseDeadline?: number,
+    ): QueueJob<T> | undefined => {
+        if (!isJob(item)) return undefined
+        return {
+            id: item.id,
+            item,
+            state,
+            attempt,
+            ...(availableAt !== undefined ? { availableAt } : {}),
+            ...(leaseDeadline !== undefined ? { leaseDeadline } : {}),
+        }
+    }
+
+    const allJobs = (state?: QueueJob<T>['state']): QueueJob<T>[] => {
+        promoteDueDelayed()
+        const jobs: QueueJob<T>[] = []
+        if (state === undefined || state === 'ready') {
+            for (const entry of readyEntries()) {
+                const job = makeJobView(entry.item, 'ready', entry.attempt)
+                if (job) jobs.push(job)
+            }
+        }
+        if (state === undefined || state === 'delayed') {
+            const entries = (delayed?.toArray() ?? []).sort((a, b) => {
+                if (a.availableAt !== b.availableAt) {
+                    return a.availableAt - b.availableAt
+                }
+                return a.id - b.id
+            })
+            for (const entry of entries) {
+                const job = makeJobView(
+                    entry.item,
+                    'delayed',
+                    entry.attempt,
+                    entry.availableAt,
+                )
+                if (job) jobs.push(job)
+            }
+        }
+        if (state === undefined || state === 'leased') {
+            const entries = [...leased.values()].sort((a, b) => a.id - b.id)
+            for (const entry of entries) {
+                const job = makeJobView(
+                    entry.item,
+                    'leased',
+                    entry.attempt,
+                    undefined,
+                    entry.expiresAt ?? undefined,
+                )
+                if (job) jobs.push(job)
+            }
+        }
+        return jobs
+    }
+
+    const getJob = (id: string): QueueJob<T> | undefined => {
+        const applicationId = requireApplicationId(id)
+        return allJobs().find((job) => job.id === applicationId)
+    }
+
+    const listJobs = (options: ListJobsOptions = {}): QueueJobPage<T> => {
+        const cursor = options.cursor ?? 0
+        const limit = options.limit ?? 100
+        if (!isIntegerInRange(cursor, 0)) {
+            throw new InvalidQueueOptionError('cursor must be a safe integer >= 0')
+        }
+        if (!isIntegerInRange(limit, 1)) {
+            throw new InvalidQueueOptionError('limit must be a safe integer >= 1')
+        }
+        const jobs = allJobs(options.state)
+        const items = jobs.slice(cursor, cursor + limit)
+        const next = cursor + items.length
+        return {
+            items,
+            ...(next < jobs.length ? { nextCursor: next } : {}),
+        }
+    }
+
+    const locatePendingJob = (id: string):
+        | { state: 'ready'; index: number; entry: ReadyEntry }
+        | { state: 'delayed'; index: number; entry: DelayedEntry<T> }
+        | undefined => {
+        const ready = readyEntries()
+        for (let i = 0; i < ready.length; i += 1) {
+            const entry = ready[i]!
+            if (isJob(entry.item) && entry.item.id === id) {
+                return { state: 'ready', index: i, entry }
+            }
+        }
+        const delayedEntries = delayed?.toArray() ?? []
+        for (let i = 0; i < delayedEntries.length; i += 1) {
+            const entry = delayedEntries[i]!
+            if (isJob(entry.item) && entry.item.id === id) {
+                return { state: 'delayed', index: i, entry }
+            }
+        }
+        return undefined
+    }
+
+    const removePendingJob = (found: NonNullable<ReturnType<typeof locatePendingJob>>): void => {
+        if (found.state === 'ready') {
+            const entries = readyEntries()
+            entries.splice(found.index, 1)
+            replaceReady(entries)
+            return
+        }
+        const entries = delayed?.toArray() ?? []
+        entries.splice(found.index, 1)
+        delayed?.rebuild(entries)
+        armDelayTimer()
+    }
+
+    const cancelJob = (id: string): Promise<boolean> => {
+        const applicationId = requireApplicationId(id)
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError('cannot cancel while hydrate is in progress'),
+            )
+        }
+        return withChain(async () => {
+            const found = locatePendingJob(applicationId)
+            if (!found) return false
+            const rowId = found.entry.id
+            if (durable && rowId !== undefined) {
+                await callStore('remove', rowId, () => store!.remove(rowId))
+            }
+            removePendingJob(found)
+            return true
+        })
+    }
+
+    const rescheduleJob = (id: string, delayMs: number): Promise<boolean> => {
+        const applicationId = requireApplicationId(id)
+        if (!Number.isFinite(delayMs) || delayMs < 0) {
+            return Promise.reject(
+                new InvalidQueueOptionError('delayMs must be a finite number >= 0'),
+            )
+        }
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError('cannot reschedule while hydrate is in progress'),
+            )
+        }
+        return withChain(async () => {
+            const found = locatePendingJob(applicationId)
+            if (!found) return false
+            const rowId = found.entry.id ?? ids.next()
+            const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
+            const next: DelayedEntry<T> = {
+                id: rowId,
+                item: found.entry.item,
+                availableAt,
+                attempt: found.entry.attempt,
+            }
+            if (durable) {
+                await callStore('put', rowId, () => store!.put(
+                    toRecord(rowId, next.item, availableAt, null, null, next.attempt),
+                ))
+            }
+            removePendingJob(found)
+            if (availableAt === 0) {
+                pushAvailable(next.item, trackAvailableIds ? rowId : undefined, next.attempt)
+                emitEnqueued(next.item)
+            } else {
+                getDelayed().push(next)
+                armDelayTimer()
+            }
+            return true
+        })
+    }
+
+    const promoteJob = (id: string): Promise<boolean> => {
+        const applicationId = requireApplicationId(id)
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError('cannot promote while hydrate is in progress'),
+            )
+        }
+        return withChain(async () => {
+            const found = locatePendingJob(applicationId)
+            if (!found || found.state !== 'delayed') return false
+            if (durable) {
+                await callStore('put', found.entry.id, () => store!.put(
+                    toRecord(
+                        found.entry.id,
+                        found.entry.item,
+                        0,
+                        null,
+                        null,
+                        found.entry.attempt,
+                    ),
+                ))
+            }
+            removePendingJob(found)
+            pushAvailable(
+                found.entry.item,
+                trackAvailableIds ? found.entry.id : undefined,
+                found.entry.attempt,
+            )
+            emitEnqueued(found.entry.item)
+            return true
+        })
+    }
+
+    const replayJob = (
+        id: string,
+        target: Pick<Queue<T>, 'enqueue'>,
+    ): Promise<boolean> => {
+        const applicationId = requireApplicationId(id)
+        if ((target as object) === api || target.enqueue === enqueue) {
+            return Promise.reject(
+                new InvalidQueueOptionError('replay target must differ from source queue'),
+            )
+        }
+        const found = locatePendingJob(applicationId)
+        if (!found) return Promise.resolve(false)
+        // Cross-queue replay is deliberately enqueue-first, so a crash may
+        // duplicate work but never silently loses a dead-letter row.
+        return Promise.resolve(target.enqueue(found.entry.item)).then(() =>
+            cancelJob(applicationId),
+        )
+    }
+
     const flush = (): Promise<void> => {
         if (!chain) return RESOLVED
         return chain.flush()
@@ -1201,7 +1525,7 @@ export const buildQueue = <T>(
         hydrating = true
         try {
             await flush()
-            const loaded = await store.loadAll()
+            const loaded = await callStore('load', undefined, () => store.loadAll())
             const seen = new Set<number>()
             let maxId = 0
             for (const record of loaded) {
@@ -1236,7 +1560,7 @@ export const buildQueue = <T>(
                         row.attempt ?? 1,
                     )
                     // Persist recovery before replacing in-memory state.
-                    await store.put(cleared)
+                    await callStore('put', cleared.id, () => store.put(cleared))
                     availableRows.push(cleared)
                 } else if (availableAt > now) {
                     delayedRows.push({
@@ -1293,6 +1617,12 @@ export const buildQueue = <T>(
         replaceAll,
         toArray,
         rowIds,
+        getJob,
+        listJobs,
+        cancelJob,
+        rescheduleJob,
+        promoteJob,
+        replayJob,
         hydrate,
         flush,
         on,

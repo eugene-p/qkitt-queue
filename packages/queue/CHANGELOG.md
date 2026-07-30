@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-30
+
+### Added
+
+- Application-id job operations for opt-in `Job` envelopes: inspect and page
+  ready/delayed/leased jobs, cancel, reschedule, promote, and enqueue-first
+  replay from a DLQ queue. Leased jobs remain inspectable but are never
+  force-moved.
+- `withObservability` with queue depth, oldest-job age, completion/failure,
+  retry/DLQ counts, handler/store timing summaries, and isolated metrics and
+  tracing hooks.
+- `worker:handled` handler-timing and observed `persist:operation` events.
+
 ## [0.11.0] — 2026-07-30
 
 ### Added
@@ -432,6 +445,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.12.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.12.0
 [0.11.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.11.0
 [0.10.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.10.0
 [0.9.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.9.0

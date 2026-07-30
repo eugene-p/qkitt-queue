@@ -103,6 +103,11 @@ await jobs.enqueue(
 See [`Job` / `createJob`](./docs/api.md#job--createjob) for the complete
 contract.
 
+Job queues also support operational paging and control by `Job.id`:
+`listJobs`, `getJob`, `cancelJob`, `rescheduleJob`, `promoteJob`, and
+enqueue-first `replayJob` for DLQ queues. Add `withObservability(queue)` when
+you need pull metrics plus metrics/tracing hooks. Details: [API reference](./docs/api.md#withobservability).
+
 > **Durable workers are at-least-once, not exactly-once.** A completed side
 > effect can be delivered again if the process stops before its queue
 > acknowledgement persists. Use the stable `Job.id` as an idempotency key at

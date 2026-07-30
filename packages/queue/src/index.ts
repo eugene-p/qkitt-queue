@@ -78,6 +78,9 @@ export {
     type QueueEvents,
     type QueueSlot,
     type QueueStats,
+    type QueueJob,
+    type QueueJobPage,
+    type ListJobsOptions,
     type QueueWithWorker,
     type RecoveryPolicy,
     type RecoveryPolicyResult,
@@ -93,6 +96,12 @@ export {
     type WorkerAbortSignal,
     type WorkerContext,
     type WorkerEvents,
+    withObservability,
+    type QueueMetrics,
+    type QueueTraceEvent,
+    type QueueWithObservability,
+    type TimingMetrics,
+    type WithObservabilityOptions,
 } from './queue'
 
 export {

@@ -44,4 +44,10 @@ export type PersistEvents = {
         error: unknown
         id?: number
     }
+    /** Successful store operation timing, emitted only while observed. */
+    'persist:operation': {
+        operation: 'load' | 'put' | 'remove' | 'clear' | 'replace'
+        durationMs: number
+        id?: number
+    }
 }
