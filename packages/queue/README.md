@@ -9,7 +9,7 @@
 
 Reliable background jobs in one Node process or browser: concurrent workers, retries, topic routing, and optional persistence. Zero runtime dependencies.
 
-Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing, failure routing (loop / dead letter). Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
+Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing, and failure routing (durable retry / loop / dead letter). Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
 
 **Out of scope:** work that spans machines or processes.
 
@@ -146,7 +146,7 @@ const run = retryWorker(
 const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 ```
 
-Failed items are **not** re-queued. Use `retryWorker` for in-call retries, or [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) (`withLoop` / `withDlq`).
+Failed items are **not** re-queued by default. Use `retryWorker` for in-call retries, or durable [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) (`withRetry`, `withLoop`, `withDlq`).
 
 When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](https://www.npmjs.com/package/@qkitt/queue-config).
 

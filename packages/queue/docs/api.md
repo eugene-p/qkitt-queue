@@ -4,7 +4,7 @@ Guides show composition patterns; this page covers public signatures. If you are
 
 [README](../README.md) · [Composition](./composition.md) · [Persistence](./persistence.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md)
 
-**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, Web Storage row store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RowStore`, `RouteMessage`).
+**Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withRetry`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, Web Storage row store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RowStore`, `RouteMessage`).
 
 Everything else (`tryDequeue` / `tryPeek` / `QueueSlot`, `replaceAll`, `claim` / `ack`, `emit`) is for specialized use — see individual entries below.
 
@@ -107,9 +107,8 @@ createJob(payload, { id, metadata?, enqueuedAt? }): Job
 effects; it is distinct from the queue's internal numeric row id. `createJob`
 trims and validates a non-empty id and assigns `Date.now()` unless
 `enqueuedAt` is supplied (useful for imports and tests). `isJob` is a
-structural guard. Retry attempts and worker execution context will be added as
-separate job-system features; this envelope intentionally does not alter
-`Queue<T>` semantics.
+structural guard. The envelope intentionally does not alter `Queue<T>`
+semantics.
 
 ---
 
@@ -241,6 +240,34 @@ Requires a **named** queue (`buildQueue({ name })`). Hop bookkeeping under `__qk
 ### Chaining `withLoop` + `withDlq`
 
 Single recovery path: loop policy first; loop `filter` false → fail path (DLQ if registered). See [Failure routing — chaining](./failure-routing.md#chaining-withloop--withdlq).
+
+---
+
+## `withRetry`
+
+```ts
+withRetry<T>(
+  queue: QueueWithWorker<T, …>,
+  options?: WithRetryOptions<T>,
+): QueueWithWorker<T, …>
+```
+
+Apply after `withWorker`. Retry bookkeeping is stored as an optional row field;
+old rows start at attempt 1. On retry, the queue reschedules the same row with
+the next attempt and a persisted `availableAt`. Exhausted or classified failures
+continue to `withDeadLetter` / `withDlq` when configured.
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `maxAttempts` | `3` | Safe integer ≥ 1; includes first delivery |
+| `initialDelayMs` | `1000` | Finite ms ≥ 0 before attempt 2 |
+| `maxDelayMs` | `30000` | Finite ms ≥ `initialDelayMs` |
+| `jitter` | `0.2` | Symmetric random spread, finite 0–1 |
+| `classify` | retry | `({ item, error, attempt }) => 'retry' \| 'fail'`; fail skips to DLQ/drop |
+
+**Events:** `retry:scheduled` (`item`, `error`, `attempt`, `nextAttempt`, `delayMs`) and `retry:exhausted` (`item`, `error`, `attempt`).
+
+**Errors:** `InvalidQueueCompositionError` (no worker); `InvalidDurableRetryOptionError` for invalid bounds. It conflicts with `withLoop` and a non-fail explicit `onFailure` policy.
 
 ---
 

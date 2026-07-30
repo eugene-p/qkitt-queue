@@ -42,6 +42,8 @@ export type Lease<T> = {
     id: number
     item: T
     generation: number
+    /** 1-based delivery attempt; older durable rows begin at 1. */
+    attempt: number
 }
 
 export type QueueStats = {
@@ -68,12 +70,14 @@ type LeasedEntry<T> = {
     item: T
     generation: number
     expiresAt: number | null
+    attempt: number
 }
 
 type DelayedEntry<T> = {
     id: number
     item: T
     availableAt: number
+    attempt: number
 }
 
 type LeaseExpiry = {
@@ -92,7 +96,7 @@ export type Queue<
     release: (lease: Lease<T>) => Promise<void>
     reschedule: (
         lease: Lease<T>,
-        next: { item: T; delayMs?: number },
+        next: { item: T; delayMs?: number; attempt?: number },
     ) => Promise<void>
     /** Admin drop of head available row (not the worker processing path). */
     dequeue: () => Promise<T | undefined>
@@ -192,8 +196,10 @@ export const buildQueue = <T>(
     // Split in-memory state: available FIFO (+ optional ids) + leased + delayed.
     let availableItems: T[] = []
     let availableIds: number[] = []
+    let availableAttempts: number[] = []
     let availableOutItems: T[] = []
     let availableOutIds: number[] = []
+    let availableOutAttempts: number[] = []
     let availableCount = 0
     const leased = new Map<number, LeasedEntry<T>>()
     /** Recycled lease objects for the inline claim/ack hot path (cap keeps GC happy). */
@@ -229,6 +235,7 @@ export const buildQueue = <T>(
         item: T,
         generation: number,
         expiresAt: number | null,
+        attempt: number,
     ): LeasedEntry<T> => {
         const recycled = leaseFreelist.pop()
         if (recycled !== undefined) {
@@ -236,9 +243,10 @@ export const buildQueue = <T>(
             recycled.item = item
             recycled.generation = generation
             recycled.expiresAt = expiresAt
+            recycled.attempt = attempt
             return recycled
         }
-        return { id, item, generation, expiresAt }
+        return { id, item, generation, expiresAt, attempt }
     }
 
     const recycleLease = (entry: LeasedEntry<T>): void => {
@@ -285,19 +293,23 @@ export const buildQueue = <T>(
             availableOutIds.reverse()
             availableIds = []
         }
+        availableOutAttempts = availableAttempts
+        availableOutAttempts.reverse()
+        availableAttempts = []
     }
 
     /** Push ready item. `id` required when tracking available ids (durable). */
-    const pushAvailable = (item: T, id?: number): void => {
+    const pushAvailable = (item: T, id?: number, attempt = 1): void => {
         availableItems.push(item)
         if (trackAvailableIds) {
             availableIds.push(id as number)
         }
+        availableAttempts.push(attempt)
         availableCount += 1
     }
 
     const popAvailable = ():
-        | { item: T; id: number | undefined }
+        | { item: T; id: number | undefined; attempt: number }
         | undefined => {
         if (availableCount === 0) return undefined
         if (availableOutItems.length === 0) flipAvailable()
@@ -305,8 +317,9 @@ export const buildQueue = <T>(
         const id = trackAvailableIds
             ? (availableOutIds.pop() as number)
             : undefined
+        const attempt = availableOutAttempts.pop() as number
         availableCount -= 1
-        return { item, id }
+        return { item, id, attempt }
     }
 
     const peekAvailable = ():
@@ -356,12 +369,14 @@ export const buildQueue = <T>(
         availableAt: number,
         generation: number | null,
         expiresAt: number | null,
+        attempt = 1,
     ): RowRecord<T> => ({
         id,
         item,
         availableAt,
         leaseGeneration: generation,
         leaseExpiresAt: expiresAt,
+        ...(attempt > 1 ? { attempt } : {}),
     })
 
     /** Serialize durable work; always runs `op` (inline path runs immediately). */
@@ -400,7 +415,11 @@ export const buildQueue = <T>(
             if (head === undefined || head.availableAt > now) break
             delayed.pop()
             // Keep durable id when tracking; inline reuses id for delayed→available.
-            pushAvailable(head.item, trackAvailableIds ? head.id : undefined)
+            pushAvailable(
+                head.item,
+                trackAvailableIds ? head.id : undefined,
+                head.attempt,
+            )
             promoted = true
         }
         armDelayTimer()
@@ -469,7 +488,9 @@ export const buildQueue = <T>(
             return
         }
         if (durable && store) {
-            await store.put(toRecord(id, entry.item, 0, null, null))
+            await store.put(
+                toRecord(id, entry.item, 0, null, null, entry.attempt),
+            )
         }
         // Re-check after await — another op may have settled this lease.
         const still = leased.get(id)
@@ -482,7 +503,7 @@ export const buildQueue = <T>(
         leased.delete(id)
         const item = entry.item
         recycleLease(entry)
-        pushAvailable(item, trackAvailableIds ? id : undefined)
+        pushAvailable(item, trackAvailableIds ? id : undefined, entry.attempt)
         if (subs.leaseExpired > 0) {
             emitter.emit('persist:lease-expired', {
                 id,
@@ -532,8 +553,10 @@ export const buildQueue = <T>(
     const clearMemory = (): void => {
         availableItems = []
         availableIds = []
+        availableAttempts = []
         availableOutItems = []
         availableOutIds = []
+        availableOutAttempts = []
         availableCount = 0
         leased.clear()
         leaseFreelist.length = 0
@@ -583,15 +606,32 @@ export const buildQueue = <T>(
         if (durable && store) {
             try {
                 await store.put(
-                    toRecord(id, head.item, 0, nextGen, expiresAt),
+                    toRecord(
+                        id,
+                        head.item,
+                        0,
+                        nextGen,
+                        expiresAt,
+                        head.attempt,
+                    ),
                 )
             } catch (error) {
-                pushAvailable(head.item, trackAvailableIds ? id : undefined)
+                pushAvailable(
+                    head.item,
+                    trackAvailableIds ? id : undefined,
+                    head.attempt,
+                )
                 throw error
             }
         }
 
-        const lease = allocLease(id, head.item, nextGen, expiresAt)
+        const lease = allocLease(
+            id,
+            head.item,
+            nextGen,
+            expiresAt,
+            head.attempt,
+        )
         leased.set(id, lease)
         if (expiresAt !== null) {
             getLeaseExpiries().push({
@@ -614,11 +654,12 @@ export const buildQueue = <T>(
         }
         if (availableOutItems.length === 0) flipAvailable()
         const item = availableOutItems.pop() as T
+        const attempt = availableOutAttempts.pop() as number
         availableCount -= 1
         // One monotonic counter serves as both row id and lease generation
         // (inline never reuses an id while a lease is live).
         const id = ids.next()
-        const lease = allocLease(id, item, id, null)
+        const lease = allocLease(id, item, id, null, attempt)
         leased.set(id, lease)
         // Same object is the public Lease (one alloc, freelist on settle).
         return lease
@@ -642,14 +683,13 @@ export const buildQueue = <T>(
         const item = entry.item
         recycleLease(entry)
         // Inline available has no stable ids.
-        availableItems.push(item)
-        availableCount += 1
+        pushAvailable(item, undefined, entry.attempt)
         emitEnqueued(item)
     }
 
     const rescheduleSync = (
         lease: Lease<T>,
-        next: { item: T; delayMs?: number },
+        next: { item: T; delayMs?: number; attempt?: number },
     ): void => {
         const entry = leased.get(lease.id)
         if (entry === undefined || entry.generation !== lease.generation) {
@@ -658,17 +698,18 @@ export const buildQueue = <T>(
         const delayMs = next.delayMs ?? 0
         const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
         const leaseId = lease.id
+        const attempt = next.attempt ?? entry.attempt
         leased.delete(lease.id)
         recycleLease(entry)
         if (availableAt === 0) {
-            availableItems.push(next.item)
-            availableCount += 1
+            pushAvailable(next.item, undefined, attempt)
             emitEnqueued(next.item)
         } else {
             getDelayed().push({
                 id: leaseId,
                 item: next.item,
                 availableAt,
+                attempt,
             })
             armDelayTimer()
         }
@@ -680,8 +721,7 @@ export const buildQueue = <T>(
             if (maxSize !== undefined && totalSize() >= maxSize) {
                 return Promise.reject(new QueueFullError(maxSize))
             }
-            availableItems.push(item)
-            availableCount += 1
+            pushAvailable(item)
             if (subs.enqueued > 0) {
                 emitter.emit('queue:enqueued', { item, size: totalSize() })
             }
@@ -712,8 +752,7 @@ export const buildQueue = <T>(
 
         // Inline delayed/opts path without store.
         if (!durable && delayMs === 0) {
-            availableItems.push(item)
-            availableCount += 1
+            pushAvailable(item)
             emitEnqueued(item)
             return RESOLVED
         }
@@ -732,7 +771,7 @@ export const buildQueue = <T>(
             if (availableAt === 0) {
                 pushAvailable(item, id)
             } else {
-                getDelayed().push({ id, item, availableAt })
+                getDelayed().push({ id, item, availableAt, attempt: 1 })
                 armDelayTimer()
             }
             emitEnqueued(item)
@@ -820,7 +859,14 @@ export const buildQueue = <T>(
             const entry = requireLease(lease)
             if (store) {
                 await store.put(
-                    toRecord(lease.id, entry.item, 0, null, null),
+                    toRecord(
+                        lease.id,
+                        entry.item,
+                        0,
+                        null,
+                        null,
+                        entry.attempt,
+                    ),
                 )
             }
             const still = leased.get(lease.id)
@@ -833,7 +879,7 @@ export const buildQueue = <T>(
             const item = entry.item
             leased.delete(lease.id)
             recycleLease(entry)
-            pushAvailable(item, lease.id)
+            pushAvailable(item, lease.id, entry.attempt)
             armLeaseTimer()
             emitEnqueued(item)
         })
@@ -841,7 +887,7 @@ export const buildQueue = <T>(
 
     const reschedule = (
         lease: Lease<T>,
-        next: { item: T; delayMs?: number },
+        next: { item: T; delayMs?: number; attempt?: number },
     ): Promise<void> => {
         if (hydrating) {
             return Promise.reject(
@@ -868,12 +914,13 @@ export const buildQueue = <T>(
         }
         const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
         const item = next.item
+        const attempt = next.attempt ?? lease.attempt
 
         return withChain(async () => {
             requireLease(lease)
             if (store) {
                 await store.put(
-                    toRecord(lease.id, item, availableAt, null, null),
+                    toRecord(lease.id, item, availableAt, null, null, attempt),
                 )
             }
             const still = leased.get(lease.id)
@@ -886,10 +933,10 @@ export const buildQueue = <T>(
             leased.delete(lease.id)
             recycleLease(still)
             if (availableAt === 0) {
-                pushAvailable(item, lease.id)
+                pushAvailable(item, lease.id, attempt)
                 emitEnqueued(item)
             } else {
-                getDelayed().push({ id: lease.id, item, availableAt })
+                getDelayed().push({ id: lease.id, item, availableAt, attempt })
                 armDelayTimer()
             }
             armLeaseTimer()
@@ -916,6 +963,7 @@ export const buildQueue = <T>(
             }
             if (availableOutItems.length === 0) flipAvailable()
             const item = availableOutItems.pop() as T
+            availableOutAttempts.pop()
             availableCount -= 1
             emitDequeued(item)
             return Promise.resolve({ value: item })
@@ -928,7 +976,7 @@ export const buildQueue = <T>(
             try {
                 await store!.remove(id)
             } catch (error) {
-                pushAvailable(head.item, id)
+                pushAvailable(head.item, id, head.attempt)
                 throw error
             }
             emitDequeued(head.item)
@@ -949,6 +997,7 @@ export const buildQueue = <T>(
             }
             if (availableOutItems.length === 0) flipAvailable()
             const item = availableOutItems.pop() as T
+            availableOutAttempts.pop()
             availableCount -= 1
             if (subs.dequeued > 0) {
                 emitter.emit('queue:dequeued', {
@@ -1041,7 +1090,7 @@ export const buildQueue = <T>(
             // Inline rows have no stable available ids, so avoid allocating
             // durable RowRecord envelopes solely to rebuild the FIFO.
             for (let i = 0; i < items.length; i += 1) {
-                availableItems.push(items[i]!)
+                pushAvailable(items[i]!)
             }
             availableCount = items.length
             return RESOLVED
@@ -1167,20 +1216,33 @@ export const buildQueue = <T>(
             }
 
             const now = nowMs()
-            const availableRows: Array<Pick<RowRecord<T>, 'id' | 'item'>> =
-                []
+            const availableRows: Array<
+                Pick<RowRecord<T>, 'id' | 'item' | 'attempt'>
+            > = []
             const delayedRows: DelayedEntry<T>[] = []
 
             for (const row of loaded) {
                 const availableAt =
                     typeof row.availableAt === 'number' ? row.availableAt : 0
                 if (row.leaseGeneration != null) {
-                    const cleared = toRecord(row.id, row.item, 0, null, null)
+                    const cleared = toRecord(
+                        row.id,
+                        row.item,
+                        0,
+                        null,
+                        null,
+                        row.attempt ?? 1,
+                    )
                     // Persist recovery before replacing in-memory state.
                     await store.put(cleared)
                     availableRows.push(cleared)
                 } else if (availableAt > now) {
-                    delayedRows.push(row)
+                    delayedRows.push({
+                        id: row.id,
+                        item: row.item,
+                        availableAt,
+                        attempt: row.attempt ?? 1,
+                    })
                 } else {
                     availableRows.push(row)
                 }
@@ -1193,7 +1255,7 @@ export const buildQueue = <T>(
 
             availableRows.sort((a, b) => a.id - b.id)
             for (const row of availableRows) {
-                pushAvailable(row.item, row.id)
+                pushAvailable(row.item, row.id, row.attempt ?? 1)
             }
             for (const d of delayedRows) {
                 getDelayed().push(d)

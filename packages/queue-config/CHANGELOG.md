@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-30
+
+### Breaking
+
+- Peer dependency `@qkitt/queue` is now `^0.10.0`.
+
 ## [0.7.0] — 2026-07-30
 
 ### Breaking
@@ -199,6 +205,7 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
+[0.8.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.8.0
 [0.7.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.7.0
 [0.6.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.6.0
 [0.5.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.5.1

@@ -5,11 +5,76 @@
 | Approach | When |
 | --- | --- |
 | [`retryWorker`](./composition.md#4-worker-helpers) | In-call retries before the failure event |
+| `withRetry` | Durable attempts with exponential backoff before the DLQ path |
 | `withLoop` | Re-enter the **same** queue with hop meta |
 | `withDeadLetter` / `withDlq` | Forward failed items to a **distinct** sink |
 | Handle `worker:failed` | Log, alert, or re-enqueue yourself |
 
 [README](../README.md) · [Composition](./composition.md) · [API](./api.md#withdeadletter--withdlq)
+
+## Durable retry (`withRetry`)
+
+Apply `withRetry` after a worker. Retry state belongs to the queue row, never
+the application payload, so the scheduled next attempt survives a restart.
+After the final attempt—or when `classify` returns `'fail'`—the normal fail
+path runs: a registered DLQ receives the job, otherwise it is dropped.
+
+```ts
+const failed = buildQueue<Job>()
+const jobs = withDeadLetter(
+  withRetry(
+    withWorker(buildQueue<Job>({ store }), run),
+    {
+      maxAttempts: 5,
+      initialDelayMs: 1_000,
+      maxDelayMs: 60_000,
+      jitter: 0.2,
+      classify: ({ error }) => error instanceof TypeError ? 'fail' : 'retry',
+    },
+  ),
+  failed,
+)
+```
+
+`maxAttempts` includes the first delivery (default `3`). Delay starts at
+`initialDelayMs` for attempt 2 and doubles until `maxDelayMs`; jitter is a
+symmetric 0–1 spread and defaults to `0.2`. Set `jitter: 0` for a fixed
+schedule. Observe `retry:scheduled` and `retry:exhausted` for operations.
+
+`withRetry` and `withLoop` are alternative recovery policies and cannot be
+combined. `retryWorker` remains useful for short, in-call retries; it does not
+persist attempt state or release worker capacity between attempts.
+
+## Choosing a retry mechanism
+
+Use the smallest mechanism that matches why the work failed:
+
+| Use | Choose | Why |
+| --- | --- | --- |
+| A brief transient failure inside one delivery (for example, one HTTP request timing out) | `retryWorker` | Retries happen immediately in the same worker call. No queue write or scheduling is needed. |
+| A job should wait, survive restart, and eventually reach a DLQ after a bounded number of deliveries | `withRetry` | Attempts and delay are persisted in the row; the worker capacity is released between attempts. |
+| The original job needs to re-enter the same queue with altered state or a domain-specific readiness rule | `withLoop` | Its `map`, `filter`, and named-queue hop metadata support application-controlled re-entry. |
+
+### `retryWorker`: immediate, in-call retries
+
+Choose this for small, fast retries where keeping one worker slot occupied is
+acceptable. It is ideal for a request that often succeeds on a second try and
+does not need to survive process restart while waiting. It does **not** persist
+the retry count or delay, so it is not the durable-job default.
+
+### `withRetry`: durable, bounded delivery retries
+
+Choose this for normal background-job recovery: retry a known number of times,
+back off between deliveries, then send the final failure to `withDlq` when one
+is configured. This is usually the best choice for flaky downstream services.
+Use `classify` to skip retrying permanent failures such as validation errors.
+
+### `withLoop`: intentional re-entry
+
+Choose this only when the application needs to change the item, wait for an
+external condition, or make the stopping rule itself. A loop can be unbounded;
+always add a `filter` hop cap or another clear exit condition, and normally add
+a delay. If all you need is capped exponential retry, prefer `withRetry`.
 
 ## Dead letter (`withDeadLetter` / `withDlq`)
 

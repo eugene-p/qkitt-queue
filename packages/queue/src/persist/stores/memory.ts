@@ -11,6 +11,7 @@ const cloneRecord = <T>(row: RowRecord<T>): RowRecord<T> => ({
     availableAt: row.availableAt,
     leaseGeneration: row.leaseGeneration,
     leaseExpiresAt: row.leaseExpiresAt,
+    ...(row.attempt !== undefined ? { attempt: row.attempt } : {}),
 })
 
 const assignRecord = <T>(target: RowRecord<T>, source: RowRecord<T>): void => {
@@ -19,6 +20,8 @@ const assignRecord = <T>(target: RowRecord<T>, source: RowRecord<T>): void => {
     target.availableAt = source.availableAt
     target.leaseGeneration = source.leaseGeneration
     target.leaseExpiresAt = source.leaseExpiresAt
+    if (source.attempt === undefined) delete target.attempt
+    else target.attempt = source.attempt
 }
 
 /**

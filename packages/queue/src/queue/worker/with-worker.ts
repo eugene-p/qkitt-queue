@@ -193,7 +193,7 @@ export const withWorker = <
 
     const settleReschedule = async (
         lease: Lease<T>,
-        next: { item: T; delayMs?: number },
+        next: { item: T; delayMs?: number; attempt?: number },
     ): Promise<void> => {
         if (inlineOps) {
             inlineOps.rescheduleSync(lease, next)
@@ -328,6 +328,51 @@ export const withWorker = <
         item: T,
         error: unknown,
     ): Promise<void> => {
+        const retry = recovery.retry
+        if (retry) {
+            let classification: 'retry' | 'fail' = 'retry'
+            if (retry.classify) {
+                classification = await retry.classify({
+                    item,
+                    error,
+                    attempt: lease.attempt,
+                })
+            }
+            if (classification === 'retry' && lease.attempt < retry.maxAttempts) {
+                const exponent = Math.min(lease.attempt - 1, 52)
+                const baseDelay = Math.min(
+                    retry.maxDelayMs,
+                    retry.initialDelayMs * 2 ** exponent,
+                )
+                const spread =
+                    1 - retry.jitter + Math.random() * retry.jitter * 2
+                const delayMs = Math.min(
+                    retry.maxDelayMs,
+                    Math.round(baseDelay * spread),
+                )
+                await settleReschedule(lease, {
+                    item,
+                    delayMs,
+                    attempt: lease.attempt + 1,
+                })
+                emitInner('retry:scheduled', {
+                    item,
+                    error,
+                    attempt: lease.attempt,
+                    nextAttempt: lease.attempt + 1,
+                    delayMs,
+                })
+                if (subs.requeued > 0) {
+                    emitInner('worker:requeued', { item, error, delayMs })
+                }
+                return
+            }
+            emitInner('retry:exhausted', {
+                item,
+                error,
+                attempt: lease.attempt,
+            })
+        }
         const policy = recovery.policy
         if (policy === 'loop') {
             await applyLoop(lease, item, error)

@@ -21,6 +21,15 @@ export {
 } from './jobs'
 
 export {
+    withRetry,
+    InvalidDurableRetryOptionError,
+    type RetryContext,
+    type RetryEvents,
+    type RetryQueueEvents,
+    type WithRetryOptions,
+} from './retry'
+
+export {
     InvalidWorkerOptionError,
     withWorker,
     type QueueWithWorker,

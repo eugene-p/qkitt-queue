@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-30
+
+### Added
+
+- `withRetry` for durable, bounded worker retries. Attempts are persisted in
+  queue rows, with capped exponential backoff, optional jitter and failure
+  classification; exhausted jobs follow the normal DLQ path.
+- Retry events: `retry:scheduled` and `retry:exhausted`.
+- Failure-routing guidance for choosing `retryWorker`, `withRetry`, or
+  `withLoop`.
+
 ## [0.9.0] — 2026-07-30
 
 ### Added
@@ -410,6 +421,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.10.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.10.0
 [0.9.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.9.0
 [0.8.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.1
 [0.8.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.0

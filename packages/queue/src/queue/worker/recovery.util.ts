@@ -72,12 +72,27 @@ export type DlqRecoveryOptions<T, U = T> = {
     filter?: (item: T, error: unknown) => boolean
 }
 
+export type RetryClassification = 'retry' | 'fail'
+
+export type RetryRecoveryOptions<T> = {
+    maxAttempts: number
+    initialDelayMs: number
+    maxDelayMs: number
+    jitter: number
+    classify?: (ctx: {
+        item: T
+        error: unknown
+        attempt: number
+    }) => RetryClassification | Promise<RetryClassification>
+}
+
 export type RecoveryConfig<T> = {
     /** True once caller set onFailure explicitly on withWorker. */
     policyExplicit: boolean
     policy: RecoveryPolicy<T>
     loop?: LoopRecoveryOptions<T>
     dlq?: DlqRecoveryOptions<T>
+    retry?: RetryRecoveryOptions<T>
 }
 
 const RECOVERY_KEY = Symbol.for('qkitt:recovery-config')
@@ -116,6 +131,11 @@ export const configureLoopRecovery = <T>(
         )
     }
     if (setPolicyLoop) {
+        if (config.retry) {
+            throw new ConflictingRecoveryError(
+                'withLoop conflicts with withRetry; choose one retry policy',
+            )
+        }
         if (config.policyExplicit && config.policy !== 'loop') {
             throw new ConflictingRecoveryError(
                 'withLoop conflicts with explicit onFailure that is not "loop"',
@@ -125,6 +145,31 @@ export const configureLoopRecovery = <T>(
         config.policyExplicit = true
     }
     config.loop = loop
+}
+
+export const configureRetryRecovery = <T>(
+    queue: object,
+    retry: RetryRecoveryOptions<T>,
+): void => {
+    const config = getRecoveryConfig<T>(queue)
+    if (!config) {
+        throw new ConflictingRecoveryError(
+            'withRetry requires a worker layer recovery config',
+        )
+    }
+    if (config.retry) {
+        throw new ConflictingRecoveryError(
+            'withRetry supports one retry policy per worker queue',
+        )
+    }
+    if (config.policyExplicit && config.policy !== 'fail') {
+        throw new ConflictingRecoveryError(
+            'withRetry conflicts with explicit onFailure that is not "fail"',
+        )
+    }
+    config.policy = 'fail'
+    config.policyExplicit = true
+    config.retry = retry
 }
 
 /** Register DLQ target on fail policy (does not change policy). */

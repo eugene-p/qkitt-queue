@@ -16,6 +16,8 @@ export type RowRecord<T> = {
     leaseGeneration: number | null
     /** Absolute lease deadline when TTL is configured; otherwise null. */
     leaseExpiresAt: number | null
+    /** 1-based delivery attempt; omitted rows start at 1. */
+    attempt?: number
 }
 
 /**

@@ -7,12 +7,14 @@ export const WORKER_LAYER = Symbol.for('qkitt:worker-layer')
 export const PERSIST_LAYER = Symbol.for('qkitt:persist-layer')
 export const DLQ_LAYER = Symbol.for('qkitt:dlq-layer')
 export const LOOP_LAYER = Symbol.for('qkitt:loop-layer')
+export const RETRY_LAYER = Symbol.for('qkitt:retry-layer')
 
 type QueueLayerBrand =
     | typeof WORKER_LAYER
     | typeof PERSIST_LAYER
     | typeof DLQ_LAYER
     | typeof LOOP_LAYER
+    | typeof RETRY_LAYER
 
 /** Non-enumerable brand on a queue decorator object (idempotent). */
 export const markQueueLayer = <T extends object>(
@@ -50,6 +52,9 @@ export const copyQueueLayers = <T extends object>(
     }
     if (hasQueueLayer(from, LOOP_LAYER)) {
         markQueueLayer(to, LOOP_LAYER)
+    }
+    if (hasQueueLayer(from, RETRY_LAYER)) {
+        markQueueLayer(to, RETRY_LAYER)
     }
     return to
 }
