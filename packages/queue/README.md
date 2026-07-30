@@ -28,12 +28,13 @@ This is deliberately not a distributed queue. If producers and consumers need to
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
-Guides live on GitHub (not in the npm tarball). Suggested path: [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) → [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) → [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) → [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md). Jump by task via [Recipes](#recipes).
+Guides live on GitHub (not in the npm tarball). Suggested path: [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) → [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) → [Delivery & idempotency](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/delivery.md) → [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) → [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md). Jump by task via [Recipes](#recipes).
 
 | Guide | Covers |
 | --- | --- |
 | [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) | Bare / durable queue → worker → helpers → config |
 | [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) | `buildQueue({ store })`, row stores, custom backends |
+| [Delivery & idempotency](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/delivery.md) | At-least-once delivery, idempotency keys, transactional outbox |
 | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) | MQTT-style patterns, unmatched sink |
 | [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) | `withLoop`, `withDlq`, chaining |
 | [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) | `whenIdle`, `gracefulStop` |
@@ -102,6 +103,11 @@ await jobs.enqueue(
 See [`Job` / `createJob`](./docs/api.md#job--createjob) for the complete
 contract.
 
+> **Durable workers are at-least-once, not exactly-once.** A completed side
+> effect can be delivered again if the process stops before its queue
+> acknowledgement persists. Use the stable `Job.id` as an idempotency key at
+> the side effect. See [Delivery & idempotency](./docs/delivery.md).
+
 Add persistence (`store` on the constructor — no decorator):
 
 ```ts
@@ -158,6 +164,7 @@ When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](h
 | Drain / graceful stop | [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) |
 | Retries / multi-step | [Composition §4](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers) |
 | Survive restart | [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md) · [Composition §3](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#3-add-persistence) |
+| Idempotent durable effects / outbox | [Delivery & idempotency](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/delivery.md) |
 | Browser Web Storage | [Browser storage](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#browser-storage) |
 | Custom store (file, etc.) | [Custom stores](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md#custom-stores) |
 | Topic fan-out | [Topics & routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/routing.md) |

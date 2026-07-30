@@ -2,7 +2,7 @@
 
 Guides show composition patterns; this page covers public signatures. If you are deciding whether this library fits your application or wiring your first queue, start with the [package README](../README.md) and [Composition](./composition.md). Return here when you need an exact option, return type, event, or error contract.
 
-[README](../README.md) · [Composition](./composition.md) · [Persistence](./persistence.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md)
+[README](../README.md) · [Composition](./composition.md) · [Persistence](./persistence.md) · [Delivery & idempotency](./delivery.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md)
 
 **Primary (most apps):** `buildQueue`, `withWorker`, `whenIdle`, `gracefulStop`, `withRetry`, `withDeadLetter` / `withDlq`, `withLoop`, `retryWorker`, `pipelineWorker`, `pipelineDone`, Web Storage row store factories, `buildRouter`, common types (`Queue`, `WorkerFn`, `RowRecord`, `RowStore`, `RouteMessage`).
 
@@ -108,7 +108,8 @@ effects; it is distinct from the queue's internal numeric row id. `createJob`
 trims and validates a non-empty id and assigns `Date.now()` unless
 `enqueuedAt` is supplied (useful for imports and tests). `isJob` is a
 structural guard. The envelope intentionally does not alter `Queue<T>`
-semantics.
+semantics. Durable worker delivery is at-least-once: use the same `id` on
+every delivery at the effect boundary. See [Delivery & idempotency](./delivery.md).
 
 ---
 

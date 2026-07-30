@@ -6,7 +6,12 @@ Built-in durable stores: browser Web Storage (`localStorage` / `sessionStorage`)
 
 Persistence is a reliability boundary, not a default optimization. It adds storage I/O, hydration, and shutdown work; keep `buildQueue()` bare when an in-process backlog is enough. It also does not make a queue distributed or coordinate multiple writers—choose a proper shared backend and ownership model when that is required.
 
-[README](../README.md) · [Composition](./composition.md) · [API `buildQueue`](./api.md#buildqueue) · [Stores](./api.md#stores)
+[README](../README.md) · [Composition](./composition.md) · [Delivery & idempotency](./delivery.md) · [API `buildQueue`](./api.md#buildqueue) · [Stores](./api.md#stores)
+
+> **Delivery is at-least-once, not exactly-once.** A side effect may have
+> completed before a crash prevents its lease acknowledgement from persisting.
+> Use a stable application idempotency key for every durable effect; see
+> [Delivery & idempotency](./delivery.md).
 
 ## Model
 
