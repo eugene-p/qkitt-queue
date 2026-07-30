@@ -1,4 +1,4 @@
-import { buildQueue, withWorker } from '@qkitt/queue'
+import { buildQueue, whenIdle, withWorker } from '@qkitt/queue'
 import { queue as asyncQueue } from 'async'
 import fastq from 'fastq'
 import PQueue from 'p-queue'
@@ -9,7 +9,7 @@ import {
   WORKER_CONCURRENCIES,
   WORKER_JOB_COUNTS,
 } from './helpers.js'
-import { measureRetainedStable, tryGc } from './memory.js'
+import { measureRetainedMedian, tryGc } from './memory.js'
 import {
   mergeResult,
   printProgress,
@@ -21,79 +21,66 @@ import {
 const syncNoop = (): void => {}
 
 /**
- * Drain `@qkitt/queue` by counting finished jobs inside the worker fn.
- * Not `worker:idle` — peers complete on N jobs finished, same idea.
+ * Every runner uses one queue-level completion signal instead of a callback or
+ * promise per job. This measures scheduling and storage, not completion API
+ * allocation.
  */
 const drainQkitt = (n: number, concurrency: number): Promise<void> =>
   new Promise((resolve, reject) => {
-    if (n === 0) {
-      resolve()
-      return
-    }
-
-    let finished = 0
-    let settled = false
-
-    const finish = (error?: unknown): void => {
-      if (settled) return
-      settled = true
-      q.stop()
-      if (error !== undefined) reject(error)
-      else resolve()
-    }
-
     const q = withWorker(
       buildQueue<number>(),
       async () => {
-        try {
-          syncNoop()
-        } finally {
-          finished += 1
-          if (finished === n) finish()
-        }
+        syncNoop()
       },
-      { concurrency },
+      { concurrency, autoStart: false },
     )
 
     q.on('worker:pump-error', ({ error }) => {
-      finish(error)
+      reject(error)
     })
 
     for (let i = 0; i < n; i++) q.enqueue(i)
+    const drained = whenIdle(q)
+    q.start()
+    void drained.then(resolve, reject)
   })
 
-const drainFastq = async (n: number, concurrency: number): Promise<void> => {
-  const q = fastq.promise(async () => {
-    syncNoop()
-  }, concurrency)
-  const tasks: Promise<unknown>[] = []
-  for (let i = 0; i < n; i++) {
-    tasks.push(q.push(i))
-  }
-  await Promise.all(tasks)
-}
+const drainFastq = (n: number, concurrency: number): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const q = fastq<number>((_item, done) => {
+      queueMicrotask(() => {
+        try {
+          syncNoop()
+          done(null)
+        } catch (error) {
+          done(error as Error)
+        }
+      })
+    }, concurrency)
+    q.error((error) => {
+      if (error) reject(error)
+    })
+    q.drain = resolve
+    q.pause()
+    for (let i = 0; i < n; i++) q.push(i)
+    q.resume()
+  })
 
-const drainPQueue = async (n: number, concurrency: number): Promise<void> => {
+const drainPQueue = (n: number, concurrency: number): Promise<void> => {
   const q = new PQueue({ concurrency })
-  const tasks: Promise<void>[] = []
+  q.pause()
   for (let i = 0; i < n; i++) {
-    tasks.push(
-      q.add(async () => {
-        syncNoop()
-      }),
-    )
+    void q.add(async () => {
+      syncNoop()
+    })
   }
-  await Promise.all(tasks)
+  const drained = q.onIdle()
+  q.start()
+  return drained
 }
 
 const drainAsyncQueue = (n: number, concurrency: number): Promise<void> =>
   new Promise((resolve, reject) => {
-    if (n === 0) {
-      resolve()
-      return
-    }
-
-    let remaining = n
     const q = asyncQueue((_task: number, cb) => {
       queueMicrotask(() => {
         try {
@@ -108,17 +95,13 @@ const drainAsyncQueue = (n: number, concurrency: number): Promise<void> =>
     q.error((err) => {
       if (err) reject(err)
     })
+    q.drain(() => resolve())
 
+    q.pause()
     for (let i = 0; i < n; i++) {
-      q.push(i, (err) => {
-        if (err) {
-          reject(err)
-          return
-        }
-        remaining -= 1
-        if (remaining === 0) resolve()
-      })
+      q.push(i)
     }
+    q.resume()
   })
 
 /** Hold N pending jobs; worker not processing (fair retained-memory compare). */
@@ -138,12 +121,15 @@ const holdPendingQkitt = (n: number, concurrency: number): unknown => {
 }
 
 const holdPendingFastq = (n: number, concurrency: number): unknown => {
-  const q = fastq.promise(async () => {
-    syncNoop()
+  const q = fastq<number>((_item, done) => {
+    queueMicrotask(() => {
+      syncNoop()
+      done(null)
+    })
   }, concurrency)
   q.pause()
   for (let i = 0; i < n; i++) {
-    void q.push(i)
+    q.push(i)
   }
   if (q.length() !== n) {
     throw new Error(`holdPendingFastq: expected length ${n}, got ${q.length()}`)
@@ -249,7 +235,7 @@ export const runWorkerBench = async (): Promise<void> => {
         )
 
         printProgress(`${label} — memory (${heldLabel})…`)
-        const mem = measureRetainedStable(c.name, heldLabel, () =>
+        const mem = measureRetainedMedian(c.name, heldLabel, () =>
           c.hold(jobs, concurrency),
         )
 

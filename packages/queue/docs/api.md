@@ -1,6 +1,6 @@
 # API reference
 
-Guides show composition patterns; this page covers public signatures.
+Guides show composition patterns; this page covers public signatures. If you are deciding whether this library fits your application or wiring your first queue, start with the [package README](../README.md) and [Composition](./composition.md). Return here when you need an exact option, return type, event, or error contract.
 
 [README](../README.md) · [Composition](./composition.md) · [Persistence](./persistence.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md)
 

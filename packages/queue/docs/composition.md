@@ -1,12 +1,16 @@
 # Composition
 
-Add layers as needed. Stack order: **bare / durable queue → worker → loop / dlq (optional)**.
+This guide turns a plain FIFO into a background-work system one decision at a time. Read it after the package quick start when you need to answer: “what is the next layer for this job?” Stack order: **bare / durable queue → worker → loop / dlq (optional)**.
+
+Begin with `buildQueue` + `withWorker` for work that can stay in one process. Add a store only when unfinished work must survive restart, a helper for behavior inside one worker call, and loop/DLQ only when you have a deliberate policy for a job that keeps failing. For cross-machine delivery, use a distributed system instead.
 
 Persistence is not a decorator: pass `store` into `buildQueue` when you need durability.
 
 [README](../README.md) · [Persistence](./persistence.md) · [Topics & routing](./routing.md) · [Failure routing](./failure-routing.md) · [Lifecycle](./lifecycle.md) · [API](./api.md)
 
 ## 1. Bare queue
+
+Use a bare queue when another part of the same process decides when to drain work, or when you want the FIFO primitive without a background worker. For most background jobs, skip straight to [Add a worker](#2-add-a-worker).
 
 ```ts
 import { buildQueue, QueueFullError } from '@qkitt/queue'
@@ -34,6 +38,8 @@ Mutating methods return `Promise` (bare paths resolve immediately after the in-m
 ## 2. Add a worker
 
 `withWorker` drains the queue with claim/ack leases and your async function. Defaults: auto-start, concurrency 1.
+
+This is the normal application shape: callers enqueue quickly, while the worker handles slow I/O in the background. Set `concurrency` to the number of jobs your downstream service can safely handle at once—not simply the highest number your CPU can run.
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue'
@@ -68,6 +74,8 @@ Drain and shutdown: [Lifecycle](./lifecycle.md).
 ## 3. Add persistence
 
 Pass a `RowStore` into the constructor — no wrapper layer:
+
+Choose this only when losing jobs on restart is unacceptable. A store adds I/O and operational responsibility, but lets the next process load unfinished rows and continue. In-memory queues are simpler and usually faster when work is safe to discard.
 
 ```ts
 import {
@@ -109,6 +117,8 @@ Full detail: [Persistence](./persistence.md).
 ## 4. Worker helpers
 
 `pipelineWorker` and `retryWorker` return plain worker functions — compose them first, then pass the result to `withWorker`. They do not touch the queue directly.
+
+Use these for behavior of one job attempt. They are not durable scheduling: retries happen inside the active worker call; for a job that should return later or be inspected separately after failure, use [failure routing](./failure-routing.md).
 
 ### Retry
 
@@ -256,7 +266,7 @@ queue.on('worker:failed', ({ error }) => console.error(error))
 
 ## 6. Optional: drive from config
 
-Prefer a declarative setup? [`@qkitt/queue-config`](../../queue-config) builds the same stacks from a JS/JSON object:
+Prefer a declarative setup when several named queues and bindings make startup wiring difficult to scan. [`@qkitt/queue-config`](../../queue-config) builds the same stacks from a JS/JSON object; it is optional, not a requirement for using the core:
 
 ```ts
 import { defineConfig, buildFromConfig } from '@qkitt/queue-config'

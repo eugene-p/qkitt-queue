@@ -10,6 +10,13 @@ export const FIFO_N = 50_000
 export const WORKER_JOB_COUNTS = [1_000, 10_000] as const
 export const WORKER_CONCURRENCIES = [1, 4] as const
 
+/** Rows per durable lifecycle round. Kept lower because every mutation writes. */
+export const DURABLE_N = 5_000
+
+/** Workload-shaped scenarios: enough jobs to exercise a sustained pump. */
+export const WORKLOAD_N = 5_000
+export const WORKLOAD_BYTES = 1_024
+
 export type TimingResult = {
   name: string
   /** Median full-cycle throughput (ops/s). One op = one bench iteration. */

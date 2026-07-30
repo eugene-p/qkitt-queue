@@ -1,17 +1,30 @@
-<img src="https://raw.githubusercontent.com/eugene-p/qkitt-queue/main/assets/logo.svg" alt="qkitt-queue" width="150" height="150">
+<img src="https://raw.githubusercontent.com/eugene-p/qkitt-queue/main/assets/logo.svg" alt="qkitt-queue" width="96" height="96">
 
-# @qkitt/queue
+# @qkitt/queue — durable in-process job queues for TypeScript
 
 [![CI](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml/badge.svg)](https://github.com/eugene-p/qkitt-queue/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@qkitt/queue.svg)](https://www.npmjs.com/package/@qkitt/queue)
 [![License: ISC](https://img.shields.io/npm/l/@qkitt/queue.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue.svg)](https://nodejs.org)
 
-Composable **in-process** queues for TypeScript — zero runtime dependencies.
+Reliable background jobs in one Node process or browser: concurrent workers, retries, topic routing, and optional persistence. Zero runtime dependencies.
 
 Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing, failure routing (loop / dead letter). Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
 
 **Out of scope:** work that spans machines or processes.
+
+> Need only a fast, memory-only queue? Use the sibling project [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq). Choose this package when unfinished jobs must survive restart or you need declarative multi-queue configuration.
+
+## What it is for
+
+Use `@qkitt/queue` to move slow or retryable work out of the immediate path of an application: process webhooks, send notifications, generate files, or run a small workflow with a concurrency limit. Start with an in-memory FIFO and add only the layer that earns its place:
+
+1. `buildQueue()` holds work in FIFO order.
+2. `withWorker()` consumes it with a concurrency limit.
+3. A `store` makes unfinished work recoverable after restart.
+4. Helpers and decorators add retry, failure handling, or routing.
+
+This is deliberately not a distributed queue. If producers and consumers need to run on different machines or survive independent deploys, use a broker or job system designed for that boundary.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
@@ -27,6 +40,12 @@ Guides live on GitHub (not in the npm tarball). Suggested path: [Composition](ht
 | [API reference](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/api.md) | Public signatures, events, package layout |
 
 ## Install
+
+**Requirements:** Node.js 20+ or a modern browser; TypeScript 5.0+ for typed consumers; ESM-only. In a CJS context:
+
+```ts
+const { buildQueue, withWorker } = await import('@qkitt/queue')
+```
 
 ```bash
 npm install @qkitt/queue
@@ -47,7 +66,7 @@ Subpath exports: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/persi
 
 ## Quick start
 
-Minimal concurrent drain:
+For most apps, this is the whole starting point: it accepts jobs now and handles up to two at a time. `enqueue` resolves after the queue accepts the job; the worker runs in the background.
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue'
@@ -64,6 +83,8 @@ const queue = withWorker(
 
 await queue.enqueue({ id: '1' })
 ```
+
+Need a different outcome? Persist jobs across restart with [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md); retry a flaky call with [worker helpers](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers); or decide where permanent failures go with [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md).
 
 Add persistence (`store` on the constructor — no decorator):
 
@@ -135,29 +156,29 @@ Runnable scenarios: [examples/](https://github.com/eugene-p/qkitt-queue/tree/mai
 
 In-process peers only. Full tables and setup: [root README](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks). Re-run: [`packages/bench`](https://github.com/eugene-p/qkitt-queue/tree/main/packages/bench) (`npm run bench` from repo root).
 
-**Strength is worker drain** (throughput + low retained backlog memory). Bare `buildQueue` is a solid FIFO with lower heap than typical peer structures; pure enqueue/dequeue ops trail denque / yocto-queue, and beat `Array#shift` by orders of magnitude.
+**Strength is retained backlog memory and a durable queue model.** In a raw asynchronous no-op drain, fastq is faster; `withWorker` keeps far less heap while jobs wait. Bare `buildQueue` also trails dedicated FIFO structures in pure enqueue/dequeue throughput. Choose it for persistence and explicit composition, not a claim to be the fastest memory-only runner.
 
 **Worker drain** — 10 000 no-op jobs (ops/s · pending-job heap)
 
 | Library | c=1 | c=4 | heap Δ (c=1) |
 | --- | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **438** | **458** | **95 KiB** |
-| fastq | 248 | 238 | 6.12 MiB |
-| async.queue | 347 | 374 | 3.95 MiB |
-| p-queue | 103 | 82 | 6.19 MiB |
+| @qkitt/queue `withWorker` | 495 | 524 | **82.5 KiB** |
+| fastq | **937** | **926** | 1.76 MiB |
+| async.queue | 235 | 297 | 3.89 MiB |
+| p-queue | 121 | 117 | 6.19 MiB |
 
 **Bare queue** — 50 000 enqueue + dequeue (ops/s median · retained heap)
 
 | Library | ops/s | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 793 | 414 KiB |
-| denque | 2,306 | 516 KiB |
-| yocto-queue | 2,398 | 1.91 MiB |
-| native `Array` push/shift | 8 | 399 KiB |
+| @qkitt/queue `buildQueue` | 761 | 410.5 KiB |
+| denque | 2,273 | 515.0 KiB |
+| yocto-queue | 2,377 | 1.91 MiB |
+| native `Array` push/shift | 8 | 397.5 KiB |
 
 **Browser (Chromium)** — in-memory vs durable worker drain, 5k jobs c=1: bare ~2 ms · localStorage ~410 ms (`npm run compare:stores`).
 
-Relative numbers (Node 26.5.0, Windows laptop, 2026-07-30). YMMV.
+Retained heap is the median of seven post-GC samples. Relative numbers (Node 26.5.0, Windows laptop, 2026-07-30). YMMV.
 
 ## Changelog
 

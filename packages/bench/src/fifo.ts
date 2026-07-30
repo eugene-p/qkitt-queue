@@ -7,7 +7,7 @@ import {
   printNote,
   timeAlone,
 } from './helpers.js'
-import { measureRetainedStable, tryGc } from './memory.js'
+import { measureRetainedMedian, tryGc } from './memory.js'
 import { mergeResult, printFifoTable, printProgress } from './report.js'
 
 type Case = {
@@ -102,7 +102,7 @@ export const runFifoBench = async (): Promise<void> => {
     })
 
     printProgress(`${label} — memory (${heldLabel})…`)
-    const mem = measureRetainedStable(c.name, heldLabel, c.hold)
+    const mem = measureRetainedMedian(c.name, heldLabel, c.hold)
     results.push(mergeResult(timing, mem))
   }
 

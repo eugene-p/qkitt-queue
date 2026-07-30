@@ -2,6 +2,8 @@
 
 Thanks for your interest in contributing! This document covers everything you need to get started.
 
+The project stays small by design: the core is an ESM-only, dependency-free in-process queue, while optional configuration and benchmarks live alongside it. Before changing behavior, identify which layer owns the concern and read the corresponding user guide so the API, examples, and docs keep telling the same story.
+
 ## Development setup
 
 ```bash

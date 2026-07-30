@@ -1,8 +1,10 @@
 # Persistence
 
-Durability is **built into the queue**: pass a `RowStore` to `buildQueue({ store })`. There is no separate persist decorator and no snapshot strategy — every durable queue is row-based (per-op put/remove with numeric ids and lease fields).
+Use persistence when an accepted job must still exist after the process or browser reloads. Durability is **built into the queue**: pass a `RowStore` to `buildQueue({ store })`. There is no separate persist decorator and no snapshot strategy — every durable queue is row-based (per-op put/remove with numeric ids and lease fields).
 
 Built-in durable stores: browser Web Storage (`localStorage` / `sessionStorage`). Custom backends implement `RowStore` ([Custom stores](#custom-stores)). Bare `buildQueue()` (no store) is the in-process path — data is not durable across restarts.
+
+Persistence is a reliability boundary, not a default optimization. It adds storage I/O, hydration, and shutdown work; keep `buildQueue()` bare when an in-process backlog is enough. It also does not make a queue distributed or coordinate multiple writers—choose a proper shared backend and ownership model when that is required.
 
 [README](../README.md) · [Composition](./composition.md) · [API `buildQueue`](./api.md#buildqueue) · [Stores](./api.md#stores)
 
@@ -21,6 +23,8 @@ Mutations return `Promise` so async stores work. Bare (no store) paths resolve i
 While `hydrate` runs, concurrent mutations reject with `HydrateWhileActiveError`. Hydrate also requires an idle queue (no leased rows / active workers).
 
 ## Lifecycle
+
+The reliable startup and shutdown sequence is the important part: load rows before a worker can claim them, and let writes finish before the process exits.
 
 1. Build: `buildQueue({ store })`.
 2. After restart: `await hydrate()` **before** attaching `withWorker` (or `autoStart: false` → hydrate → `start()`). Hydrate rejects with `HydrateWhileActiveError` while workers are active or rows are leased.
@@ -121,6 +125,8 @@ Illustrative Chromium sample (Windows laptop, 2026-07-26 — not a peer bench):
 ## Custom stores
 
 Implement `RowStore` and pass the instance to `buildQueue({ store })`.
+
+Use a custom store for Node or a real database. The queue owns ids and lease state; the store persists complete rows faithfully. It should be scoped to one queue, because sharing a row collection between queues would mix their ownership and ordering.
 
 ```ts
 import type { RowRecord, RowStore } from '@qkitt/queue'

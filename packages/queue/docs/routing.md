@@ -1,10 +1,14 @@
 # Topics & routing
 
-Publish on topics; bind queues with MQTT/AMQP-style patterns (`*`, `#`).
+Use routing when one producer should publish a named event and zero, one, or many in-process consumers can react independently. Publish on topics; bind queues with MQTT/AMQP-style patterns (`*`, `#`).
+
+This is in-process fan-out, not a network message broker: all bound queues live in the same application. Use it to keep features such as billing, fulfillment, and analytics decoupled without making the publisher know every consumer.
 
 [README](../README.md) · [Composition](./composition.md) · [API `buildRouter`](./api.md#buildrouter)
 
 ## Patterns
+
+Each matching binding receives its own `{ topic, data }` message. Choose exact topics for a single consumer, `*` for one varying segment, and `#` when a queue owns a whole topic family.
 
 | Pattern | Matches |
 | --- | --- |
@@ -41,6 +45,8 @@ unbind()
 ## Unmatched publishes
 
 **Unmatched** publishes can go to a sink queue. `publish` returns the number of **bindings** that matched — the unmatched sink is not a binding, so the return value stays `0` even when the sink enqueues. Use `router:unmatched` (`delivered`) or the sink queue's `size()` for sink metrics.
+
+An unmatched sink is useful for observability or a catch-all workflow when publishers may use topics that no consumer has claimed. It is not a retry path: a publish with a matched queue whose worker later fails belongs to [failure routing](./failure-routing.md).
 
 Workers on router-bound queues receive `{ topic, data }` (a `RouteMessage`), not the bare payload.
 

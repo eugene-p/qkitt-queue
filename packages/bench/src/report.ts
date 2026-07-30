@@ -45,7 +45,7 @@ export const printFifoTable = (
   console.log('')
   console.log(`Bare FIFO results — N=${n.toLocaleString()} enqueue+dequeue per op`)
   console.log(
-    '  heap Δ = size of a full queue of N (held live); not peak during the ops/s loop',
+    '  heap Δ = median of seven post-GC samples for a full queue of N; not peak during the ops/s loop',
   )
   console.table(
     rows.map((row) => ({
@@ -73,7 +73,7 @@ export const printWorkerTable = (rows: readonly WorkerResult[]): void => {
   console.log('')
   console.log('Worker drain results — one op = enqueue N jobs and drain until finished')
   console.log(
-    '  heap Δ = size with N jobs still queued (worker paused); not peak during drain',
+    '  heap Δ = median of seven post-GC samples with N jobs queued (worker paused); not peak during drain',
   )
 
   // Preserve first-seen setup order from the run.

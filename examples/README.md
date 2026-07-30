@@ -2,6 +2,8 @@
 
 Runnable scripts for [`@qkitt/queue`](../packages/queue) and [`@qkitt/queue-config`](../packages/queue-config).
 
+Start with `worker-drain` if you are new: it is the smallest useful queue—a FIFO plus a concurrent worker. Pick the example whose outcome matches your problem, run it, then open its `main.ts`; each is intentionally self-contained rather than a production starter kit.
+
 Requires Node.js 20+. From the monorepo root after `npm install` and `npm run build`:
 
 ```bash
@@ -33,4 +35,4 @@ npm run examples
 | [`loop-and-dlq`](./loop-and-dlq/main.ts) | Hop, then dead-letter via filters | `withWorker` → `withLoop` → `withDlq` |
 | [`with-config-loop-dlq`](./with-config-loop-dlq/main.ts) | Same chain from config | `@qkitt/queue-config` `loop` + `dlq` |
 
-Task index and guides: [Recipes](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/README.md#recipes) · [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) · [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) · [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md)
+The examples demonstrate one concern at a time. For API contracts and production boundaries—especially persistence, shutdown, and failure handling—continue with the linked guide: [Recipes](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/README.md#recipes) · [Composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) · [Lifecycle](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/lifecycle.md) · [Failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md)

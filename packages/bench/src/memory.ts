@@ -69,19 +69,23 @@ export const measureRetained = (
 }
 
 /**
- * Best of several independent samples. Post-build GC noise is one-sided
- * (collapsed / negative); the largest Δ is the least under-counted.
+ * Median of independent samples. Heap snapshots are noisy in both directions;
+ * a median is a stable representative value instead of selecting an optimistic
+ * or pessimistic outlier.
  */
-export const measureRetainedStable = (
+export const measureRetainedMedian = (
   name: string,
   held: string,
   build: () => unknown,
-  trials = 5,
+  trials = 7,
 ): MemRow => {
-  let best: MemRow | undefined
-  for (let i = 0; i < trials; i++) {
-    const row = measureRetained(name, held, build)
-    if (!best || row.heapDelta > best.heapDelta) best = row
+  if (!Number.isSafeInteger(trials) || trials < 1 || trials % 2 === 0) {
+    throw new Error('measureRetainedMedian: trials must be a positive odd integer')
   }
-  return best!
+  const rows: MemRow[] = []
+  for (let i = 0; i < trials; i++) {
+    rows.push(measureRetained(name, held, build))
+  }
+  rows.sort((a, b) => a.heapDelta - b.heapDelta)
+  return rows[(rows.length - 1) / 2]!
 }

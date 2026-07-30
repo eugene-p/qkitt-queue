@@ -12,6 +12,8 @@
     "bench": "npm run build:queue && npm run bench -w @qkitt/queue-bench",
     "bench:fifo": "npm run build:queue && npm run bench:fifo -w @qkitt/queue-bench",
     "bench:worker": "npm run build:queue && npm run bench:worker -w @qkitt/queue-bench",
+    "bench:durable": "npm run build:queue && npm run bench:durable -w @qkitt/queue-bench",
+    "bench:workloads": "npm run build:queue && npm run bench:workloads -w @qkitt/queue-bench",
     "test:browser": "npm run test:browser -w @qkitt/queue",
     "compare:stores": "npm run compare:stores -w @qkitt/queue",
     "pack:check": "npm run pack:check -w @qkitt/queue && npm run pack:check -w @qkitt/queue-config",

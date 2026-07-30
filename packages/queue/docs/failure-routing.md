@@ -1,6 +1,6 @@
 # Failure routing
 
-**Failed worker items are not re-queued by default.** Choose a path after `worker:failed`:
+**Failed worker items are not re-queued by default.** This is intentional: retries, re-entry, and retention each imply a different product decision. Choose the path that says what should happen to an item after its worker has exhausted its normal attempt:
 
 | Approach | When |
 | --- | --- |
@@ -14,6 +14,8 @@
 ## Dead letter (`withDeadLetter` / `withDlq`)
 
 Forward `worker:failed` items to a **distinct** destination with `enqueue`. Apply **after** the worker:
+
+Choose a dead-letter queue when a failed item needs inspection, alerting, or a separate recovery workflow. It makes failure visible without making the main worker retry forever.
 
 ```ts
 import {
@@ -46,6 +48,8 @@ Runnable demo: [`examples/with-dlq`](../../../examples/with-dlq).
 ## Loop (`withLoop`)
 
 On `worker:failed`, re-enqueue onto the **same** worker queue. Requires a **named** queue (`buildQueue({ name: 'jobs' })`). Library hop bookkeeping lives under the reserved key `__qkittQueue` (`QKITT_QUEUE_KEY`):
+
+Choose a loop only when the same job can become valid later and you can state a stopping rule. Put a hop cap or delay in the policy; without one, a consistently failing worker can consume capacity indefinitely.
 
 ```ts
 job.__qkittQueue.loop.jobs.hops // 1, 2, …
@@ -100,6 +104,8 @@ Runnable demo: [`examples/with-loop`](../../../examples/with-loop).
 ## Chaining `withLoop` + `withDlq`
 
 Recovery is a **single path** on the worker (not dual independent listeners):
+
+This is the common “try again a few times, then retain for review” policy. The loop owns temporary recovery; the DLQ owns the final outcome.
 
 1. `withLoop` sets recovery policy to **`loop`**.
 2. On failure, the loop `filter` / `map` / `delay` run.

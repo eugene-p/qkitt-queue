@@ -9,6 +9,12 @@ Declarative setup for [`@qkitt/queue`](https://www.npmjs.com/package/@qkitt/queu
 
 Builds the same stack as hand-written composition (`buildQueue({ store? })` → worker → loop → dlq → router) from a config object. Optional; most apps only need `@qkitt/queue`. See the core [composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) and [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) guides for the underlying model.
 
+## Is this package for me?
+
+Start with `@qkitt/queue` when you have one or two queues and want the wiring visible in application code. Choose `@qkitt/queue-config` when several named queues, stores, router bindings, and failure paths would otherwise be repeated across startup code. It does not introduce a second queue model—it creates the same core layers in a predictable order.
+
+The config describes structure; JavaScript/TypeScript config can still point to real worker functions and custom stores. JSON mode is for portable structure only, so it cannot contain workers or custom store instances.
+
 **Peer dependency:** `@qkitt/queue` `^0.8.0`. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
@@ -25,7 +31,7 @@ npm install @qkitt/queue @qkitt/queue-config
 
 ## Quick start
 
-**A. Minimal — single queue + worker**
+**A. Minimal — single queue + worker.** This is useful when configuration is already how your application declares components; otherwise the core package’s [quick start](https://github.com/eugene-p/qkitt-queue#quick-start) is shorter.
 
 ```ts
 import { defineConfig, buildFromConfig } from '@qkitt/queue-config'
