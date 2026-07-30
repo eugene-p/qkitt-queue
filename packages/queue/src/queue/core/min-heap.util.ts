@@ -16,7 +16,7 @@ export type MinHeap<T> = {
 
 
 export const createMinHeap = <T>(keyOf: (value: T) => number): MinHeap<T> => {
-    const data: T[] = []
+    let data: T[] = []
 
     const swap = (i: number, j: number): void => {
         const tmp = data[i]!
@@ -72,17 +72,18 @@ export const createMinHeap = <T>(keyOf: (value: T) => number): MinHeap<T> => {
     const peek = (): T | undefined => data[0]
 
     const rebuild = (values: readonly T[]): void => {
-        data.length = 0
-        for (let i = 0; i < values.length; i += 1) {
-            data.push(values[i]!)
-        }
+        // Replace instead of truncating so a large, stale heap backing store
+        // is not retained after expiry compaction.
+        data = Array.from(values)
         for (let i = (data.length >> 1) - 1; i >= 0; i -= 1) {
             siftDown(i)
         }
     }
 
     const clear = (): void => {
-        data.length = 0
+        // Drop capacity as well as element references; delayed/expiry heaps
+        // can temporarily grow much larger than their steady-state size.
+        data = []
     }
 
     const toArray = (): T[] => data.slice()

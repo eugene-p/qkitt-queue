@@ -35,8 +35,10 @@ import {
 import { InvalidWorkerOptionError } from './invalid-worker-option-error'
 import {
     attachRecoveryConfig,
+    DeadLetterEnqueueError,
     DLQ_RETRY_BACKOFF_MS,
     getRecoveryConfig,
+    LoopEnqueueError,
     type LoopMapContext,
     type RecoveryConfig,
     type RecoveryPolicy,
@@ -206,61 +208,70 @@ export const withWorker = <
         error: unknown | undefined,
         override?: { item?: T; delayMs?: number },
     ): Promise<void> => {
-        const name = getQueueName(inner)
-        const loopOpts = recovery.loop
-        let nextItem: T = override?.item ?? item
-        let delayMs = override?.delayMs ?? 0
+        try {
+            const name = getQueueName(inner)
+            const loopOpts = recovery.loop
+            let nextItem: T = override?.item ?? item
+            let delayMs = override?.delayMs ?? 0
 
-        if (loopOpts && name !== undefined) {
-            const previousHops = getLoopHops(item, name)
-            const hops = (previousHops ?? 0) + 1
-            const ctx: LoopMapContext = { name, previousHops, hops }
-            // Filter false → fail path (DLQ if registered), not silent drop.
-            if (loopOpts.filter && !loopOpts.filter(item, error, ctx)) {
-                await applyFail(lease, item, error)
-                return
-            }
-            if (loopOpts.delay !== undefined) {
-                if (isInvalidStaticDelay(loopOpts.delay)) {
-                    throw new InvalidWorkerOptionError(
-                        'loop delay must be a finite number >= 0',
-                    )
+            if (loopOpts && name !== undefined) {
+                const previousHops = getLoopHops(item, name)
+                const hops = (previousHops ?? 0) + 1
+                const ctx: LoopMapContext = { name, previousHops, hops }
+                // Filter false → fail path (DLQ if registered), not silent drop.
+                if (loopOpts.filter && !loopOpts.filter(item, error, ctx)) {
+                    await applyFail(lease, item, error)
+                    return
                 }
-                const ms = resolveDelayMs(loopOpts.delay, hops)
-                if (!isNonNegativeFinite(ms)) {
-                    throw new InvalidWorkerOptionError(
-                        'loop delay must be a finite number >= 0',
-                    )
+                if (loopOpts.delay !== undefined) {
+                    if (isInvalidStaticDelay(loopOpts.delay)) {
+                        throw new InvalidWorkerOptionError(
+                            'loop delay must be a finite number >= 0',
+                        )
+                    }
+                    const ms = resolveDelayMs(loopOpts.delay, hops)
+                    if (!isNonNegativeFinite(ms)) {
+                        throw new InvalidWorkerOptionError(
+                            'loop delay must be a finite number >= 0',
+                        )
+                    }
+                    delayMs = ms
                 }
-                delayMs = ms
-            }
-            if (loopOpts.map) {
-                const mapped = loopOpts.map(item, error, ctx)
-                const originalMeta = isPlainQueueMeta(item)
-                const attempted = readMappedQueueMeta(mapped)
-                if (
-                    attempted !== undefined &&
-                    !queueMetaEqual(attempted, originalMeta)
-                ) {
-                    emitInner('loop:meta-override', {
-                        item,
-                        error,
-                        name,
-                        attempted,
-                        applied: { hops },
-                    })
+                if (loopOpts.map) {
+                    const mapped = loopOpts.map(item, error, ctx)
+                    const originalMeta = isPlainQueueMeta(item)
+                    const attempted = readMappedQueueMeta(mapped)
+                    if (
+                        attempted !== undefined &&
+                        !queueMetaEqual(attempted, originalMeta)
+                    ) {
+                        emitInner('loop:meta-override', {
+                            item,
+                            error,
+                            name,
+                            attempted,
+                            applied: { hops },
+                        })
+                    }
+                    nextItem = stampLoopHops(mapped, item, name, hops) as T
+                } else {
+                    nextItem = stampLoopHops(item, item, name, hops) as T
                 }
-                nextItem = stampLoopHops(mapped, item, name, hops) as T
-            } else {
-                nextItem = stampLoopHops(item, item, name, hops) as T
+            } else if (override?.item !== undefined) {
+                nextItem = override.item
             }
-        } else if (override?.item !== undefined) {
-            nextItem = override.item
-        }
 
-        await settleReschedule(lease, { item: nextItem, delayMs })
-        if (subs.requeued > 0) {
-            emitInner('worker:requeued', { item, error, delayMs })
+            await settleReschedule(lease, { item: nextItem, delayMs })
+            if (subs.requeued > 0) {
+                emitInner('worker:requeued', { item, error, delayMs })
+            }
+        } catch (cause) {
+            const loopError = new LoopEnqueueError(
+                'failed to re-enqueue loop item',
+                { cause, item, workerError: error },
+            )
+            emitInner('loop:error', { item, error, cause: loopError })
+            throw loopError
         }
     }
 
@@ -296,10 +307,14 @@ export const withWorker = <
                 deadLetterItem,
             })
         } catch (cause) {
+            const handoffError = new DeadLetterEnqueueError(
+                'failed to enqueue dead-letter item',
+                { cause, item, workerError: error },
+            )
             emitInner('dlq:error', {
                 item,
                 error,
-                cause,
+                cause: handoffError,
             })
             await applyLoop(lease, item, error, {
                 item,
@@ -324,7 +339,10 @@ export const withWorker = <
         }
         try {
             const result = await policy({ item, error, lease })
-            if (result == null) return
+            if (result == null) {
+                await applyFail(lease, item, error)
+                return
+            }
             if (result.action === 'loop') {
                 await applyLoop(lease, item, error, {
                     item: result.item,
@@ -411,20 +429,19 @@ export const withWorker = <
         let ret: R | PromiseLike<R>
         try {
             ret = worker(item)
+            if (isThenable(ret)) {
+                Promise.resolve(ret).then(
+                    (result) => {
+                        completeLease(lease, item, result as R)
+                    },
+                    (error: unknown) => {
+                        failLease(lease, item, error)
+                    },
+                )
+                return
+            }
         } catch (error) {
             failLease(lease, item, error)
-            return
-        }
-
-        if (isThenable(ret)) {
-            Promise.resolve(ret).then(
-                (result) => {
-                    completeLease(lease, item, result as R)
-                },
-                (error: unknown) => {
-                    failLease(lease, item, error)
-                },
-            )
             return
         }
 
@@ -590,4 +607,3 @@ export const withWorker = <
     > &
         PreserveQueueExtras<TQueue>
 }
-

@@ -55,7 +55,7 @@ router.clearUnmatched() // stats only
 router.setUnmatchedTarget(unrouted) // or undefined to clear
 ```
 
-If a matched binding’s `enqueue` throws, `publish` still counts that binding as matched and does not deliver to the unmatched sink (see `router:error`).
+If a matched binding’s `enqueue` throws or rejects, `publish` still counts that binding as matched and does not deliver to the unmatched sink (see `router:error`).
 
 **Not the same as dead letter.** Router unmatched is for publishes with no binding. [Dead letter](./failure-routing.md) is for **worker processing failures** after dequeue.
 

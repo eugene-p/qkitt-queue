@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { buildQueue } from '../core/queue'
 import { withWorker } from '../worker/with-worker'
-import { InvalidLoopOptionError, withLoop, getLoopHops } from './with-loop'
+import {
+    InvalidLoopOptionError,
+    LoopEnqueueError,
+    withLoop,
+    getLoopHops,
+} from './with-loop'
 import { InvalidQueueCompositionError } from '../../persist/errors'
 
 const waitForIdle = (queue: {
@@ -97,5 +102,38 @@ describe('withLoop', () => {
             __qkittQueue: { loop: { jobs: { hops: 3 } } },
         }
         expect(getLoopHops(item, 'jobs')).toBe(3)
+    })
+
+    it('emits LoopEnqueueError when recovery cannot requeue', async () => {
+        const cause = new Error('map failed')
+        let attempts = 0
+        const queue = withLoop(
+            withWorker(
+                buildQueue<{ id: number }>({ name: 'jobs' }),
+                async (item) => {
+                    attempts += 1
+                    if (attempts === 1) throw new Error('worker failed')
+                    return item
+                },
+            ),
+            {
+                map: () => {
+                    throw cause
+                },
+            },
+        )
+        const loopError = vi.fn()
+        queue.on('loop:error', loopError)
+
+        const idle = waitForIdle(queue)
+        queue.enqueue({ id: 1 })
+        await idle
+
+        expect(loopError).toHaveBeenCalledWith(
+            expect.objectContaining({
+                cause: expect.any(LoopEnqueueError),
+            }),
+        )
+        expect(queue.isEmpty()).toBe(true)
     })
 })

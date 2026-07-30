@@ -7,6 +7,40 @@ import { ConflictingRecoveryError } from '../../persist/errors'
 import type { DelayPolicy } from '../../util/delay-policy.util'
 import type { Lease } from '../core/queue'
 
+export class LoopEnqueueError extends Error {
+    override readonly name = 'LoopEnqueueError'
+    override readonly cause: unknown
+    readonly item: unknown
+    readonly workerError: unknown
+
+    constructor(
+        message: string,
+        options: { cause: unknown; item: unknown; workerError: unknown },
+    ) {
+        super(message, { cause: options.cause })
+        this.cause = options.cause
+        this.item = options.item
+        this.workerError = options.workerError
+    }
+}
+
+export class DeadLetterEnqueueError extends Error {
+    override readonly name = 'DeadLetterEnqueueError'
+    override readonly cause: unknown
+    readonly item: unknown
+    readonly workerError: unknown
+
+    constructor(
+        message: string,
+        options: { cause: unknown; item: unknown; workerError: unknown },
+    ) {
+        super(message, { cause: options.cause })
+        this.cause = options.cause
+        this.item = options.item
+        this.workerError = options.workerError
+    }
+}
+
 export type RecoveryPolicyResult<T> =
     | { action: 'loop'; item?: T; delayMs?: number }
     | { action: 'fail' }

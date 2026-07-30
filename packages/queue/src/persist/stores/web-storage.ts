@@ -42,10 +42,20 @@ const orderCodec: OrderCodec = {
     deserialize: (raw) => {
         const ids = JSON.parse(raw) as unknown
         if (!Array.isArray(ids)) return []
-        return ids.filter(
-            (id): id is number =>
-                typeof id === 'number' && Number.isSafeInteger(id) && id >= 1,
-        )
+        let count = 0
+        for (let i = 0; i < ids.length; i += 1) {
+            const id = ids[i]
+            if (
+                typeof id === 'number' &&
+                Number.isSafeInteger(id) &&
+                id >= 1
+            ) {
+                ids[count] = id
+                count += 1
+            }
+        }
+        ids.length = count
+        return ids as number[]
     },
 }
 
@@ -148,13 +158,10 @@ export const createWebRowStore = <T>(
             raw,
             recordCodec.deserialize,
         )
-        return {
-            id: stored.id,
-            item: stored.item,
-            availableAt: stored.availableAt ?? 0,
-            leaseGeneration: stored.leaseGeneration ?? null,
-            leaseExpiresAt: stored.leaseExpiresAt ?? null,
-        }
+        stored.availableAt ??= 0
+        stored.leaseGeneration ??= null
+        stored.leaseExpiresAt ??= null
+        return stored
     }
 
     const putOne = (record: RowRecord<T>): void => {
@@ -172,9 +179,16 @@ export const createWebRowStore = <T>(
         const { ids, set } = ensureOrder()
         if (!set.has(id)) return
         set.delete(id)
-        const next = ids.filter((entry) => entry !== id)
-        orderIds = next
-        persistOrder(next)
+        let count = 0
+        for (let i = 0; i < ids.length; i += 1) {
+            const entry = ids[i]!
+            if (entry !== id) {
+                ids[count] = entry
+                count += 1
+            }
+        }
+        ids.length = count
+        persistOrder(ids)
     }
 
     return {
@@ -228,9 +242,16 @@ export const createWebRowStore = <T>(
                 }
             }
             if (!orderChanged) return
-            const next = ids.filter((id) => set.has(id))
-            orderIds = next
-            persistOrder(next)
+            let count = 0
+            for (let i = 0; i < ids.length; i += 1) {
+                const id = ids[i]!
+                if (set.has(id)) {
+                    ids[count] = id
+                    count += 1
+                }
+            }
+            ids.length = count
+            persistOrder(ids)
         },
         replaceAll: (batch) => {
             const store = storage()

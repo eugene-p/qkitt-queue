@@ -19,6 +19,7 @@ import { getQueueName } from '../core/queue-name.util'
 import type { QueueWithWorker, WorkerEvents } from '../worker/with-worker'
 import {
     configureLoopRecovery,
+    LoopEnqueueError,
     type LoopMapContext,
 } from '../worker/recovery.util'
 import { getLoopHops, QKITT_QUEUE_KEY } from './hop-meta.util'
@@ -70,22 +71,7 @@ export class InvalidLoopOptionError extends Error {
     }
 }
 
-export class LoopEnqueueError extends Error {
-    override readonly name = 'LoopEnqueueError'
-    override readonly cause: unknown
-    readonly item: unknown
-    readonly workerError: unknown
-
-    constructor(
-        message: string,
-        options: { cause: unknown; item: unknown; workerError: unknown },
-    ) {
-        super(message, { cause: options.cause })
-        this.cause = options.cause
-        this.item = options.item
-        this.workerError = options.workerError
-    }
-}
+export { LoopEnqueueError } from '../worker/recovery.util'
 
 /**
  * Configure failure recovery to **loop** (durable reschedule) with optional

@@ -141,23 +141,23 @@ In-process peers only. Full tables and setup: [root README](https://github.com/e
 
 | Library | c=1 | c=4 | heap Δ (c=1) |
 | --- | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **439** | **490** | **95 KiB** |
-| fastq | 316 | 280 | 6.12 MiB |
+| **@qkitt/queue** `withWorker` | **438** | **458** | **95 KiB** |
+| fastq | 248 | 238 | 6.12 MiB |
 | async.queue | 347 | 374 | 3.95 MiB |
-| p-queue | 104 | 95 | 6.19 MiB |
+| p-queue | 103 | 82 | 6.19 MiB |
 
 **Bare queue** — 50 000 enqueue + dequeue (ops/s median · retained heap)
 
 | Library | ops/s | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 783 | 413 KiB |
-| denque | 2,349 | 518 KiB |
-| yocto-queue | 2,409 | 1.92 MiB |
+| **@qkitt/queue** `buildQueue` | 793 | 414 KiB |
+| denque | 2,306 | 516 KiB |
+| yocto-queue | 2,398 | 1.91 MiB |
 | native `Array` push/shift | 8 | 399 KiB |
 
 **Browser (Chromium)** — in-memory vs durable worker drain, 5k jobs c=1: bare ~2 ms · localStorage ~410 ms (`npm run compare:stores`).
 
-Relative numbers (Node 26.5.0, Windows laptop, 2026-07-26). YMMV.
+Relative numbers (Node 26.5.0, Windows laptop, 2026-07-30). YMMV.
 
 ## Changelog
 

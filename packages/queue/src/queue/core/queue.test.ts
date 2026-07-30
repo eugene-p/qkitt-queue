@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createMemoryRowStore } from '../../persist/stores/memory'
-import { LeaseMismatchError } from '../../persist/errors'
+import { HydrateWhileActiveError, LeaseMismatchError } from '../../persist/errors'
 import { buildQueue, InvalidQueueOptionError, QueueFullError } from './queue'
 import { getQueueName } from './queue-name.util'
 
@@ -68,6 +68,21 @@ describe('buildQueue', () => {
         expect(handler).toHaveBeenCalledTimes(2)
         expect(handler).toHaveBeenNthCalledWith(1, { item: 'x', size: 1 })
         expect(handler).toHaveBeenNthCalledWith(2, { item: 'y', size: 2 })
+    })
+
+    it('keeps event delivery active after an unsubscribe is called twice', async () => {
+        const queue = buildQueue<number>()
+        const first = vi.fn()
+        const second = vi.fn()
+        const off = queue.on('queue:enqueued', first)
+        queue.on('queue:enqueued', second)
+
+        off()
+        off()
+        await queue.enqueue(1)
+
+        expect(first).not.toHaveBeenCalled()
+        expect(second).toHaveBeenCalledWith({ item: 1, size: 1 })
     })
 
     it('emits queue:dequeued and queue:emptied on admin drop', async () => {
@@ -156,6 +171,27 @@ describe('buildQueue', () => {
         expect(q2.size()).toBe(0)
     })
 
+    it('reclaims expired leases without a durable store', async () => {
+        vi.useFakeTimers()
+        try {
+            const queue = buildQueue<number>({ leaseTtlMs: 100 })
+            await queue.enqueue(1)
+            const lease = await queue.claim()
+
+            expect(lease?.item).toBe(1)
+            await vi.advanceTimersByTimeAsync(100)
+
+            expect(queue.readyCount()).toBe(1)
+            expect(queue.stats()).toEqual({
+                available: 1,
+                delayed: 0,
+                leased: 0,
+            })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('throws QueueFullError at maxSize', async () => {
         const queue = buildQueue<number>({ maxSize: 1 })
         await queue.enqueue(1)
@@ -201,5 +237,40 @@ describe('buildQueue', () => {
         await queue.enqueue('a')
         await queue.replaceAll(['x', 'y'])
         expect(queue.toArray()).toEqual(['x', 'y'])
+    })
+
+    it('rejects every mutation while hydrate is loading', async () => {
+        let beginLoad!: () => void
+        let resolveLoad!: (rows: never[]) => void
+        const loadStarted = new Promise<void>((resolve) => {
+            beginLoad = resolve
+        })
+        const store = {
+            loadAll: () => {
+                beginLoad()
+                return new Promise<never[]>((resolve) => {
+                    resolveLoad = resolve
+                })
+            },
+            put: () => {},
+            remove: () => {},
+            clear: () => {},
+        }
+        const queue = buildQueue<number>({ store })
+        const hydrating = queue.hydrate()
+        await loadStarted
+
+        await expect(queue.clear()).rejects.toBeInstanceOf(
+            HydrateWhileActiveError,
+        )
+        await expect(queue.replaceAll([1])).rejects.toBeInstanceOf(
+            HydrateWhileActiveError,
+        )
+        await expect(queue.hydrate()).rejects.toBeInstanceOf(
+            HydrateWhileActiveError,
+        )
+
+        resolveLoad([])
+        await hydrating
     })
 })

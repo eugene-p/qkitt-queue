@@ -4,8 +4,8 @@ import { isNonNegativeFinite } from './number.util'
  * Delay in ms, or a function of the current 1-based attempt / hop count.
  * Only the attempt number is passed — not the error or other context.
  *
- * For `withLoop`, resolved delays are process-local timers only: restart or
- * crash loses items that have not re-entered the queue yet.
+ * `withLoop` settles through `reschedule`; durable queues persist delayed rows
+ * with their `availableAt` timestamp, while bare queues keep them in memory.
  */
 export type DelayPolicy = number | ((attempt: number) => number)
 

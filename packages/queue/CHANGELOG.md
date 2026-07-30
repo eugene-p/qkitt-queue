@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-07-30
+
+### Fixed
+
+- Report rejected asynchronous router targets through `router:error` instead of
+  leaving unhandled rejections.
+- Keep subscription counts correct when an unsubscribe function is called more
+  than once, and reject queue mutations while hydration is active.
+- Reclaim bare-queue leases when `leaseTtlMs` is configured.
+- Route a custom `onFailure` handler that returns no action through the normal
+  fail path, and expose loop / dead-letter handoff failures consistently.
+
+### Changed
+
+- Reduce retained memory in lease recycling, delayed / expiry heaps, hydration,
+  `replaceAll`, and Web Storage order maintenance.
+- Use a heap for lease-expiry scheduling, avoiding full active-lease scans when
+  the TTL timer fires.
+- Clarify recovery, routing, persistence-delay, and lease-lifetime semantics in
+  the API guides. Benchmark summaries refreshed (Node 26 / 2026-07-30).
+
 ## [0.8.0] — 2026-07-26
 
 > **BREAKING — read this before upgrading.** Persistence and the core queue API
@@ -381,6 +402,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.8.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.1
 [0.8.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.0
 [0.7.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.7.0
 [0.6.5]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.6.5

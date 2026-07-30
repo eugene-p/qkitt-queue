@@ -191,6 +191,26 @@ describe('buildRouter', () => {
         expect(onUnmatched).not.toHaveBeenCalled()
     })
 
+    it('emits router:error for an async target rejection', async () => {
+        const router = buildRouter()
+        const error = new Error('queue full')
+        const onError = vi.fn()
+        router.on('router:error', onError)
+        router.bind('orders.#', {
+            enqueue: () => Promise.reject(error),
+        })
+
+        expect(router.publish('orders.created', { id: 1 })).toBe(1)
+        await Promise.resolve()
+
+        expect(onError).toHaveBeenCalledWith({
+            operation: 'publish',
+            error,
+            topic: 'orders.created',
+            pattern: 'orders.#',
+        })
+    })
+
     it('emits router:published with match count', () => {
         const router = buildRouter()
         const published = vi.fn()

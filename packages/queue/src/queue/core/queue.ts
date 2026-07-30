@@ -61,7 +61,7 @@ export type QueueSlot<T> = {
 /**
  * In-memory lease row. Structurally a {@link Lease} plus optional TTL.
  * Inline claimSync returns this same object (one alloc) and may recycle it
- * via a freelist after ack/release.
+ * via a freelist after ack/release, dropping the payload reference on settle.
  */
 type LeasedEntry<T> = {
     id: number
@@ -74,6 +74,12 @@ type DelayedEntry<T> = {
     id: number
     item: T
     availableAt: number
+}
+
+type LeaseExpiry = {
+    id: number
+    generation: number
+    expiresAt: number
 }
 
 export type Queue<
@@ -202,6 +208,14 @@ export const buildQueue = <T>(
         return delayed
     }
     const delayedSize = (): number => delayed?.size ?? 0
+    // Lazy: only queues with lease TTLs need expiry tracking.
+    let leaseExpiries: MinHeap<LeaseExpiry> | undefined
+    const getLeaseExpiries = (): MinHeap<LeaseExpiry> => {
+        if (leaseExpiries === undefined) {
+            leaseExpiries = createMinHeap<LeaseExpiry>((entry) => entry.expiresAt)
+        }
+        return leaseExpiries
+    }
     const ids = createIdCounter()
     // Monotonic lease generation (single-process); no per-id Map retained after ack.
     let leaseGenSeq = 0
@@ -228,6 +242,8 @@ export const buildQueue = <T>(
     }
 
     const recycleLease = (entry: LeasedEntry<T>): void => {
+        // Do not retain completed payloads solely for object-shape reuse.
+        entry.item = undefined as T
         if (leaseFreelist.length < LEASE_FREELIST_MAX) {
             leaseFreelist.push(entry)
         }
@@ -400,19 +416,44 @@ export const buildQueue = <T>(
             leaseTimer = undefined
         }
         if (leaseTtlMs === undefined) return
-        let earliest: number | null = null
-        for (const entry of leased.values()) {
-            if (entry.expiresAt === null) continue
-            if (earliest === null || entry.expiresAt < earliest) {
-                earliest = entry.expiresAt
-            }
+        if (leaseExpiries === undefined) return
+        if (leased.size === 0) {
+            leaseExpiries.clear()
+            return
         }
-        if (earliest === null) return
-        const wait = Math.max(0, earliest - nowMs())
-        leaseTimer = scheduleTimeout(() => {
-            leaseTimer = undefined
-            void reclaimExpiredLeases()
-        }, wait)
+        // Settled leases leave stale heap entries. Compact occasionally so a
+        // long-lived lease cannot retain every short-lived lease beside it.
+        if (leaseExpiries.size > leased.size * 2 + 64) {
+            const live: LeaseExpiry[] = []
+            for (const [id, entry] of leased) {
+                if (entry.expiresAt !== null) {
+                    live.push({
+                        id,
+                        generation: entry.generation,
+                        expiresAt: entry.expiresAt,
+                    })
+                }
+            }
+            leaseExpiries.rebuild(live)
+        }
+        for (;;) {
+            const head = leaseExpiries.peek()
+            if (head === undefined) return
+            const entry = leased.get(head.id)
+            if (
+                entry !== undefined &&
+                entry.generation === head.generation &&
+                entry.expiresAt === head.expiresAt
+            ) {
+                const wait = Math.max(0, head.expiresAt - nowMs())
+                leaseTimer = scheduleTimeout(() => {
+                    leaseTimer = undefined
+                    void reclaimExpiredLeases()
+                }, wait)
+                return
+            }
+            leaseExpiries.pop()
+        }
     }
 
     /** Reclaim one expired lease (must run on write chain when durable). */
@@ -455,22 +496,32 @@ export const buildQueue = <T>(
         if (leaseTtlMs === undefined) return
         await withChain(async () => {
             const now = nowMs()
-            const expired: { id: number; entry: LeasedEntry<T> }[] = []
-            for (const [id, entry] of leased) {
-                if (entry.expiresAt !== null && entry.expiresAt <= now) {
-                    expired.push({ id, entry })
-                }
-            }
-            for (const { id, entry } of expired) {
-                try {
-                    await reclaimOneExpired(id, entry)
-                } catch (error) {
-                    if (subs.persistError > 0) {
-                        emitter.emit('persist:error', {
-                            operation: 'put',
-                            error,
-                            id,
-                        })
+            if (leaseExpiries !== undefined) {
+                for (;;) {
+                    const head = leaseExpiries.peek()
+                    if (head === undefined || head.expiresAt > now) break
+                    leaseExpiries.pop()
+                    const entry = leased.get(head.id)
+                    if (
+                        entry === undefined ||
+                        entry.generation !== head.generation ||
+                        entry.expiresAt !== head.expiresAt
+                    ) {
+                        continue
+                    }
+                    try {
+                        await reclaimOneExpired(head.id, entry)
+                    } catch (error) {
+                        // Retain the expiry so a transient store failure retries.
+                        leaseExpiries.push(head)
+                        if (subs.persistError > 0) {
+                            emitter.emit('persist:error', {
+                                operation: 'put',
+                                error,
+                                id: head.id,
+                            })
+                        }
+                        break
                     }
                 }
             }
@@ -487,6 +538,7 @@ export const buildQueue = <T>(
         leased.clear()
         leaseFreelist.length = 0
         delayed?.clear()
+        leaseExpiries?.clear()
         if (delayTimer !== undefined) {
             cancelTimeout(delayTimer)
             delayTimer = undefined
@@ -541,6 +593,13 @@ export const buildQueue = <T>(
 
         const lease = allocLease(id, head.item, nextGen, expiresAt)
         leased.set(id, lease)
+        if (expiresAt !== null) {
+            getLeaseExpiries().push({
+                id,
+                generation: nextGen,
+                expiresAt,
+            })
+        }
         armLeaseTimer()
         return lease
     }
@@ -700,7 +759,7 @@ export const buildQueue = <T>(
                 ),
             )
         }
-        if (!durable) {
+        if (!durable && leaseTtlMs === undefined) {
             const lease = claimSync()
             return lease === undefined
                 ? (RESOLVED_UNDEFINED as Promise<undefined>)
@@ -710,6 +769,11 @@ export const buildQueue = <T>(
     }
 
     const ack = (lease: Lease<T>): Promise<void> => {
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError('cannot ack while hydrate is in progress'),
+            )
+        }
         if (!durable) {
             try {
                 ackSync(lease)
@@ -737,6 +801,13 @@ export const buildQueue = <T>(
     }
 
     const release = (lease: Lease<T>): Promise<void> => {
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError(
+                    'cannot release while hydrate is in progress',
+                ),
+            )
+        }
         if (!durable) {
             try {
                 releaseSync(lease)
@@ -772,6 +843,13 @@ export const buildQueue = <T>(
         lease: Lease<T>,
         next: { item: T; delayMs?: number },
     ): Promise<void> => {
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError(
+                    'cannot reschedule while hydrate is in progress',
+                ),
+            )
+        }
         const delayMs = next.delayMs ?? 0
         if (!Number.isFinite(delayMs) || delayMs < 0) {
             return Promise.reject(
@@ -911,6 +989,13 @@ export const buildQueue = <T>(
     const isEmpty = (): boolean => totalSize() === 0
 
     const clear = (): Promise<void> => {
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError(
+                    'cannot clear while hydrate is in progress',
+                ),
+            )
+        }
         const removed = totalSize()
         if (removed === 0 && !durable) return RESOLVED
 
@@ -935,6 +1020,13 @@ export const buildQueue = <T>(
     }
 
     const replaceAll = (items: readonly T[]): Promise<void> => {
+        if (hydrating) {
+            return Promise.reject(
+                new HydrateWhileActiveError(
+                    'cannot replaceAll while hydrate is in progress',
+                ),
+            )
+        }
         if (leased.size > 0) {
             return Promise.reject(new HydrateWhileActiveError())
         }
@@ -942,9 +1034,22 @@ export const buildQueue = <T>(
             return Promise.reject(new QueueFullError(maxSize))
         }
 
-        const planned: RowRecord<T>[] = []
+        if (!durable) {
+            clearMemory()
+            ids.reset()
+            leaseGenSeq = 0
+            // Inline rows have no stable available ids, so avoid allocating
+            // durable RowRecord envelopes solely to rebuild the FIFO.
+            for (let i = 0; i < items.length; i += 1) {
+                availableItems.push(items[i]!)
+            }
+            availableCount = items.length
+            return RESOLVED
+        }
+
+        const planned = new Array<RowRecord<T>>(items.length)
         for (let i = 0; i < items.length; i += 1) {
-            planned.push(toRecord(i + 1, items[i]!, 0, null, null))
+            planned[i] = toRecord(i + 1, items[i]!, 0, null, null)
         }
 
         const applyMemory = (): void => {
@@ -991,7 +1096,7 @@ export const buildQueue = <T>(
             out.push(availableItems[i]!)
         }
         if (delayed !== undefined && delayed.size > 0) {
-            const delayedList = delayed.toArray().slice().sort((a, b) => {
+            const delayedList = delayed.toArray().sort((a, b) => {
                 if (a.availableAt !== b.availableAt) {
                     return a.availableAt - b.availableAt
                 }
@@ -1019,7 +1124,7 @@ export const buildQueue = <T>(
         }
         // Inline available has no stable ids until claim; omit those.
         if (delayed !== undefined && delayed.size > 0) {
-            const delayedList = delayed.toArray().slice().sort((a, b) => {
+            const delayedList = delayed.toArray().sort((a, b) => {
                 if (a.availableAt !== b.availableAt) {
                     return a.availableAt - b.availableAt
                 }
@@ -1039,7 +1144,7 @@ export const buildQueue = <T>(
 
     const hydrate = async (): Promise<void> => {
         if (!durable || !store) return
-        if (leased.size > 0) {
+        if (hydrating || leased.size > 0) {
             throw new HydrateWhileActiveError()
         }
         hydrating = true
@@ -1062,33 +1167,23 @@ export const buildQueue = <T>(
             }
 
             const now = nowMs()
-            const availableRows: RowRecord<T>[] = []
+            const availableRows: Array<Pick<RowRecord<T>, 'id' | 'item'>> =
+                []
             const delayedRows: DelayedEntry<T>[] = []
-            const reclaimPuts: RowRecord<T>[] = []
 
             for (const row of loaded) {
                 const availableAt =
                     typeof row.availableAt === 'number' ? row.availableAt : 0
                 if (row.leaseGeneration != null) {
                     const cleared = toRecord(row.id, row.item, 0, null, null)
-                    reclaimPuts.push(cleared)
+                    // Persist recovery before replacing in-memory state.
+                    await store.put(cleared)
                     availableRows.push(cleared)
                 } else if (availableAt > now) {
-                    delayedRows.push({
-                        id: row.id,
-                        item: row.item,
-                        availableAt,
-                    })
+                    delayedRows.push(row)
                 } else {
-                    availableRows.push(
-                        toRecord(row.id, row.item, 0, null, null),
-                    )
+                    availableRows.push(row)
                 }
-            }
-
-            // Durable reclaim writes before installing memory snapshot.
-            for (const rec of reclaimPuts) {
-                await store.put(rec)
             }
 
             clearMemory()
@@ -1141,7 +1236,7 @@ export const buildQueue = <T>(
     }
 
     const marked = markQueueName(markQueueMaxSize(api, maxSize), name)
-    if (!durable) {
+    if (!durable && leaseTtlMs === undefined) {
         attachInlineOps(marked, {
             claimSync,
             ackSync,

@@ -188,7 +188,7 @@ npm run bench
 
 Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run bench` · summary also in the [queue package README](./packages/queue/README.md#benchmark-summary).
 
-> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-26 · YMMV
+> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-30 · YMMV
 
 **Worker drain is the strength** — high ops/s and very low retained memory under a backlog. Bare FIFO is competitive on heap and far faster than `Array#shift`; pure enqueue/dequeue ops trail dedicated structures like denque / yocto-queue.
 
@@ -196,18 +196,18 @@ Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run benc
 
 | Library | 1k c=1 | 1k c=4 | 10k c=1 | 10k c=4 | heap Δ (10k c=1) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| **@qkitt/queue** `withWorker` | **4,367** | **4,715** | **439** | **490** | **95 KiB** |
-| fastq | 3,962 | 4,310 | 316 | 280 | 6.12 MiB |
-| async.queue | 3,855 | 4,189 | 347 | 374 | 3.95 MiB |
-| p-queue | 1,342 | 1,413 | 104 | 95 | 6.19 MiB |
+| **@qkitt/queue** `withWorker` | **4,117** | **4,531** | **438** | **458** | **95 KiB** |
+| fastq | 4,128 | 3,968 | 248 | 238 | 6.12 MiB |
+| async.queue | 3,702 | 4,248 | 359 | 374 | 3.90 MiB |
+| p-queue | 1,174 | 1,362 | 103 | 82 | 6.19 MiB |
 
 ### Bare queue — 50k enqueue + dequeue
 
 | Library | ops/s (med) | heap Δ |
 | --- | ---: | ---: |
-| **@qkitt/queue** `buildQueue` | 783 | 413 KiB |
-| denque | 2,349 | 518 KiB |
-| yocto-queue | 2,409 | 1.92 MiB |
+| **@qkitt/queue** `buildQueue` | 793 | 414 KiB |
+| denque | 2,306 | 516 KiB |
+| yocto-queue | 2,398 | 1.91 MiB |
 | native `Array` push/shift | 8 | 399 KiB |
 
 Median ops/s, higher is better. Heap Δ = retained memory measured with all items still held (worker paused).

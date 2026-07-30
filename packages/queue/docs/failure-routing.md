@@ -37,9 +37,9 @@ const jobs = withDlq(
 
 **Not the same as router unmatched.** Router `unmatchedTarget` / config `unmatchedQueue` is for publishes with no binding. Dead letter is for **worker processing failures** after dequeue.
 
-**Full destination is misconfiguration.** A bounded dead-letter sink that throws `QueueFullError` is not an overflow strategy: size it for worst-case failure volume, leave it unbounded, or **drain** it. Destination `enqueue` / `map` / `filter` failures emit `dlq:error` with `DeadLetterEnqueueError` (cause preserved) and **do not** rethrow. **Subscribe to `dlq:error` in production** if the sink can throw — the source item is already gone, and ignoring this event loses the failure quietly.
+**Full destination is misconfiguration.** A bounded dead-letter sink that throws `QueueFullError` is not an overflow strategy: size it for worst-case failure volume, leave it unbounded, or **drain** it. Destination `enqueue` / `map` / `filter` failures emit `dlq:error` with `DeadLetterEnqueueError` (cause preserved), then requeue the source with a 1-second backoff. **Subscribe to `dlq:error` in production** if the sink can throw.
 
-`withDlq` is an alias of `withDeadLetter`. Stacking multiple dead-letter layers registers multiple handlers (each destination receives the failure).
+`withDlq` is an alias of `withDeadLetter`. A worker queue supports one dead-letter destination.
 
 Runnable demo: [`examples/with-dlq`](../../../examples/with-dlq).
 
@@ -74,7 +74,7 @@ const q = withLoop(
 | --- | --- | --- | --- |
 | `map` | `(item, error, ctx) => U` | identity | Runs on the **original** item; library always re-stamps `__qkittQueue` |
 | `filter` | `(item, error, ctx) => boolean` | always true | Skip re-enqueue when false (e.g. max hops) |
-| `delay` | `number \| (hops: number) => number` | `0` | Wait this many ms before re-enqueue. Function form gets the 1-based hop count only (e.g. `hops => 100 * 2 ** (hops - 1)`). Same shape as `retryWorker` delay. Static invalid values throw at wrap; invalid function results emit `loop:error`. **Not durable** — see disclaimer below. |
+| `delay` | `number \| (hops: number) => number` | `0` | Wait this many ms before re-enqueue. Function form gets the 1-based hop count only (e.g. `hops => 100 * 2 ** (hops - 1)`). Same shape as `retryWorker` delay. Static invalid values throw at wrap; invalid function results emit `loop:error`. |
 
 Hop key is the queue’s `name` (not an option). `map` / `filter` receive hop `ctx: { name, previousHops, hops }`.
 
@@ -84,7 +84,7 @@ Hop key is the queue’s `name` (not an option). `map` / `filter` receive hop `c
 
 Pending delayed re-entries do not occupy queue slots; `loop:enqueued` fires when the item is actually re-queued. The worker may go idle while a delay is pending. `stop` does not cancel pending delays.
 
-**Disclaimer — restart / crash loses delayed items.** While waiting, the payload is held only in a process-local timer (not in the queue, not in the durable store). App restart, crash, or process exit **drops** those items with no recovery. Longer delays widen that window; prefer short delays when loss is unacceptable.
+**Durable delay.** On a queue with a `RowStore`, loop delay is persisted as the row’s `availableAt` timestamp and survives restart. Bare queues keep delayed items only in process memory.
 
 A worker that always throws can spin forever — stop the worker, `filter` on hops, or set `delay`. This is **not** a dead-letter sink; use `withDeadLetter` for a separate queue.
 

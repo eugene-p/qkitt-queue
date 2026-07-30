@@ -22,7 +22,7 @@ export type RouteMessage<T = unknown> = {
 
 /** Minimal queue surface the router needs. */
 export type RouteTarget<T = unknown> = {
-    enqueue: (item: RouteMessage<T>) => void
+    enqueue: (item: RouteMessage<T>) => void | PromiseLike<void>
 }
 
 /** Snapshot of the most recent unrouted publish. */
@@ -207,7 +207,16 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         }
 
         try {
-            unmatchedTarget.enqueue({ topic, data })
+            const result = unmatchedTarget.enqueue({ topic, data })
+            if (result !== undefined) {
+                Promise.resolve(result).catch((error: unknown) => {
+                    emitRouter('router:error', {
+                        operation: 'unmatched',
+                        error,
+                        topic,
+                    })
+                })
+            }
             return true
         } catch (error) {
             emitRouter('router:error', {
@@ -225,7 +234,17 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         topic: string,
     ): void => {
         try {
-            route.target.enqueue(message as RouteMessage)
+            const result = route.target.enqueue(message as RouteMessage)
+            if (result !== undefined) {
+                Promise.resolve(result).catch((error: unknown) => {
+                    emitRouter('router:error', {
+                        operation: 'publish',
+                        error,
+                        topic,
+                        pattern: route.pattern,
+                    })
+                })
+            }
         } catch (error) {
             emitRouter('router:error', {
                 operation: 'publish',

@@ -12,7 +12,10 @@ import {
 } from '../core/layers.util'
 import type { QueueEvents } from '../core/queue'
 import type { QueueWithWorker, WorkerEvents } from '../worker/with-worker'
-import { configureDlqRecovery } from '../worker/recovery.util'
+import {
+    configureDlqRecovery,
+    DeadLetterEnqueueError,
+} from '../worker/recovery.util'
 
 /** Minimal enqueue surface for a dead-letter destination. */
 export type DeadLetterTarget<U> = {
@@ -47,22 +50,7 @@ export class InvalidDeadLetterOptionError extends Error {
     }
 }
 
-export class DeadLetterEnqueueError extends Error {
-    override readonly name = 'DeadLetterEnqueueError'
-    override readonly cause: unknown
-    readonly item: unknown
-    readonly workerError: unknown
-
-    constructor(
-        message: string,
-        options: { cause: unknown; item: unknown; workerError: unknown },
-    ) {
-        super(message, { cause: options.cause })
-        this.cause = options.cause
-        this.item = options.item
-        this.workerError = options.workerError
-    }
-}
+export { DeadLetterEnqueueError } from '../worker/recovery.util'
 
 /**
  * Register a dead-letter destination used when recovery policy is **`fail`**.
@@ -91,6 +79,12 @@ export const withDeadLetter = <
     if (!hasQueueLayer(source, WORKER_LAYER)) {
         throw new InvalidQueueCompositionError(
             'withDeadLetter requires a worker layer; compose withWorker first',
+        )
+    }
+
+    if (hasQueueLayer(source, DLQ_LAYER)) {
+        throw new InvalidDeadLetterOptionError(
+            'withDeadLetter supports one destination per worker queue',
         )
     }
 

@@ -28,7 +28,7 @@ const freezePlainData = <T extends object>(value: T): Readonly<T> => {
 }
 
 const freezePersist = (persist: PersistConfig): Readonly<PersistConfig> => {
-    // Keep createId as a live function reference; freeze the wrapper only.
+    // Persist config has only data fields; freeze the copied wrapper.
     return Object.freeze({ ...persist })
 }
 

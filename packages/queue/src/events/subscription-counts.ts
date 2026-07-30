@@ -32,9 +32,15 @@ export const createSubscriptionCounts = <
             const slot = slotByEvent.get(eventName)
             if (slot === undefined) return unsubscribe
             counts[slot] += 1
+            let subscribed = true
             return () => {
-                unsubscribe()
-                counts[slot] -= 1
+                if (!subscribed) return
+                subscribed = false
+                try {
+                    unsubscribe()
+                } finally {
+                    counts[slot] -= 1
+                }
             }
         }
         return wrapped as On

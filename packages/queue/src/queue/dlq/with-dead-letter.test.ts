@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildQueue } from '../core/queue'
 import { withWorker } from '../worker/with-worker'
 import {
+    DeadLetterEnqueueError,
     InvalidDeadLetterOptionError,
     withDeadLetter,
 } from './with-dead-letter'
@@ -33,6 +34,18 @@ describe('withDeadLetter', () => {
             /* */
         })
         expect(() => withDeadLetter(q, q as never)).toThrow(
+            InvalidDeadLetterOptionError,
+        )
+    })
+
+    it('rejects a second dead-letter destination', () => {
+        const queue = withDeadLetter(
+            withWorker(buildQueue<number>(), async () => {
+                /* */
+            }),
+            buildQueue(),
+        )
+        expect(() => withDeadLetter(queue, buildQueue())).toThrow(
             InvalidDeadLetterOptionError,
         )
     })
@@ -97,7 +110,11 @@ describe('withDeadLetter', () => {
         source.enqueue(1)
         await flush(10)
 
-        expect(dlqError).toHaveBeenCalled()
+        expect(dlqError).toHaveBeenCalledWith(
+            expect.objectContaining({
+                cause: expect.any(DeadLetterEnqueueError),
+            }),
+        )
         expect(requeued).toHaveBeenCalled()
         expect(source.stats().delayed).toBe(1)
         source.stop()

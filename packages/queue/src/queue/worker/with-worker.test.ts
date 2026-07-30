@@ -444,4 +444,40 @@ describe('withWorker', () => {
 
         expect(failed).toHaveBeenCalledWith({ item: 1, error })
     })
+
+    it('drops a failed item when a custom recovery policy returns nothing', async () => {
+        const onFailure = vi.fn()
+        const queue = withWorker(
+            buildQueue<number>(),
+            () => {
+                throw new Error('boom')
+            },
+            { onFailure },
+        )
+
+        const idle = waitForIdle(queue)
+        queue.enqueue(1)
+        await idle
+
+        expect(onFailure).toHaveBeenCalledOnce()
+        expect(queue.isEmpty()).toBe(true)
+    })
+
+    it('recovers when reading a worker result then throws', async () => {
+        const error = new Error('bad then')
+        const queue = withWorker(buildQueue<number>(), () => ({
+            get then() {
+                throw error
+            },
+        }))
+        const failed = vi.fn()
+        queue.on('worker:failed', failed)
+
+        const idle = waitForIdle(queue)
+        queue.enqueue(1)
+        await idle
+
+        expect(failed).toHaveBeenCalledWith({ item: 1, error })
+        expect(queue.isEmpty()).toBe(true)
+    })
 })

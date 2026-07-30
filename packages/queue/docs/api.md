@@ -49,6 +49,8 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 
 `null` / `undefined` are valid payloads. Prefer `tryDequeue` / `tryPeek` when `T` may be nullish so emptiness is structural (`undefined` return) rather than inferred from the value.
 
+Treat a `Lease` as invalid after `ack`, `release`, or `reschedule`; the queue may recycle it and release its payload reference immediately.
+
 Bare (no `store`) mutators resolve immediately after the in-memory update. Durable mutators serialize through a write chain.
 
 **Errors:** `QueueFullError` (`maxSize`); `InvalidQueueOptionError` for bad options; `InvalidStoreError` if `store` is not a `RowStore`; `HydrateWhileActiveError` during hydrate or with active leases; `LeaseMismatchError` on stale leases; `InvalidRowIdError` / `DuplicateRowIdError` on bad hydrate rows; `IdSpaceExhaustedError` when ids run out.
@@ -84,7 +86,7 @@ withWorker<T, R>(
 | --- | --- | --- | --- |
 | `concurrency` | `number` | `1` | Safe integer ≥ 1 |
 | `autoStart` | `boolean` | `true` | If `false`, no pump until `start()` |
-| `onFailure` | `RecoveryPolicy<T>` | `'fail'` | `'fail'` (DLQ if registered, else drop), `'loop'`, or custom |
+| `onFailure` | `RecoveryPolicy<T>` | `'fail'` | `'fail'` (DLQ if registered, else drop), `'loop'`, or custom result policy |
 
 **Controls** (added to the queue)
 
@@ -113,6 +115,8 @@ Queue methods (`hydrate`, `flush`, `enqueue`, …) remain on the decorated queue
 
 The pump uses **leases** (`claim` → run → `ack` on success). Default recovery is `'fail'`: forward to a DLQ registered via `withDeadLetter`, else drop. Use `onFailure: 'loop'` or [`withLoop`](#withloop) to requeue.
 
+A custom `onFailure` returns `{ action: 'loop', item?, delayMs? }` or `{ action: 'fail' }`. A missing return follows the fail path, so a failed item is never left leased accidentally.
+
 **Errors:** `InvalidWorkerOptionError` for invalid `concurrency` / invalid lifecycle `timeoutMs`; `LifecycleTimeoutError` when `whenIdle` / `gracefulStop` exceed `timeoutMs`; `ConflictingRecoveryError` when recovery composition conflicts.
 
 ---
@@ -140,7 +144,7 @@ Full patterns: [Lifecycle](./lifecycle.md).
 ```ts
 withDeadLetter<T, U = T>(
   source: QueueWithWorker<T, …>,
-  deadLetter: DeadLetterTarget<U>, // { enqueue(item: U): void }
+  deadLetter: DeadLetterTarget<U>, // { enqueue(item: U): void | Promise<void> }
   options?: WithDeadLetterOptions<T, U>,
 ): QueueWithWorker<T, …>
 // withDlq — alias of withDeadLetter
@@ -179,7 +183,7 @@ Requires a **named** queue (`buildQueue({ name })`). Hop bookkeeping under `__qk
 | --- | --- | --- | --- |
 | `map` | `(item, error, ctx) => U` | identity | Runs on the **original** item; library always re-stamps `__qkittQueue` |
 | `filter` | `(item, error, ctx) => boolean` | always true | Skip re-enqueue when false (e.g. max hops) |
-| `delay` | `number \| (hops: number) => number` | `0` | Finite ms ≥ 0 before re-enqueue; function receives 1-based hop count only. **Not durable:** restart/crash drops pending delayed items (timer-only; not in queue/persist). Prefer short delays. |
+| `delay` | `number \| (hops: number) => number` | `0` | Finite ms ≥ 0 before re-enqueue; function receives 1-based hop count only. Durable queues persist the delayed row; bare queues keep it in memory. |
 
 `ctx` (`LoopMapContext`): `{ name, previousHops, hops }`. Hop key is the queue’s `name`. Patterns, meta-override behavior, and spin risk: [Failure routing — loop](./failure-routing.md#loop-withloop).
 

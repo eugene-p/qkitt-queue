@@ -136,7 +136,7 @@ For in-process queues with no durability, omit `persist` (bare queue). Do not us
 | `maxSize` | `number` | Safe integer ≥ 1; same as `buildQueue({ maxSize })` |
 | `persist` | `{ store, leaseTtlMs? }` | `store` = name in `stores`; optional in-process lease TTL |
 | `worker` | `WorkerFn` or `{ run, concurrency?, autoStart?, onFailure? }` | **JS only** — not available in JSON |
-| `loop` | `true` or `{ map?, filter?, delay? }` | `withLoop` after worker; requires `worker`. Queue config key is `buildQueue({ name })`. `map` / `filter` / function `delay` **JS only**; static `delay` ms allowed in JSON. **Delay is not durable** — restart/crash drops pending delayed re-entries (see core [loop delay disclaimer](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md#loop-withloop)) |
+| `loop` | `true` or `{ map?, filter?, delay? }` | `withLoop` after worker; requires `worker`. Queue config key is `buildQueue({ name })`. `map` / `filter` / function `delay` **JS only**; static `delay` ms allowed in JSON. Delays on persisted queues survive restart. |
 | `dlq` | `string` or `{ queue, map?, filter? }` | `withDlq` after worker/loop; requires `worker`. Target must be another named queue. `map` / `filter` **JS only** |
 
 Every queue is built with `name` equal to its key under `queues` (for hop meta and `getQueueName`).
