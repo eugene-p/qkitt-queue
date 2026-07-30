@@ -11,7 +11,14 @@ import {
     resolveDelayMs,
 } from '../../util/delay-policy.util'
 import { isNonNegativeFinite } from '../../util/number.util'
-import type { WorkerFn } from '../../worker/types'
+import {
+    cancelTimeout,
+    scheduleTimeout,
+} from '../../util/schedule-timeout.util'
+import type {
+    WorkerContext,
+    WorkerFn,
+} from '../../worker/types'
 import {
     decorateQueue,
     type PreserveQueueExtras,
@@ -20,6 +27,7 @@ import { getInlineOps } from '../core/inline-ops'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Lease, Queue, QueueEvents } from '../core/queue'
 import { getQueueName } from '../core/queue-name.util'
+import { isJob } from '../jobs/job'
 import {
     getLoopHops,
     queueMetaEqual,
@@ -33,6 +41,7 @@ import {
     type GracefulStopOptions,
 } from './graceful-stop'
 import { InvalidWorkerOptionError } from './invalid-worker-option-error'
+import { resolveTimeoutMs } from './resolve-timeout-ms.util'
 import {
     attachRecoveryConfig,
     DeadLetterEnqueueError,
@@ -46,6 +55,7 @@ import {
 } from './recovery.util'
 
 export { InvalidWorkerOptionError } from './invalid-worker-option-error'
+export type { WorkerAbortSignal, WorkerContext } from '../../worker/types'
 export type {
     RecoveryPolicy,
     RecoveryPolicyResult,
@@ -64,11 +74,37 @@ export type WorkerEvents<T, R = unknown> = {
 export type WithWorkerOptions<T = unknown> = {
     concurrency?: number
     autoStart?: boolean
+    /** Cooperatively abort a handler after this many milliseconds. */
+    timeoutMs?: number
+    /** Derive opaque tracing/correlation context for each delivery. */
+    traceContext?: (item: T) => unknown
     /**
      * Recovery policy after worker failure. Default `'fail'` (DLQ if
      * registered via withDeadLetter, else drop).
      */
     onFailure?: RecoveryPolicy<T>
+}
+
+/** Abort reason when a worker exceeds its configured cooperative timeout. */
+export class WorkerTimeoutError extends Error {
+    override readonly name = 'WorkerTimeoutError'
+    readonly timeoutMs: number
+
+    constructor(timeoutMs: number) {
+        super(`worker timed out after ${timeoutMs}ms`)
+        this.timeoutMs = timeoutMs
+    }
+}
+
+/** Abort reason when the queue lease deadline elapses while a handler runs. */
+export class WorkerLeaseExpiredError extends Error {
+    override readonly name = 'WorkerLeaseExpiredError'
+    readonly leaseDeadline: number
+
+    constructor(leaseDeadline: number) {
+        super(`worker lease expired at ${leaseDeadline}`)
+        this.leaseDeadline = leaseDeadline
+    }
 }
 
 type WorkerQueueEvents<T, R, TEvents extends EventMap> = MergeEventMaps<
@@ -104,6 +140,18 @@ const resolveConcurrency = (value: number | undefined): number => {
 const isThenable = (value: unknown): value is PromiseLike<unknown> =>
     value != null && typeof (value as { then?: unknown }).then === 'function'
 
+type AbortControllerLike = {
+    readonly signal: AbortSignal
+    abort: (reason?: unknown) => void
+}
+
+const createAbortController = (): AbortControllerLike =>
+    new (
+        globalThis as unknown as {
+            AbortController: new () => AbortControllerLike
+        }
+    ).AbortController()
+
 const isPlainQueueMeta = (item: unknown): unknown => {
     if (item === null || typeof item !== 'object') return undefined
     if (!Object.prototype.hasOwnProperty.call(item, QKITT_QUEUE_KEY)) {
@@ -132,6 +180,7 @@ export const withWorker = <
     PreserveQueueExtras<TQueue> => {
     const concurrency = resolveConcurrency(options.concurrency)
     const autoStart = options.autoStart ?? true
+    const timeoutMs = resolveTimeoutMs(options.timeoutMs)
     const policyExplicit = options.onFailure !== undefined
     const recovery: RecoveryConfig<T> = {
         policyExplicit,
@@ -465,6 +514,53 @@ export const withWorker = <
             })
     }
 
+    const createContext = (
+        lease: Lease<T>,
+        item: T,
+    ): { context: WorkerContext; dispose: () => void } => {
+        const controller = createAbortController()
+        const job = isJob(item) ? item : undefined
+        const traceContext = options.traceContext
+            ? options.traceContext(item)
+            : job?.metadata
+        const timers: unknown[] = []
+        const abortAfter = (ms: number, reason: unknown): void => {
+            timers.push(
+                scheduleTimeout(() => {
+                    if (!controller.signal.aborted) controller.abort(reason)
+                }, ms),
+            )
+        }
+
+        if (timeoutMs !== undefined) {
+            abortAfter(timeoutMs, new WorkerTimeoutError(timeoutMs))
+        }
+        if (lease.expiresAt !== null) {
+            abortAfter(
+                Math.max(0, lease.expiresAt - Date.now()),
+                new WorkerLeaseExpiredError(lease.expiresAt),
+            )
+        }
+
+        return {
+            context: {
+                jobId: job?.id,
+                attempt: lease.attempt,
+                leaseDeadline: lease.expiresAt ?? undefined,
+                traceContext,
+                signal: controller.signal,
+            },
+            dispose: () => {
+                for (const timer of timers) cancelTimeout(timer)
+            },
+        }
+    }
+
+    const callWorker = (
+        item: T,
+        context: WorkerContext,
+    ): R | PromiseLike<R> => worker(item, context)
+
     const processLease = (lease: Lease<T>): void => {
         const item = lease.item
         if (subs.started > 0) {
@@ -472,24 +568,31 @@ export const withWorker = <
         }
 
         let ret: R | PromiseLike<R>
+        let dispose: () => void = () => {}
         try {
-            ret = worker(item)
+            const delivery = createContext(lease, item)
+            dispose = delivery.dispose
+            ret = callWorker(item, delivery.context)
             if (isThenable(ret)) {
                 Promise.resolve(ret).then(
                     (result) => {
+                        dispose()
                         completeLease(lease, item, result as R)
                     },
                     (error: unknown) => {
+                        dispose()
                         failLease(lease, item, error)
                     },
                 )
                 return
             }
         } catch (error) {
+            dispose?.()
             failLease(lease, item, error)
             return
         }
 
+        dispose!()
         completeLease(lease, item, ret)
     }
 

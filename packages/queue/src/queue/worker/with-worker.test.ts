@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createMemoryRowStore } from '../../persist/stores/memory'
+import { scheduleTimeout } from '../../util/schedule-timeout.util'
 import { buildQueue } from '../core/queue'
-import { InvalidWorkerOptionError, withWorker } from './with-worker'
+import { createJob, type Job } from '../jobs/job'
+import {
+    InvalidWorkerOptionError,
+    WorkerTimeoutError,
+    withWorker,
+} from './with-worker'
 
 const flush = async (times = 1) => {
     for (let i = 0; i < times; i += 1) {
@@ -19,6 +26,71 @@ const waitForIdle = (queue: {
     })
 
 describe('withWorker', () => {
+    it('supplies stable job, delivery, lease, and tracing context', async () => {
+        const contexts: Array<{
+            jobId: string | undefined
+            attempt: number
+            leaseDeadline: number | undefined
+            traceContext: unknown
+            aborted: boolean
+        }> = []
+        const queue = withWorker(
+            buildQueue<Job<string>>({
+                store: createMemoryRowStore<Job<string>>(),
+                leaseTtlMs: 1_000,
+            }),
+            (job, context) => {
+                contexts.push({
+                    jobId: context!.jobId,
+                    attempt: context!.attempt,
+                    leaseDeadline: context!.leaseDeadline,
+                    traceContext: context!.traceContext,
+                    aborted: context!.signal.aborted,
+                })
+                return job.payload
+            },
+        )
+
+        const metadata = { traceId: 'trace_123' }
+        const idle = waitForIdle(queue)
+        await queue.enqueue(createJob('message', { id: 'job_123', metadata }))
+        await idle
+
+        expect(contexts).toEqual([
+            {
+                jobId: 'job_123',
+                attempt: 1,
+                leaseDeadline: expect.any(Number),
+                traceContext: metadata,
+                aborted: false,
+            },
+        ])
+    })
+
+    it('cooperatively aborts a handler that exceeds timeoutMs', async () => {
+        const queue = withWorker(
+            buildQueue<number>(),
+            async (_item, context) => {
+                await new Promise<void>((resolve) => {
+                    scheduleTimeout(resolve, 20)
+                })
+                throw context!.signal.reason
+            },
+            { timeoutMs: 1 },
+        )
+        const failed = vi.fn()
+        queue.on('worker:failed', failed)
+
+        const idle = waitForIdle(queue)
+        await queue.enqueue(1)
+        await idle
+
+        expect(failed).toHaveBeenCalledWith({
+            item: 1,
+            error: expect.any(WorkerTimeoutError),
+        })
+    })
+
     it('processes items in FIFO order', async () => {
         const order: number[] = []
         const queue = withWorker(buildQueue<number>(), async (item) => {
@@ -90,7 +162,10 @@ describe('withWorker', () => {
         expect(queue.isRunning()).toBe(true)
         await idle
 
-        expect(worker).toHaveBeenCalledWith(1)
+        expect(worker).toHaveBeenCalledWith(
+            1,
+            expect.objectContaining({ attempt: 1 }),
+        )
     })
 
     it('autoStart false has no queue:enqueued listener until start()', () => {
@@ -135,7 +210,10 @@ describe('withWorker', () => {
         const idle1 = waitForIdle(queue)
         queue.enqueue(1)
         await idle1
-        expect(worker).toHaveBeenCalledWith(1)
+        expect(worker).toHaveBeenCalledWith(
+            1,
+            expect.objectContaining({ attempt: 1 }),
+        )
 
         queue.stop()
         expect(queue.isRunning()).toBe(false)
@@ -151,7 +229,10 @@ describe('withWorker', () => {
         queue.start()
         expect(enqueuedUnsubs).toHaveLength(2)
         await idle2
-        expect(worker).toHaveBeenCalledWith(2)
+        expect(worker).toHaveBeenCalledWith(
+            2,
+            expect.objectContaining({ attempt: 1 }),
+        )
         expect(queue.isEmpty()).toBe(true)
     })
 

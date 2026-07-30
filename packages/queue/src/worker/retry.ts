@@ -7,7 +7,7 @@ import {
     isIntegerInRange,
     isNonNegativeFinite,
 } from '../util/number.util'
-import type { WorkerFn } from './types'
+import type { WorkerContext, WorkerFn } from './types'
 
 export type RetryOptions = {
     /**
@@ -101,12 +101,14 @@ export const retryWorker = <T, R>(
     const maxRetries = opts.retries
     const shouldRetry = opts.shouldRetry ?? (() => true)
 
-    return async (item: T): Promise<R> => {
+    return async (item: T, context?: WorkerContext): Promise<R> => {
         let lastError: unknown
 
         for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
             try {
-                return await worker(item)
+                return await (context === undefined
+                    ? worker(item)
+                    : worker(item, context))
             } catch (error) {
                 lastError = error
                 const failedAttempt = attempt

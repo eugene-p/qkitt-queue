@@ -42,6 +42,8 @@ export type Lease<T> = {
     id: number
     item: T
     generation: number
+    /** Epoch deadline for this lease, or null when no lease TTL is configured. */
+    expiresAt: number | null
     /** 1-based delivery attempt; older durable rows begin at 1. */
     attempt: number
 }

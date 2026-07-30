@@ -152,7 +152,7 @@ const run = retryWorker(
 const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 ```
 
-Failed items are **not** re-queued by default. Use `retryWorker` for in-call retries, or durable [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) (`withRetry`, `withLoop`, `withDlq`).
+Failed items are **not** re-queued by default. Use `retryWorker` for in-call retries, or durable [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) (`withRetry`, `withLoop`, `withDlq`). Workers can also receive a second context argument with `Job.id`, delivery attempt, lease deadline, tracing metadata, and a cooperative cancellation signal; see the [API reference](./docs/api.md#withworker).
 
 When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](https://www.npmjs.com/package/@qkitt/queue-config).
 

@@ -19,7 +19,7 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `maxSize` | `number` | — | Safe integer ≥ 1. `enqueue` / `replaceAll` throw `QueueFullError` when full. |
 | `name` | `string` | — | Logical id (trimmed, non-empty). Used by `withLoop` hop meta and tracking (`getQueueName`). |
 | `store` | `RowStore<T>` | — | Durable backend. When set, mutations write rows; call `hydrate()` / `flush()`. |
-| `leaseTtlMs` | `number` | — | In-process lease TTL (safe integer ≥ 1). Omitted → reclaim leases on hydrate/restart only. |
+| `leaseTtlMs` | `number` | — | In-process lease TTL (safe integer ≥ 1). Omitted → reclaim leases on hydrate/restart only. The worker context aborts at this deadline. |
 
 **Methods**
 
@@ -127,6 +127,8 @@ withWorker<T, R>(
 | --- | --- | --- | --- |
 | `concurrency` | `number` | `1` | Safe integer ≥ 1 |
 | `autoStart` | `boolean` | `true` | If `false`, no pump until `start()` |
+| `timeoutMs` | `number` | — | Finite ≥ 0. Cooperatively aborts the handler's `context.signal` after this duration; it does not forcibly stop JavaScript. |
+| `traceContext` | `(item) => unknown` | `Job.metadata` | Derives the opaque tracing/correlation value in worker context. |
 | `onFailure` | `RecoveryPolicy<T>` | `'fail'` | `'fail'` (DLQ if registered, else drop), `'loop'`, or custom result policy |
 
 **Controls** (added to the queue)
@@ -141,6 +143,22 @@ withWorker<T, R>(
 | `activeCount()` | In-flight count |
 
 Queue methods (`hydrate`, `flush`, `enqueue`, …) remain on the decorated queue. See also standalone [`whenIdle`](#whenidle--gracefulstop) / `gracefulStop` and the [lifecycle guide](./lifecycle.md).
+
+Workers may accept a second `WorkerContext` argument. It contains `jobId` (for
+`Job` envelopes), the 1-based durable `attempt`, `leaseDeadline` (epoch ms,
+when configured), opaque `traceContext`, and a runtime `AbortSignal` `signal`.
+`timeoutMs` and a lease deadline abort that signal with `WorkerTimeoutError` or
+`WorkerLeaseExpiredError`; handlers must observe it and stop their own work.
+The signal is always supplied by `withWorker`, although it is optional in the
+standalone `WorkerFn` type so composed workers remain directly callable.
+
+```ts
+withWorker(queue, async (job, { jobId, attempt, signal }) => {
+  const response = await fetch('/work', { signal })
+  if (signal.aborted) throw signal.reason
+  await recordDelivery({ jobId, attempt, response })
+}, { timeoutMs: 30_000 })
+```
 
 **Events**
 
@@ -158,7 +176,7 @@ The pump uses **leases** (`claim` → run → `ack` on success). Default recover
 
 A custom `onFailure` returns `{ action: 'loop', item?, delayMs? }` or `{ action: 'fail' }`. A missing return follows the fail path, so a failed item is never left leased accidentally.
 
-**Errors:** `InvalidWorkerOptionError` for invalid `concurrency` / invalid lifecycle `timeoutMs`; `LifecycleTimeoutError` when `whenIdle` / `gracefulStop` exceed `timeoutMs`; `ConflictingRecoveryError` when recovery composition conflicts.
+**Errors:** `InvalidWorkerOptionError` for invalid `concurrency` / worker `timeoutMs`; `WorkerTimeoutError` / `WorkerLeaseExpiredError` are `signal.reason` values for cooperative cancellation; `LifecycleTimeoutError` when `whenIdle` / `gracefulStop` exceed their own `timeoutMs`; `ConflictingRecoveryError` when recovery composition conflicts.
 
 ---
 

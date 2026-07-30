@@ -1,4 +1,10 @@
-export type { PipelineStepContext, StepFn, WorkerFn } from './types'
+export type {
+    PipelineStepContext,
+    StepFn,
+    WorkerAbortSignal,
+    WorkerContext,
+    WorkerFn,
+} from './types'
 
 export type { DelayPolicy } from '../util/delay-policy.util'
 

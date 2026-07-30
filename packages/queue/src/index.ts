@@ -57,6 +57,8 @@ export {
     withLoop,
     withRetry,
     withWorker,
+    WorkerLeaseExpiredError,
+    WorkerTimeoutError,
     createJob,
     isJob,
     type BuildQueueOptions,
@@ -88,6 +90,8 @@ export {
     type WithRetryOptions,
     type WithWorkerOptions,
     type WorkerControls,
+    type WorkerAbortSignal,
+    type WorkerContext,
     type WorkerEvents,
 } from './queue'
 

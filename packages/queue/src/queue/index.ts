@@ -31,12 +31,16 @@ export {
 
 export {
     InvalidWorkerOptionError,
+    WorkerLeaseExpiredError,
+    WorkerTimeoutError,
     withWorker,
     type QueueWithWorker,
     type RecoveryPolicy,
     type RecoveryPolicyResult,
     type WithWorkerOptions,
     type WorkerControls,
+    type WorkerAbortSignal,
+    type WorkerContext,
     type WorkerEvents,
 } from './worker/with-worker'
 

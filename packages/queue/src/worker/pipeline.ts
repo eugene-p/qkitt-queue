@@ -1,4 +1,9 @@
-import type { PipelineStepContext, StepFn, WorkerFn } from './types'
+import type {
+    PipelineStepContext,
+    StepFn,
+    WorkerContext,
+    WorkerFn,
+} from './types'
 
 /** Named step with optional metadata available to `fn` and on failure. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous step arrays
@@ -170,16 +175,20 @@ export function pipelineWorker<T, R = unknown>(
 
     const normalized = steps.map(normalizeStep)
 
-    return async (input: T): Promise<R> => {
+    return async (
+        input: T,
+        workerContext?: WorkerContext,
+    ): Promise<R> => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let value: any = input
         for (let i = 0; i < normalized.length; i += 1) {
             const step = normalized[i]!
             const ctx: PipelineStepContext = {
+                ...(workerContext ?? {}),
                 name: step.name,
                 index: i,
                 metadata: step.metadata,
-            }
+            } as PipelineStepContext
             try {
                 value = await step.fn(value, ctx)
             } catch (error) {

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-30
+
+### Added
+
+- `withWorker` now supplies a second `WorkerContext` argument with the
+  application `Job.id`, durable delivery attempt, lease deadline, tracing
+  context, and `AbortSignal`.
+- Cooperative worker `timeoutMs` cancellation, with `WorkerTimeoutError` and
+  `WorkerLeaseExpiredError` as abort reasons. Retry and pipeline workers pass
+  the delivery context through to composed handlers.
+
 ## [0.10.0] — 2026-07-30
 
 ### Added
@@ -421,6 +432,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.11.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.11.0
 [0.10.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.10.0
 [0.9.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.9.0
 [0.8.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.8.1
