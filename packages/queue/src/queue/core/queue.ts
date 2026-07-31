@@ -1,5 +1,6 @@
 import {
     buildEventEmitter,
+    type EventCallback,
     type EventEmitter,
     type EventMap,
     type MergeEventMaps,
@@ -159,6 +160,8 @@ export type Queue<
     replayJob: (id: string, target: Pick<Queue<T>, 'enqueue'>) => Promise<boolean>
     hydrate: () => Promise<void>
     flush: () => Promise<void>
+    /** @internal Used by decorators to avoid building unobserved payloads. */
+    hasListeners?: (eventName: string) => boolean
     on: EventEmitter<TEvents>['on']
     emit: EventEmitter<TEvents>['emit']
 }
@@ -195,6 +198,7 @@ export class InvalidQueueOptionError extends Error {
 }
 
 const nowMs = (): number => Date.now()
+const RESOLVED_VOID: Promise<void> = Promise.resolve()
 
 const isSafeId = (id: unknown): id is number =>
     typeof id === 'number' && Number.isSafeInteger(id) && id >= 1
@@ -243,6 +247,8 @@ export const buildQueue = <T>(
     let availableAttempts: number[] | undefined
     // DLQ handoff state is absent until a destination has actually failed.
     let availableDlqHandoffAttempts: number[] | undefined
+    let availableRetryMetadataCount = 0
+    let availableDlqMetadataCount = 0
     const AVAILABLE_COMPACT_MIN = 1024
     let hasAvailableMetadata = false
     let availableCount = 0
@@ -303,9 +309,28 @@ export const buildQueue = <T>(
 
     type QueueFullEvents = MergeEventMaps<QueueEvents<T>, PersistEvents>
     const emitter = buildEventEmitter<QueueFullEvents>()
-    const on = emitter.on
+    const listenerCounts = new Map<keyof QueueFullEvents, number>()
+    const on = <K extends keyof QueueFullEvents>(
+        eventName: K,
+        callback: EventCallback<QueueFullEvents[K]>,
+    ): (() => void) => {
+        const unsubscribe = emitter.on(eventName, callback)
+        listenerCounts.set(eventName, (listenerCounts.get(eventName) ?? 0) + 1)
+        let active = true
+        return () => {
+            if (!active) return
+            active = false
+            const count = listenerCounts.get(eventName) ?? 0
+            if (count <= 1) listenerCounts.delete(eventName)
+            else listenerCounts.set(eventName, count - 1)
+            unsubscribe()
+        }
+    }
+    const hasListeners = (eventName: string): boolean =>
+        (listenerCounts.get(eventName as keyof QueueFullEvents) ?? 0) > 0
 
     let delayTimer: unknown
+    let delayTimerAt: number | undefined
     let leaseTimer: unknown
     let hydrating = false
 
@@ -328,6 +353,18 @@ export const buildQueue = <T>(
         availableDlqHandoffAttempts = new Array<number>(availableItems.length).fill(0)
     }
 
+    const releaseAvailableMetadata = (): void => {
+        if (availableRetryMetadataCount === 0) {
+            availableAttempts = undefined
+        }
+        if (availableDlqMetadataCount === 0) {
+            availableDlqHandoffAttempts = undefined
+        }
+        hasAvailableMetadata =
+            availableAttempts !== undefined ||
+            availableDlqHandoffAttempts !== undefined
+    }
+
     /** Drop consumed slots and occasionally compact the head-index FIFO. */
     const compactAvailable = (): void => {
         if (availableHead === 0) return
@@ -339,6 +376,9 @@ export const buildQueue = <T>(
             if (availableDlqHandoffAttempts !== undefined) {
                 availableDlqHandoffAttempts = []
             }
+            availableRetryMetadataCount = 0
+            availableDlqMetadataCount = 0
+            hasAvailableMetadata = false
             return
         }
         if (
@@ -365,8 +405,19 @@ export const buildQueue = <T>(
         const index = availableHead
         availableItems[index] = undefined as T
         if (trackAvailableIds) availableIds![index] = 0
+        if (availableAttempts?.[index] !== undefined) {
+            if (availableAttempts[index]! > 1) availableRetryMetadataCount -= 1
+            availableAttempts[index] = 1
+        }
+        if (availableDlqHandoffAttempts?.[index] !== undefined) {
+            if (availableDlqHandoffAttempts[index]! > 0) {
+                availableDlqMetadataCount -= 1
+            }
+            availableDlqHandoffAttempts[index] = 0
+        }
         availableHead += 1
         availableCount -= 1
+        releaseAvailableMetadata()
         if (
             availableCount === 0 ||
             (availableHead >= AVAILABLE_COMPACT_MIN &&
@@ -410,6 +461,8 @@ export const buildQueue = <T>(
         }
         availableAttempts?.push(attempt)
         availableDlqHandoffAttempts?.push(handoff ?? 0)
+        if (attempt !== 1) availableRetryMetadataCount += 1
+        if (handoff !== undefined) availableDlqMetadataCount += 1
         availableCount += 1
     }
 
@@ -447,22 +500,55 @@ export const buildQueue = <T>(
         }
     }
 
+    /** Remove one ready slot without rebuilding the entire FIFO. */
+    const removeAvailableAt = (index: number): void => {
+        if (index < availableHead || index >= availableItems.length) return
+        if (availableAttempts?.[index] !== undefined) {
+            if (availableAttempts[index]! > 1) availableRetryMetadataCount -= 1
+            availableAttempts.splice(index, 1)
+        }
+        if (availableDlqHandoffAttempts?.[index] !== undefined) {
+            if (availableDlqHandoffAttempts[index]! > 0) {
+                availableDlqMetadataCount -= 1
+            }
+            availableDlqHandoffAttempts.splice(index, 1)
+        }
+        availableItems.splice(index, 1)
+        if (trackAvailableIds) availableIds!.splice(index, 1)
+        availableCount -= 1
+        releaseAvailableMetadata()
+        if (
+            availableCount === 0 ||
+            (availableHead >= AVAILABLE_COMPACT_MIN &&
+                availableHead * 2 >= availableItems.length)
+        ) {
+            compactAvailable()
+        }
+    }
+
     const emitEnqueued = (item: T): void => {
+        if (!hasListeners('queue:enqueued')) return
         emitter.emit('queue:enqueued', { item, size: totalSize() })
     }
 
     const emitDequeued = (item: T): void => {
-        emitter.emit('queue:dequeued', { item, size: totalSize() })
+        if (hasListeners('queue:dequeued')) {
+            emitter.emit('queue:dequeued', { item, size: totalSize() })
+        }
         if (totalSize() === 0) {
-            emitter.emit('queue:emptied', undefined)
+            if (hasListeners('queue:emptied')) {
+                emitter.emit('queue:emptied', undefined)
+            }
         }
     }
 
     const maybeWarnIdSpace = (): void => {
         if (ids.consumeLowWaterWarning()) {
-            emitter.emit('persist:id-space-low', {
-                remaining: Number.MAX_SAFE_INTEGER - ids.peek(),
-            })
+            if (hasListeners('persist:id-space-low')) {
+                emitter.emit('persist:id-space-low', {
+                    remaining: Number.MAX_SAFE_INTEGER - ids.peek(),
+                })
+            }
         }
     }
 
@@ -503,25 +589,40 @@ export const buildQueue = <T>(
     ): Promise<R> => {
         const startedAt = nowMs()
         const result = await op()
-        emitter.emit('persist:operation', {
-            operation,
-            durationMs: Math.max(0, nowMs() - startedAt),
-            ...(id !== undefined ? { id } : {}),
-        })
+        if (hasListeners('persist:operation')) {
+            emitter.emit('persist:operation', {
+                operation,
+                durationMs: Math.max(0, nowMs() - startedAt),
+                ...(id !== undefined ? { id } : {}),
+            })
+        }
         return result
     }
 
     const armDelayTimer = (): void => {
-        if (delayTimer !== undefined) {
-            cancelTimeout(delayTimer)
+        if (delayed === undefined) {
+            if (delayTimer !== undefined) cancelTimeout(delayTimer)
             delayTimer = undefined
+            delayTimerAt = undefined
+            return
         }
-        if (delayed === undefined) return
         const next = delayed.peek()
-        if (next === undefined) return
+        if (next === undefined) {
+            if (delayTimer !== undefined) cancelTimeout(delayTimer)
+            delayTimer = undefined
+            delayTimerAt = undefined
+            return
+        }
+        if (delayTimer !== undefined && delayTimerAt === next.availableAt) {
+            return
+        }
+        if (delayTimer !== undefined) cancelTimeout(delayTimer)
+        delayTimer = undefined
+        delayTimerAt = next.availableAt
         const wait = Math.max(0, next.availableAt - nowMs())
         delayTimer = scheduleTimeout(() => {
             delayTimer = undefined
+            delayTimerAt = undefined
             promoteDueDelayed()
         }, wait)
     }
@@ -639,7 +740,9 @@ export const buildQueue = <T>(
             attempt,
             dlqHandoffAttempt,
         )
-        emitter.emit('persist:lease-expired', { id, item })
+        if (hasListeners('persist:lease-expired')) {
+            emitter.emit('persist:lease-expired', { id, item })
+        }
         emitEnqueued(item)
     }
 
@@ -665,11 +768,13 @@ export const buildQueue = <T>(
                 } catch (error) {
                     // Retain the expiry so a transient store failure retries.
                     leaseExpiries.push(head)
-                    emitter.emit('persist:error', {
-                        operation: 'put',
-                        error,
-                        id: head.id,
-                    })
+                    if (hasListeners('persist:error')) {
+                        emitter.emit('persist:error', {
+                            operation: 'put',
+                            error,
+                            id: head.id,
+                        })
+                    }
                     if (!suppressStoreErrors) throw error
                     break
                 }
@@ -689,6 +794,8 @@ export const buildQueue = <T>(
         availableIds = trackAvailableIds ? [] : undefined
         availableAttempts = undefined
         availableDlqHandoffAttempts = undefined
+        availableRetryMetadataCount = 0
+        availableDlqMetadataCount = 0
         hasAvailableMetadata = false
         availableCount = 0
         leased.clear()
@@ -698,6 +805,7 @@ export const buildQueue = <T>(
             cancelTimeout(delayTimer)
             delayTimer = undefined
         }
+        delayTimerAt = undefined
         if (leaseTimer !== undefined) {
             cancelTimeout(leaseTimer)
             leaseTimer = undefined
@@ -772,6 +880,20 @@ export const buildQueue = <T>(
         return lease
     }
 
+    const applyEnqueueMemory = (
+        item: T,
+        id: number,
+        availableAt: number,
+    ): void => {
+        if (availableAt === 0) {
+            pushAvailable(item, trackAvailableIds ? id : undefined)
+        } else {
+            getDelayed().push({ id, item, availableAt, attempt: 1 })
+            armDelayTimer()
+        }
+        emitEnqueued(item)
+    }
+
     const enqueue = (item: T, opts?: { delayMs?: number }): Promise<void> => {
         if (hydrating) {
             return Promise.reject(
@@ -805,23 +927,20 @@ export const buildQueue = <T>(
 
         const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
 
-        const applyMemory = (): void => {
-            if (availableAt === 0) {
-                pushAvailable(item, trackAvailableIds ? id : undefined)
-            } else {
-                getDelayed().push({ id, item, availableAt, attempt: 1 })
-                armDelayTimer()
+        if (!chain) {
+            try {
+                applyEnqueueMemory(item, id, availableAt)
+                return RESOLVED_VOID
+            } catch (error) {
+                return Promise.reject(error)
             }
-            emitEnqueued(item)
         }
 
         return withChain(async () => {
-            if (store) {
-                await callStore('put', id, () => store.put(
-                    toRecord(id, item, availableAt, null, null),
-                ))
-            }
-            applyMemory()
+            await callStore('put', id, () => store!.put(
+                toRecord(id, item, availableAt, null, null),
+            ))
+            applyEnqueueMemory(item, id, availableAt)
         })
     }
 
@@ -1013,12 +1132,16 @@ export const buildQueue = <T>(
 
     const tryPeek = (): QueueSlot<T> | undefined => {
         promoteDueDelayed()
-        const head = peekAvailable()
-        if (head === undefined) return undefined
-        return { value: head.item }
+        if (availableCount === 0) return undefined
+        return { value: availableItems[availableHead]! }
     }
 
-    const peek = (): T | undefined => tryPeek()?.value
+    const peek = (): T | undefined => {
+        promoteDueDelayed()
+        return availableCount === 0
+            ? undefined
+            : availableItems[availableHead]
+    }
 
     const size = (): number => totalSize()
     const readyCount = (): number => {
@@ -1050,7 +1173,9 @@ export const buildQueue = <T>(
             ids.reset()
             leaseGenSeq = 0
             if (removed > 0) {
-                emitter.emit('queue:cleared', { removed })
+                if (hasListeners('queue:cleared')) {
+                    emitter.emit('queue:cleared', { removed })
+                }
             }
         }
 
@@ -1157,39 +1282,6 @@ export const buildQueue = <T>(
         dlqHandoffAttempt?: number
     }
 
-    const readyEntries = (): ReadyEntry[] => {
-        const entries: ReadyEntry[] = []
-        for (let i = availableHead; i < availableItems.length; i += 1) {
-            entries.push({
-                item: availableItems[i]!,
-                id: trackAvailableIds ? availableIds![i] : undefined,
-                attempt: availableAttempts?.[i] ?? 1,
-                ...(availableDlqHandoffAttempts?.[i]
-                    ? { dlqHandoffAttempt: availableDlqHandoffAttempts[i] }
-                    : {}),
-            })
-        }
-        return entries
-    }
-
-    const replaceReady = (entries: readonly ReadyEntry[]): void => {
-        availableItems = []
-        availableHead = 0
-        availableIds = trackAvailableIds ? [] : undefined
-        availableAttempts = undefined
-        availableDlqHandoffAttempts = undefined
-        hasAvailableMetadata = false
-        availableCount = 0
-        for (const entry of entries) {
-            pushAvailable(
-                entry.item,
-                entry.id,
-                entry.attempt,
-                entry.dlqHandoffAttempt,
-            )
-        }
-    }
-
     const requireApplicationId = (id: string): string => {
         if (typeof id !== 'string' || id.trim() === '') {
             throw new InvalidQueueOptionError(
@@ -1221,8 +1313,12 @@ export const buildQueue = <T>(
         promoteDueDelayed()
         const jobs: QueueJob<T>[] = []
         if (state === undefined || state === 'ready') {
-            for (const entry of readyEntries()) {
-                const job = makeJobView(entry.item, 'ready', entry.attempt)
+            for (let i = availableHead; i < availableItems.length; i += 1) {
+                const job = makeJobView(
+                    availableItems[i]!,
+                    'ready',
+                    availableAttempts?.[i] ?? 1,
+                )
                 if (job) jobs.push(job)
             }
         }
@@ -1261,7 +1357,41 @@ export const buildQueue = <T>(
 
     const getJob = (id: string): QueueJob<T> | undefined => {
         const applicationId = requireApplicationId(id)
-        return allJobs().find((job) => job.id === applicationId)
+        promoteDueDelayed()
+        for (let i = availableHead; i < availableItems.length; i += 1) {
+            const item = availableItems[i]!
+            if (isJob(item) && item.id === applicationId) {
+                return makeJobView(
+                    item,
+                    'ready',
+                    availableAttempts?.[i] ?? 1,
+                )
+            }
+        }
+        const delayedJob = delayed?.find(
+            (entry) => isJob(entry.item) && entry.item.id === applicationId,
+        )
+        if (delayedJob !== undefined) {
+            const job = makeJobView(
+                delayedJob.item,
+                'delayed',
+                delayedJob.attempt,
+                delayedJob.availableAt,
+            )
+            if (job) return job
+        }
+        for (const entry of leased.values()) {
+            if (isJob(entry.item) && entry.item.id === applicationId) {
+                return makeJobView(
+                    entry.item,
+                    'leased',
+                    entry.attempt,
+                    undefined,
+                    entry.expiresAt ?? undefined,
+                )
+            }
+        }
+        return undefined
     }
 
     const listJobs = (options: ListJobsOptions = {}): QueueJobPage<T> => {
@@ -1284,35 +1414,40 @@ export const buildQueue = <T>(
 
     const locatePendingJob = (id: string):
         | { state: 'ready'; index: number; entry: ReadyEntry }
-        | { state: 'delayed'; index: number; entry: DelayedEntry<T> }
+        | { state: 'delayed'; entry: DelayedEntry<T> }
         | undefined => {
-        const ready = readyEntries()
-        for (let i = 0; i < ready.length; i += 1) {
-            const entry = ready[i]!
-            if (isJob(entry.item) && entry.item.id === id) {
-                return { state: 'ready', index: i, entry }
+        for (let i = availableHead; i < availableItems.length; i += 1) {
+            const item = availableItems[i]!
+            if (isJob(item) && item.id === id) {
+                return {
+                    state: 'ready',
+                    index: i,
+                    entry: {
+                        item,
+                        id: trackAvailableIds ? availableIds![i] : undefined,
+                        attempt: availableAttempts?.[i] ?? 1,
+                        ...(availableDlqHandoffAttempts?.[i]
+                            ? { dlqHandoffAttempt: availableDlqHandoffAttempts[i] }
+                            : {}),
+                    },
+                }
             }
         }
-        const delayedEntries = delayed?.toArray() ?? []
-        for (let i = 0; i < delayedEntries.length; i += 1) {
-            const entry = delayedEntries[i]!
-            if (isJob(entry.item) && entry.item.id === id) {
-                return { state: 'delayed', index: i, entry }
-            }
+        const delayedEntry = delayed?.find(
+            (entry) => isJob(entry.item) && entry.item.id === id,
+        )
+        if (delayedEntry !== undefined) {
+            return { state: 'delayed', entry: delayedEntry }
         }
         return undefined
     }
 
     const removePendingJob = (found: NonNullable<ReturnType<typeof locatePendingJob>>): void => {
         if (found.state === 'ready') {
-            const entries = readyEntries()
-            entries.splice(found.index, 1)
-            replaceReady(entries)
+            removeAvailableAt(found.index)
             return
         }
-        const entries = delayed?.toArray() ?? []
-        entries.splice(found.index, 1)
-        delayed?.rebuild(entries)
+        delayed?.remove(found.entry)
         armDelayTimer()
     }
 
@@ -1530,7 +1665,9 @@ export const buildQueue = <T>(
                 getDelayed().push(d)
             }
             armDelayTimer()
-            emitter.emit('persist:loaded', { size: totalSize() })
+            if (hasListeners('persist:loaded')) {
+                emitter.emit('persist:loaded', { size: totalSize() })
+            }
             if (availableCount > 0) {
                 const head = peekAvailable()
                 if (head) emitEnqueued(head.item)
@@ -1566,6 +1703,7 @@ export const buildQueue = <T>(
         replayJob,
         hydrate,
         flush,
+        hasListeners,
         on,
         emit: emitter.emit,
     }

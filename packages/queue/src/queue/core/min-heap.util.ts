@@ -8,6 +8,10 @@ export type MinHeap<T> = {
     peek: () => T | undefined
     push: (value: T) => void
     pop: () => T | undefined
+    /** Find a value without copying the backing array. */
+    find: (predicate: (value: T) => boolean) => T | undefined
+    /** Remove one value by identity without rebuilding the heap. */
+    remove: (value: T) => boolean
     /** Rebuild from values (O(n)). */
     rebuild: (values: readonly T[]) => void
     clear: () => void
@@ -71,6 +75,32 @@ export const createMinHeap = <T>(keyOf: (value: T) => number): MinHeap<T> => {
 
     const peek = (): T | undefined => data[0]
 
+    const find = (predicate: (value: T) => boolean): T | undefined => {
+        for (const value of data) {
+            if (predicate(value)) return value
+        }
+        return undefined
+    }
+
+    const remove = (value: T): boolean => {
+        const index = data.indexOf(value)
+        if (index === -1) return false
+
+        const last = data.pop()!
+        if (index < data.length) {
+            data[index] = last
+            if (
+                index > 0 &&
+                keyOf(data[index]!) < keyOf(data[(index - 1) >> 1]!)
+            ) {
+                siftUp(index)
+            } else {
+                siftDown(index)
+            }
+        }
+        return true
+    }
+
     const rebuild = (values: readonly T[]): void => {
         // Replace instead of truncating so a large, stale heap backing store
         // is not retained after expiry compaction.
@@ -95,6 +125,8 @@ export const createMinHeap = <T>(keyOf: (value: T) => number): MinHeap<T> => {
         peek,
         push,
         pop,
+        find,
+        remove,
         rebuild,
         clear,
         toArray,

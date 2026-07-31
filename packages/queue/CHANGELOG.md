@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.3] — 2026-07-31
+
+### Changed
+
+- Reduce hot-path allocation for bare enqueue and unobserved queue and worker
+  events.
+- Avoid per-emission listener snapshots and unnecessary delayed-timer resets.
+
+### Fixed
+
+- Release retry and dead-letter metadata after exceptional ready items drain.
+- Inspect, cancel, and reschedule jobs without rebuilding complete ready or
+  delayed collections.
+
 ## [0.13.2] — 2026-07-31
 
 ### Changed
@@ -500,6 +514,8 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[Unreleased]: https://github.com/eugene-p/qkitt-queue/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.3
 [0.13.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.1
 [0.13.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.2
 [0.13.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.0

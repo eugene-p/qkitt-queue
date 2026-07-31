@@ -197,6 +197,8 @@ export const withWorker = <
         eventName: string,
         data: unknown,
     ) => void
+    const hasInnerListeners = (eventName: string): boolean =>
+        inner.hasListeners?.(eventName) ?? true
     const onInner = inner.on as (
         eventName: string,
         callback: EventCallback<unknown>,
@@ -285,13 +287,15 @@ export const withWorker = <
                         attempted !== undefined &&
                         !queueMetaEqual(attempted, originalMeta)
                     ) {
-                        emitInner('loop:meta-override', {
-                            item,
-                            error,
-                            name,
-                            attempted,
-                            applied: { hops },
-                        })
+                        if (hasInnerListeners('loop:meta-override')) {
+                            emitInner('loop:meta-override', {
+                                item,
+                                error,
+                                name,
+                                attempted,
+                                applied: { hops },
+                            })
+                        }
                     }
                     nextItem = stampLoopHops(mapped, item, name, hops) as T
                 } else {
@@ -306,13 +310,17 @@ export const withWorker = <
                 delayMs,
                 dlqHandoffAttempt: override?.dlqHandoffAttempt,
             })
-            emitInner('worker:requeued', { item, error, delayMs })
+            if (hasInnerListeners('worker:requeued')) {
+                emitInner('worker:requeued', { item, error, delayMs })
+            }
         } catch (cause) {
             const loopError = new LoopEnqueueError(
                 'failed to re-enqueue loop item',
                 { cause, item, workerError: error },
             )
-            emitInner('loop:error', { item, error, cause: loopError })
+            if (hasInnerListeners('loop:error')) {
+                emitInner('loop:error', { item, error, cause: loopError })
+            }
             throw loopError
         }
     }
@@ -325,40 +333,50 @@ export const withWorker = <
         const dlq = recovery.dlq
         if (!dlq) {
             await settleAck(lease)
-            emitInner('worker:dropped', { item, error })
+            if (hasInnerListeners('worker:dropped')) {
+                emitInner('worker:dropped', { item, error })
+            }
             return
         }
 
         try {
             if (dlq.filter && !dlq.filter(item, error)) {
                 await settleAck(lease)
-                emitInner('worker:dropped', { item, error })
+                if (hasInnerListeners('worker:dropped')) {
+                    emitInner('worker:dropped', { item, error })
+                }
                 return
             }
             const map = dlq.map ?? ((x: T) => x as unknown)
             const deadLetterItem = map(item, error)
             await Promise.resolve(dlq.target.enqueue(deadLetterItem as never))
             await settleAck(lease)
-            emitInner('dlq:enqueued', {
-                item,
-                error,
-                deadLetterItem,
-            })
+            if (hasInnerListeners('dlq:enqueued')) {
+                emitInner('dlq:enqueued', {
+                    item,
+                    error,
+                    deadLetterItem,
+                })
+            }
         } catch (cause) {
             const handoffError = new DeadLetterEnqueueError(
                 'failed to enqueue dead-letter item',
                 { cause, item, workerError: error },
             )
-            emitInner('dlq:error', {
-                item,
-                error,
-                cause: handoffError,
-            })
+            if (hasInnerListeners('dlq:error')) {
+                emitInner('dlq:error', {
+                    item,
+                    error,
+                    cause: handoffError,
+                })
+            }
             const handoffAttempt =
                 (lease.dlqHandoffAttempt ?? 0) + 1
             if (handoffAttempt >= dlq.maxHandoffAttempts) {
                 await settleAck(lease)
-                emitInner('worker:dropped', { item, error })
+                if (hasInnerListeners('worker:dropped')) {
+                    emitInner('worker:dropped', { item, error })
+                }
                 return
             }
             await applyLoop(lease, item, error, {
@@ -401,21 +419,27 @@ export const withWorker = <
                     delayMs,
                     attempt: lease.attempt + 1,
                 })
-                emitInner('retry:scheduled', {
+                if (hasInnerListeners('retry:scheduled')) {
+                    emitInner('retry:scheduled', {
+                        item,
+                        error,
+                        attempt: lease.attempt,
+                        nextAttempt: lease.attempt + 1,
+                        delayMs,
+                    })
+                }
+                if (hasInnerListeners('worker:requeued')) {
+                    emitInner('worker:requeued', { item, error, delayMs })
+                }
+                return
+            }
+            if (hasInnerListeners('retry:exhausted')) {
+                emitInner('retry:exhausted', {
                     item,
                     error,
                     attempt: lease.attempt,
-                    nextAttempt: lease.attempt + 1,
-                    delayMs,
                 })
-                emitInner('worker:requeued', { item, error, delayMs })
-                return
             }
-            emitInner('retry:exhausted', {
-                item,
-                error,
-                attempt: lease.attempt,
-            })
         }
         const policy = recovery.policy
         if (policy === 'loop') {
@@ -456,7 +480,9 @@ export const withWorker = <
         void applyRecovery(lease, item, error)
             .catch(async (err) => {
                 if (err instanceof LeaseMismatchError) return
-                emitInner('worker:pump-error', { error: err })
+                if (hasInnerListeners('worker:pump-error')) {
+                    emitInner('worker:pump-error', { error: err })
+                }
                 try {
                     await inner.release(lease)
                 } catch {
@@ -466,12 +492,16 @@ export const withWorker = <
             .finally(() => {
                 // Finish after recovery so gracefulStop waits for it.
                 finishItem()
-                emitInner('worker:failed', { item, error })
-                emitInner('worker:handled', {
-                    item,
-                    outcome: 'failed',
-                    durationMs: elapsedDuration(startedAt),
-                })
+                if (hasInnerListeners('worker:failed')) {
+                    emitInner('worker:failed', { item, error })
+                }
+                if (hasInnerListeners('worker:handled')) {
+                    emitInner('worker:handled', {
+                        item,
+                        outcome: 'failed',
+                        durationMs: elapsedDuration(startedAt),
+                    })
+                }
             })
     }
 
@@ -485,17 +515,23 @@ export const withWorker = <
             .ack(lease)
             .then(() => {
                 finishItem()
-                emitInner('worker:completed', { item, result })
-                emitInner('worker:handled', {
-                    item,
-                    outcome: 'completed',
-                    durationMs: elapsedDuration(startedAt),
-                })
+                if (hasInnerListeners('worker:completed')) {
+                    emitInner('worker:completed', { item, result })
+                }
+                if (hasInnerListeners('worker:handled')) {
+                    emitInner('worker:handled', {
+                        item,
+                        outcome: 'completed',
+                        durationMs: elapsedDuration(startedAt),
+                    })
+                }
             })
             .catch((err) => {
                 finishItem()
                 if (!(err instanceof LeaseMismatchError)) {
-                    emitInner('worker:pump-error', { error: err })
+                    if (hasInnerListeners('worker:pump-error')) {
+                        emitInner('worker:pump-error', { error: err })
+                    }
                 }
             })
     }
@@ -507,7 +543,9 @@ export const withWorker = <
 
     const processLease = (lease: Lease<T>): void => {
         const item = lease.item
-        emitInner('worker:started', { item })
+        if (hasInnerListeners('worker:started')) {
+            emitInner('worker:started', { item })
+        }
 
         const startedAt = Date.now()
         const needsAbort =
@@ -602,7 +640,9 @@ export const withWorker = <
                     try {
                         lease = await inner.claim()
                     } catch (error) {
-                        emitInner('worker:pump-error', { error })
+                        if (hasInnerListeners('worker:pump-error')) {
+                            emitInner('worker:pump-error', { error })
+                        }
                         stop()
                         break
                     }

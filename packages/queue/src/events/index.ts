@@ -62,9 +62,14 @@ export const buildEventEmitter = <
             callback as EventCallback<TEvents[keyof TEvents]>,
         )
         if (idx === -1) return
-        listeners.splice(idx, 1)
-        if (listeners.length === 0) {
+        if (listeners.length === 1) {
             listenersByEvent.delete(eventName)
+        } else {
+            // Copy on subscription changes so an in-flight emit can iterate
+            // its captured array without allocating a snapshot per emission.
+            const next = listeners.slice()
+            next.splice(idx, 1)
+            listenersByEvent.set(eventName, next)
         }
     }
 
@@ -74,7 +79,11 @@ export const buildEventEmitter = <
     ): (() => void) => {
         const listeners = listenersByEvent.get(eventName)
         if (listeners) {
-            listeners.push(callback as EventCallback<TEvents[keyof TEvents]>)
+            // Copy on write preserves emit snapshot semantics.
+            listenersByEvent.set(eventName, [
+                ...listeners,
+                callback as EventCallback<TEvents[keyof TEvents]>,
+            ])
         } else {
             listenersByEvent.set(eventName, [
                 callback as EventCallback<TEvents[keyof TEvents]>,
@@ -88,8 +97,9 @@ export const buildEventEmitter = <
         listeners: EventCallback<TEvents[keyof TEvents]>[],
         data: TEvents[K],
     ): void => {
-        // Snapshot so subscribe/unsubscribe during emit cannot skip or double-fire listeners.
-        for (const callback of [...listeners]) {
+        // Listener arrays are immutable while published, so this captured
+        // array is the emit snapshot without a per-emission clone.
+        for (const callback of listeners) {
             try {
                 callback(data as TEvents[keyof TEvents])
             } catch {

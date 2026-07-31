@@ -1,6 +1,6 @@
 {
   "name": "@qkitt/queue",
-  "version": "0.13.2",
+  "version": "0.13.3",
   "type": "module",
   "description": "Durable, composable, persistence-first in-process job queues for TypeScript — zero runtime dependencies",
   "license": "ISC",
