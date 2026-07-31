@@ -119,4 +119,50 @@ describe('withDeadLetter', () => {
         expect(source.stats().delayed).toBe(1)
         source.stop()
     })
+
+    it('bounds permanent DLQ handoff failure', async () => {
+        vi.useFakeTimers()
+        try {
+            const dropped = vi.fn()
+            const dlqError = vi.fn()
+            const worker = vi.fn(async () => {
+                throw new Error('boom')
+            })
+            const source = withDeadLetter(
+                withWorker(buildQueue<number>(), worker),
+                {
+                    enqueue: () => {
+                        throw new Error('dlq full')
+                    },
+                },
+                { maxHandoffAttempts: 2 },
+            )
+            source.on('worker:dropped', dropped)
+            source.on('dlq:error', dlqError)
+
+            await source.enqueue(1)
+            await flush(10)
+            expect(source.stats().delayed).toBe(1)
+
+            await vi.advanceTimersByTimeAsync(1_000)
+            await flush(10)
+
+            expect(worker).toHaveBeenCalledTimes(2)
+            expect(dlqError).toHaveBeenCalledTimes(2)
+            expect(source.stats()).toEqual({ available: 0, delayed: 0, leased: 0 })
+            expect(dropped).toHaveBeenCalledTimes(1)
+            expect(source.isEmpty()).toBe(true)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('validates maxHandoffAttempts', () => {
+        const source = withWorker(buildQueue<number>(), () => undefined)
+        expect(() =>
+            withDeadLetter(source, buildQueue<number>(), {
+                maxHandoffAttempts: 0,
+            }),
+        ).toThrow(InvalidDeadLetterOptionError)
+    })
 })

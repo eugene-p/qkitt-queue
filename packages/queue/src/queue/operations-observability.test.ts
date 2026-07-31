@@ -83,4 +83,25 @@ describe('withObservability', () => {
         expect(queue.metrics().store.count).toBeGreaterThan(0)
         expect(reports).toHaveBeenCalled()
     })
+
+    it('coalesces metric reports for a burst without changing the snapshot', async () => {
+        const reports = vi.fn()
+        const queue = withObservability(buildQueue<ReturnType<typeof createJob<number>>>(), {
+            onMetrics: reports,
+        })
+
+        const first = queue.enqueue(createJob(1, { id: 'first', enqueuedAt: 10 }))
+        const second = queue.enqueue(createJob(2, { id: 'second', enqueuedAt: 20 }))
+        await Promise.all([first, second])
+
+        await Promise.resolve()
+
+        expect(reports).toHaveBeenCalledTimes(1)
+        expect(reports).toHaveBeenCalledWith(
+            expect.objectContaining({
+                depth: { available: 2, delayed: 0, leased: 0 },
+                oldestAgeMs: expect.any(Number),
+            }),
+        )
+    })
 })

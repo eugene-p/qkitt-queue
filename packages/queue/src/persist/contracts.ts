@@ -18,6 +18,8 @@ export type RowRecord<T> = {
     leaseExpiresAt: number | null
     /** 1-based delivery attempt; omitted rows start at 1. */
     attempt?: number
+    /** DLQ handoff attempts; omitted until a destination enqueue has failed. */
+    dlqHandoffAttempt?: number
 }
 
 /**

@@ -104,7 +104,7 @@ const jobs = withDlq(
 
 **Not the same as router unmatched.** Router `unmatchedTarget` / config `unmatchedQueue` is for publishes with no binding. Dead letter is for **worker processing failures** after dequeue.
 
-**Full destination is misconfiguration.** A bounded dead-letter sink that throws `QueueFullError` is not an overflow strategy: size it for worst-case failure volume, leave it unbounded, or **drain** it. Destination `enqueue` / `map` / `filter` failures emit `dlq:error` with `DeadLetterEnqueueError` (cause preserved), then requeue the source with a 1-second backoff. **Subscribe to `dlq:error` in production** if the sink can throw.
+**Full destination is misconfiguration.** A bounded dead-letter sink that throws `QueueFullError` is not an overflow strategy: size it for worst-case failure volume, leave it unbounded, or **drain** it. Destination `enqueue` / `map` / `filter` failures emit `dlq:error` with `DeadLetterEnqueueError` (cause preserved). A failed destination handoff is retried with a 1-second backoff up to `maxHandoffAttempts` (default `3`); the source is then acknowledged and emits `worker:dropped`. Handoff state is stored only while it is pending, so durable queues preserve the cap across restart. **Subscribe to `dlq:error` in production** if the sink can throw.
 
 `withDlq` is an alias of `withDeadLetter`. A worker queue supports one dead-letter destination.
 

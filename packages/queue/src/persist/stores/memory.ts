@@ -12,6 +12,9 @@ const cloneRecord = <T>(row: RowRecord<T>): RowRecord<T> => ({
     leaseGeneration: row.leaseGeneration,
     leaseExpiresAt: row.leaseExpiresAt,
     ...(row.attempt !== undefined ? { attempt: row.attempt } : {}),
+    ...(row.dlqHandoffAttempt !== undefined
+        ? { dlqHandoffAttempt: row.dlqHandoffAttempt }
+        : {}),
 })
 
 const assignRecord = <T>(target: RowRecord<T>, source: RowRecord<T>): void => {
@@ -22,6 +25,8 @@ const assignRecord = <T>(target: RowRecord<T>, source: RowRecord<T>): void => {
     target.leaseExpiresAt = source.leaseExpiresAt
     if (source.attempt === undefined) delete target.attempt
     else target.attempt = source.attempt
+    if (source.dlqHandoffAttempt === undefined) delete target.dlqHandoffAttempt
+    else target.dlqHandoffAttempt = source.dlqHandoffAttempt
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { EventMap, MergeEventMaps } from '../../events'
 import { InvalidQueueCompositionError } from '../../persist/errors'
+import { isIntegerInRange } from '../../util/number.util'
 import {
     decorateQueue,
     type PreserveQueueExtras,
@@ -25,6 +26,8 @@ export type DeadLetterTarget<U> = {
 export type WithDeadLetterOptions<T, U = T> = {
     map?: (item: T, error: unknown) => U
     filter?: (item: T, error: unknown) => boolean
+    /** Total destination enqueue attempts after a worker failure. Defaults to 3. */
+    maxHandoffAttempts?: number
 }
 
 export type DeadLetterEvents<T, U = T> = {
@@ -56,7 +59,8 @@ export { DeadLetterEnqueueError } from '../worker/recovery.util'
  * Register a dead-letter destination used when recovery policy is **`fail`**.
  *
  * Handoff order: durable dest enqueue first, then source `ack`. Handoff
- * failure emits `dlq:error` and loops the source item back with backoff.
+ * failure emits `dlq:error` and retries the source item with backoff up to the
+ * configured handoff cap, then drops it.
  *
  * **Composition:** `withDeadLetter(withWorker(buildQueue({ store }), run), dlq)`.
  */
@@ -94,10 +98,18 @@ export const withDeadLetter = <
         )
     }
 
+    const maxHandoffAttempts = options.maxHandoffAttempts ?? 3
+    if (!isIntegerInRange(maxHandoffAttempts, 1)) {
+        throw new InvalidDeadLetterOptionError(
+            'maxHandoffAttempts must be a safe integer >= 1',
+        )
+    }
+
     configureDlqRecovery(source, {
         target: deadLetter as DeadLetterTarget<unknown>,
         map: options.map as WithDeadLetterOptions<T>['map'],
         filter: options.filter,
+        maxHandoffAttempts,
     })
 
     const api = markQueueLayer(decorateQueue(source, {}), DLQ_LAYER)

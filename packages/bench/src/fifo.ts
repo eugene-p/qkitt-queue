@@ -58,19 +58,6 @@ const cases = (): Case[] => [
       return q
     },
   },
-  {
-    name: 'native Array push/shift',
-    run: () => {
-      const q: number[] = []
-      for (let i = 0; i < FIFO_N; i++) q.push(i)
-      for (let i = 0; i < FIFO_N; i++) q.shift()
-    },
-    hold: () => {
-      const q: number[] = []
-      for (let i = 0; i < FIFO_N; i++) q.push(i)
-      return q
-    },
-  },
 ]
 
 /**

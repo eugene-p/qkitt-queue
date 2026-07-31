@@ -154,6 +154,8 @@ const createAbortController = (): AbortControllerLike =>
         }
     ).AbortController()
 
+const NEVER_ABORT_SIGNAL = createAbortController().signal
+
 const isPlainQueueMeta = (item: unknown): unknown => {
     if (item === null || typeof item !== 'object') return undefined
     if (!Object.prototype.hasOwnProperty.call(item, QKITT_QUEUE_KEY)) {
@@ -245,7 +247,12 @@ export const withWorker = <
 
     const settleReschedule = async (
         lease: Lease<T>,
-        next: { item: T; delayMs?: number; attempt?: number },
+        next: {
+            item: T
+            delayMs?: number
+            attempt?: number
+            dlqHandoffAttempt?: number
+        },
     ): Promise<void> => {
         if (inlineOps) {
             inlineOps.rescheduleSync(lease, next)
@@ -258,7 +265,7 @@ export const withWorker = <
         lease: Lease<T>,
         item: T,
         error: unknown | undefined,
-        override?: { item?: T; delayMs?: number },
+        override?: { item?: T; delayMs?: number; dlqHandoffAttempt?: number },
     ): Promise<void> => {
         try {
             const name = getQueueName(inner)
@@ -313,7 +320,11 @@ export const withWorker = <
                 nextItem = override.item
             }
 
-            await settleReschedule(lease, { item: nextItem, delayMs })
+            await settleReschedule(lease, {
+                item: nextItem,
+                delayMs,
+                dlqHandoffAttempt: override?.dlqHandoffAttempt,
+            })
             if (subs.requeued > 0) {
                 emitInner('worker:requeued', { item, error, delayMs })
             }
@@ -368,9 +379,17 @@ export const withWorker = <
                 error,
                 cause: handoffError,
             })
+            const handoffAttempt =
+                (lease.dlqHandoffAttempt ?? 0) + 1
+            if (handoffAttempt >= dlq.maxHandoffAttempts) {
+                await settleAck(lease)
+                emitInner('worker:dropped', { item, error })
+                return
+            }
             await applyLoop(lease, item, error, {
                 item,
                 delayMs: DLQ_RETRY_BACKOFF_MS,
+                dlqHandoffAttempt: handoffAttempt,
             })
         }
     }
@@ -552,16 +571,17 @@ export const withWorker = <
         lease: Lease<T>,
         item: T,
     ): { context: WorkerContext; dispose: () => void } => {
-        const controller = createAbortController()
+        const needsAbort = timeoutMs !== undefined || lease.expiresAt !== null
+        const controller = needsAbort ? createAbortController() : undefined
         const job = isJob(item) ? item : undefined
         const traceContext = options.traceContext
             ? options.traceContext(item)
             : job?.metadata
-        const timers: unknown[] = []
+        const timers = needsAbort ? [] as unknown[] : undefined
         const abortAfter = (ms: number, reason: unknown): void => {
-            timers.push(
+            timers!.push(
                 scheduleTimeout(() => {
-                    if (!controller.signal.aborted) controller.abort(reason)
+                    if (!controller!.signal.aborted) controller!.abort(reason)
                 }, ms),
             )
         }
@@ -582,10 +602,12 @@ export const withWorker = <
                 attempt: lease.attempt,
                 leaseDeadline: lease.expiresAt ?? undefined,
                 traceContext,
-                signal: controller.signal,
+                signal: controller?.signal ?? NEVER_ABORT_SIGNAL,
             },
             dispose: () => {
-                for (const timer of timers) cancelTimeout(timer)
+                if (timers !== undefined) {
+                    for (const timer of timers) cancelTimeout(timer)
+                }
             },
         }
     }

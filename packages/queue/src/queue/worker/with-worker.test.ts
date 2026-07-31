@@ -67,6 +67,26 @@ describe('withWorker', () => {
         ])
     })
 
+    it('shares the inert signal when no timeout or lease TTL is configured', async () => {
+        const signals: AbortSignal[] = []
+        const queue = withWorker(
+            buildQueue<number>(),
+            (_item, context) => {
+                signals.push(context!.signal)
+            },
+            { autoStart: false },
+        )
+        await queue.enqueue(1)
+        await queue.enqueue(2)
+        const idle = waitForIdle(queue)
+        queue.start()
+        await idle
+
+        expect(signals).toHaveLength(2)
+        expect(signals[0]).toBe(signals[1])
+        expect(signals[0]?.aborted).toBe(false)
+    })
+
     it('cooperatively aborts a handler that exceeds timeoutMs', async () => {
         const queue = withWorker(
             buildQueue<number>(),

@@ -11,7 +11,7 @@ export type InlineOps<T> = {
     ackSync: (lease: Lease<T>) => void
     rescheduleSync: (
         lease: Lease<T>,
-        next: { item: T; delayMs?: number; attempt?: number },
+        next: { item: T; delayMs?: number; attempt?: number; dlqHandoffAttempt?: number },
     ) => void
     releaseSync: (lease: Lease<T>) => void
 }

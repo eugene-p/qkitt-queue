@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-30
+
+### Added
+
+- `withDeadLetter` / `withDlq` now accepts `maxHandoffAttempts` (default `3`)
+  to bound destination-handoff retries. Pending handoff state survives durable
+  restart without adding storage to ordinary rows.
+
+### Fixed
+
+- A permanently failing DLQ destination can no longer re-deliver source work
+  forever; the source is acknowledged and emits `worker:dropped` after its
+  bounded handoff attempts.
+- `withObservability` no longer rebuilds every job page synchronously from
+  each queue lifecycle event.
+
+### Changed
+
+- `onMetrics` now coalesces lifecycle activity to at most one callback per
+  microtask. `queue:enqueued` is documented as an availability notification:
+  hydrate and batch delayed promotion may coalesce notifications.
+- The feature-disabled FIFO and worker paths lazily allocate retry-attempt and
+  cancellation state; lease expiry reclaim no longer copies the leased map on
+  every claim.
+- Removed the uninformative native `Array#shift` baseline from the FIFO bench.
+
 ## [0.12.0] — 2026-07-30
 
 ### Added
@@ -445,6 +471,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.13.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.0
 [0.12.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.12.0
 [0.11.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.11.0
 [0.10.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.10.0

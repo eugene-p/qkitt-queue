@@ -70,6 +70,25 @@ describe('buildQueue', () => {
         expect(handler).toHaveBeenNthCalledWith(2, { item: 'y', size: 2 })
     })
 
+    it('coalesces queue:enqueued when multiple delayed items become available', async () => {
+        vi.useFakeTimers()
+        try {
+            const queue = buildQueue<number>()
+            const handler = vi.fn()
+            queue.on('queue:enqueued', handler)
+            await queue.enqueue(1, { delayMs: 10 })
+            await queue.enqueue(2, { delayMs: 10 })
+            handler.mockClear()
+
+            await vi.advanceTimersByTimeAsync(10)
+
+            expect(handler).toHaveBeenCalledTimes(1)
+            expect(handler).toHaveBeenCalledWith({ item: 1, size: 2 })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('keeps event delivery active after an unsubscribe is called twice', async () => {
         const queue = buildQueue<number>()
         const first = vi.fn()
@@ -127,6 +146,58 @@ describe('buildQueue', () => {
         expect(queue.size()).toBe(1)
         expect(queue.readyCount()).toBe(0)
         expect(queue.stats().delayed).toBe(1)
+    })
+
+    it('preserves pending DLQ handoff state across an inline delay', async () => {
+        vi.useFakeTimers()
+        try {
+            const queue = buildQueue<string>()
+            await queue.enqueue('a')
+            const first = await queue.claim()
+            await queue.reschedule(first!, {
+                item: 'a',
+                delayMs: 10,
+                dlqHandoffAttempt: 1,
+            })
+            await vi.advanceTimersByTimeAsync(10)
+            const next = await queue.claim()
+            expect(next?.dlqHandoffAttempt).toBe(1)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('keeps lazy retry attempts aligned through an admin dequeue', async () => {
+        const queue = buildQueue<string>()
+        await queue.enqueue('first')
+        await queue.enqueue('second')
+        const first = await queue.claim()
+        await queue.reschedule(first!, {
+            item: 'first',
+            attempt: 2,
+        })
+
+        expect(await queue.tryDequeue()).toEqual({ value: 'second' })
+        const retried = await queue.claim()
+        expect(retried).toMatchObject({
+            item: 'first',
+            attempt: 2,
+        })
+    })
+
+    it('persists pending DLQ handoff state through hydrate', async () => {
+        const store = createMemoryRowStore<string>()
+        const source = buildQueue<string>({ store })
+        await source.enqueue('a')
+        const lease = await source.claim()
+        await source.reschedule(lease!, {
+            item: 'a',
+            dlqHandoffAttempt: 1,
+        })
+
+        const recovered = buildQueue<string>({ store })
+        await recovered.hydrate()
+        expect((await recovered.claim())?.dlqHandoffAttempt).toBe(1)
     })
 
     it('size counts delayed and leased; readyCount only available', async () => {

@@ -70,6 +70,7 @@ export type DlqRecoveryOptions<T, U = T> = {
     target: { enqueue: (item: U) => void | Promise<void> }
     map?: (item: T, error: unknown) => U
     filter?: (item: T, error: unknown) => boolean
+    maxHandoffAttempts: number
 }
 
 export type RetryClassification = 'retry' | 'fail'

@@ -34,6 +34,7 @@ type StoredRecord<T> = {
     leaseGeneration: number | null
     leaseExpiresAt: number | null
     attempt?: number
+    dlqHandoffAttempt?: number
 }
 
 type OrderCodec = JsonCodec<number[]>
@@ -129,6 +130,9 @@ export const createWebRowStore = <T>(
                     ...(record.attempt !== undefined
                         ? { attempt: record.attempt }
                         : {}),
+                    ...(record.dlqHandoffAttempt !== undefined
+                        ? { dlqHandoffAttempt: record.dlqHandoffAttempt }
+                        : {}),
                     itemRaw: itemCodec.serialize(record.item),
                 }),
             )
@@ -156,6 +160,9 @@ export const createWebRowStore = <T>(
                 leaseGeneration: parsed.leaseGeneration ?? null,
                 leaseExpiresAt: parsed.leaseExpiresAt ?? null,
                 ...(parsed.attempt !== undefined ? { attempt: parsed.attempt } : {}),
+                ...(parsed.dlqHandoffAttempt !== undefined
+                    ? { dlqHandoffAttempt: parsed.dlqHandoffAttempt }
+                    : {}),
             }
         }
         const stored = decodeWithCodec(

@@ -77,7 +77,7 @@ across queues; use the same `Job.id` idempotency key at the replay target.
 
 | Event | Payload |
 | --- | --- |
-| `queue:enqueued` | `{ item, size }` |
+| `queue:enqueued` | `{ item, size }` — an availability notification; hydrate and a batch of due delayed rows may coalesce to one head-item event |
 | `queue:dequeued` | `{ item, size }` |
 | `queue:emptied` | `undefined` |
 | `queue:cleared` | `{ removed }` |
@@ -233,6 +233,7 @@ withDeadLetter<T, U = T>(
 | --- | --- | --- | --- |
 | `map` | `(item, error) => U` | identity | Remap before enqueue |
 | `filter` | `(item, error) => boolean` | always true | Skip enqueue when false |
+| `maxHandoffAttempts` | safe integer ≥ 1 | `3` | Total destination-enqueue attempts before the source is acknowledged and dropped |
 
 Apply **after** `withWorker`. Destination must be a **distinct** reference (same queue throws). Patterns, full-sink warnings, and router-unmatched distinction: [Failure routing](./failure-routing.md).
 
@@ -259,8 +260,10 @@ withObservability(queue, {
 Returns the same queue composition plus `metrics()`. Its snapshot exposes
 `depth` (`available`, `delayed`, `leased`), the oldest opt-in `Job` age,
 completion/failure/retry/DLQ counters, and count/total/average handler and
-store timings. The optional hooks are isolated from queue delivery, making
-them suitable adapters for metrics and tracing SDKs. Compose it anywhere;
+store timings. `onMetrics` is coalesced to at most one callback per microtask,
+so it never enumerates jobs synchronously from a queue lifecycle event. The
+optional hooks are isolated from queue delivery, making them suitable adapters
+for metrics and tracing SDKs. Compose it anywhere;
 worker, retry, DLQ, and durable-store events flow through the shared queue.
 
 ---

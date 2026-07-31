@@ -19,7 +19,7 @@ Run reliable background work **inside one Node process or browser**: concurrent 
 
 | Package | What it is |
 | --- | --- |
-| [`@qkitt/queue`](./packages/queue) | Queue, worker, persist, router, retry, pipeline, loop / DLQ |
+| [`@qkitt/queue`](./packages/queue) | Queue, worker, persistence, durable retry, routing, job admin, observability, pipeline, loop / DLQ |
 | [`@qkitt/queue-config`](./packages/queue-config) | Optional: build a system from a config object |
 | [`@qkitt/queue-bench`](./packages/bench) | Benchmarks against in-process peers |
 
@@ -35,8 +35,10 @@ Most applications begin with one queue and one worker: install `@qkitt/queue`, c
 | --- | --- | --- |
 | Background jobs with a concurrency limit | `withWorker` | Keeps request handling separate from slow work. |
 | Work to survive a restart | a `RowStore` at `buildQueue({ store })` | Restores unfinished rows when the app starts again. |
-| Transient failures to be retried | `retryWorker` | Retries the operation before it becomes a failed job. |
+| A brief transient failure inside one worker call | `retryWorker` | Retries immediately in the same worker slot; it is not durable. |
+| A job to retry later, survive restart, then reach a DLQ | `withRetry` | Persists the attempt and backoff between deliveries. |
 | Failed work to be retained or tried later | `withDlq` or `withLoop` | Sends it to a separate sink or re-enters the same queue with a hop cap. |
+| Metrics, tracing, or job control | `withObservability` and `Job` operations | Inspect, cancel, reschedule, promote, replay, and instrument background work. |
 | One message to reach multiple consumers | `buildRouter` | Fans topic messages out to bound queues. |
 | Many related queues | `@qkitt/queue-config` | Keeps the same composition in one declarative object. |
 
@@ -48,7 +50,7 @@ Use it when the producer and consumer can live in the same process (or browser t
 
 - **FIFO backlog** — hold work in order until something drains it (orders awaiting fulfillment, moderation queue, form submissions waiting for review).
 - **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
-- **Retries** — survive flaky third-party calls (payment capture, carrier API, email or SMS gateway).
+- **Retries** — use `retryWorker` for a short in-call retry, or durable `withRetry` to release capacity, survive restart, and retry later.
 - **Pipelines** — fixed stages per item (validate → reserve stock → charge → confirm).
 - **Persistence** — keep unfinished work across a restart (long exports, outbox, unsent messages after a crash). Pass a `RowStore` to `buildQueue({ store })`. Built-in Web Storage; custom stores implement `RowStore`.
 - **Topic routing** — one publish, several consumers (`order.placed` → fulfillment, billing, analytics).
@@ -140,6 +142,8 @@ const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 ```
 
 Failed items are **not** re-queued. Use `retryWorker` for in-call retries, `withDeadLetter` / `withDlq` for a separate sink, or `withLoop` to re-enter the same queue with hop meta.
+
+For durable retries, job operations, observability, and `WorkerContext` / `timeoutMs`, see the [queue feature guide](./packages/queue/README.md) and [API reference](./packages/queue/docs/api.md).
 
 With config (optional):
 

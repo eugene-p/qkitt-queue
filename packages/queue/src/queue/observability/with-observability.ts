@@ -30,7 +30,7 @@ export type QueueTraceEvent<T> = {
 }
 
 export type WithObservabilityOptions<T> = {
-    /** Receives snapshots after each observable queue lifecycle event. */
+    /** Receives a coalesced snapshot after observable queue lifecycle events. */
     onMetrics?: (metrics: QueueMetrics) => void
     /** Lightweight integration point for tracing adapters. */
     onTrace?: (event: QueueTraceEvent<T>) => void
@@ -68,19 +68,17 @@ export const withObservability = <TQueue extends Queue<any, any>>(
 
     const metrics = (): QueueMetrics => {
         let oldestEnqueuedAt: number | undefined
-        let cursor: number | undefined
-        do {
-            const page = queue.listJobs({ cursor, limit: 100 })
-            for (const entry of page.items) {
-                if (isJob(entry.item)) {
-                    oldestEnqueuedAt =
-                        oldestEnqueuedAt === undefined
-                            ? entry.item.enqueuedAt
-                            : Math.min(oldestEnqueuedAt, entry.item.enqueuedAt)
-                }
+        // Request one page so metrics never rebuilds/sorts every job once per
+        // 100-row cursor. This remains an on-demand admin read, not a hot path.
+        const jobs = queue.listJobs({ limit: Number.MAX_SAFE_INTEGER }).items
+        for (const entry of jobs) {
+            if (isJob(entry.item)) {
+                oldestEnqueuedAt =
+                    oldestEnqueuedAt === undefined
+                        ? entry.item.enqueuedAt
+                        : Math.min(oldestEnqueuedAt, entry.item.enqueuedAt)
             }
-            cursor = page.nextCursor
-        } while (cursor !== undefined)
+        }
         return {
             depth: queue.stats(),
             ...(oldestEnqueuedAt === undefined
@@ -104,11 +102,21 @@ export const withObservability = <TQueue extends Queue<any, any>>(
     }
 
     const report = (): void => {
+        if (options.onMetrics === undefined) return
         try {
-            options.onMetrics?.(metrics())
+            options.onMetrics(metrics())
         } catch {
             // Observability must never interfere with delivery.
         }
+    }
+    let reportScheduled = false
+    const scheduleReport = (): void => {
+        if (options.onMetrics === undefined || reportScheduled) return
+        reportScheduled = true
+        void Promise.resolve().then(() => {
+            reportScheduled = false
+            report()
+        })
     }
     const trace = (event: QueueTraceEvent<QueueItem<TQueue>>): void => {
         try {
@@ -124,7 +132,7 @@ export const withObservability = <TQueue extends Queue<any, any>>(
     const watch = (name: string, callback?: (data: any) => void): void => {
         on(name, (data) => {
             callback?.(data)
-            report()
+            scheduleReport()
         })
     }
 
