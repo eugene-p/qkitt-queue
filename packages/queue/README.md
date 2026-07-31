@@ -184,12 +184,12 @@ Performance priority for this package: persistence and correctness, then retaine
 
 | Library | ops/s | heap Δ total | heap Δ / item |
 | --- | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 92 | **5.58 MiB** | **1.1 KiB** |
-| fastq | **108** | 6.40 MiB | 1.3 KiB |
-| async.queue | 97 | 7.47 MiB | 1.5 KiB |
-| p-queue | 75 | 8.82 MiB | 1.8 KiB |
+| @qkitt/queue `withWorker` | 78 | **5.58 MiB** | **1.1 KiB** |
+| fastq | **106** | 6.40 MiB | 1.3 KiB |
+| async.queue | 94 | 7.47 MiB | 1.5 KiB |
+| p-queue | 72 | 8.82 MiB | 1.8 KiB |
 
-**Durable / workload** full matrices, release baseline, and optional scheduler diagnostic: [root README benchmarks](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks) · [bench package](https://github.com/eugene-p/qkitt-queue/blob/main/packages/bench/README.md#release-baseline-0131). Re-run: `npm run bench` / `npm run bench:worker`.
+**Durable / workload** full matrices, release baseline, and optional scheduler diagnostic: [root README benchmarks](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks) · [bench package](https://github.com/eugene-p/qkitt-queue/blob/main/packages/bench/README.md#release-baseline-0133). Re-run: `npm run bench` / `npm run bench:worker`.
 
 **Browser (Chromium)** — durability context: in-memory vs durable worker drain, 5k jobs c=1: bare ~2 ms · localStorage ~410 ms (`npm run compare:stores`).
 
