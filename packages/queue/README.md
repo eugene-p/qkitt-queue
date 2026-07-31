@@ -7,13 +7,13 @@
 [![License: ISC](https://img.shields.io/npm/l/@qkitt/queue.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue.svg)](https://nodejs.org)
 
-Reliable background jobs in one Node process or browser: concurrent workers, retries, topic routing, and optional persistence. Zero runtime dependencies.
+Composable, persistence-first job queues in one Node process or browser: concurrent workers, retries, topic routing, and optional durability. Memory-conscious by design; zero runtime dependencies.
 
-Layers: FIFO queue, worker, optional persistence, routing, and failure handling. ESM-only; Node.js 20+, modern browsers, and TypeScript **5.0+** (`moduleResolution`: `node16`, `nodenext`, or `bundler`).
+Layers: queue, worker, optional persistence, routing, and failure handling. ESM-only; Node.js 20+, modern browsers, and TypeScript **5.0+** (`moduleResolution`: `node16`, `nodenext`, or `bundler`).
 
 **Out of scope:** work that spans machines or processes.
 
-> Need only a fast, memory-only queue? Use the sibling project [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq). Choose this package when unfinished jobs must survive restart or you need declarative multi-queue configuration.
+> Need a simpler worker/drain-first in-memory queue? Use the sibling project [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq). Choose this package when unfinished jobs must survive restart, or you need this package’s composition surface (persistence, routing, durable retries, declarative multi-queue).
 
 ## What it is for
 
@@ -176,41 +176,24 @@ Runnable scenarios: [examples/](https://github.com/eugene-p/qkitt-queue/tree/mai
 
 ## Benchmark summary
 
-In-process peers only. Full tables and setup: [root README](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks). Re-run: [`packages/bench`](https://github.com/eugene-p/qkitt-queue/tree/main/packages/bench) (`npm run bench` from repo root).
+Workload context and regression evidence — not a competitive scoreboard. Full tables and setup: [root README](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks). Default re-run from repo root: `npm run bench` (payload, durable, workloads). Optional scheduler drain: `npm run bench:worker`. Harness: [`packages/bench`](https://github.com/eugene-p/qkitt-queue/tree/main/packages/bench).
 
-These in-process tables compare relative speed and retained heap. `buildQueue()` is Promise-based; peer FIFOs are synchronous.
+Performance priority for this package: persistence and correctness, then retained memory, then throughput. For a simpler worker/drain-first in-memory queue, see [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq).
 
-**Scheduler drain** — 10 000 async no-op jobs (ops/s · pending-job heap)
-
-| Library | c=1 | c=4 | heap Δ (c=1) |
-| --- | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 399 | 508 | **95.6 KiB** |
-| fastq | **899** | **941** | 1.76 MiB |
-| async.queue | 243 | 284 | 3.89 MiB |
-| p-queue | 123 | 119 | 6.19 MiB |
-
-**Payload worker drain** — 5,000 preallocated 1 KiB jobs, c=4. Each handler reads and hashes the payload, then yields.
+**Payload worker drain** — workload context: 5,000 preallocated 1 KiB jobs, c=4. Each handler reads and hashes the payload, then yields. Representative peer context for severe-regression checks, not a ranking target.
 
 | Library | ops/s | heap Δ total | heap Δ / item |
 | --- | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 90 | **5.58 MiB** | **1.1 KiB** |
-| fastq | **102** | 6.40 MiB | 1.3 KiB |
-| async.queue | 92 | 7.47 MiB | 1.5 KiB |
-| p-queue | 73 | 8.82 MiB | 1.8 KiB |
+| @qkitt/queue `withWorker` | 92 | **5.58 MiB** | **1.1 KiB** |
+| fastq | **108** | 6.40 MiB | 1.3 KiB |
+| async.queue | 97 | 7.47 MiB | 1.5 KiB |
+| p-queue | 75 | 8.82 MiB | 1.8 KiB |
 
-**Bare queue API** — 50 000 enqueue + dequeue (ops/s median · retained heap)
+**Durable / workload** full matrices, release baseline, and optional scheduler diagnostic: [root README benchmarks](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks) · [bench package](https://github.com/eugene-p/qkitt-queue/blob/main/packages/bench/README.md#release-baseline-0131). Re-run: `npm run bench` / `npm run bench:worker`.
 
-`buildQueue` is Promise-based; peer FIFOs are synchronous. This compares API overhead and retained heap, not raw FIFO speed.
+**Browser (Chromium)** — durability context: in-memory vs durable worker drain, 5k jobs c=1: bare ~2 ms · localStorage ~410 ms (`npm run compare:stores`).
 
-| Library | ops/s | heap Δ |
-| --- | ---: | ---: |
-| @qkitt/queue `buildQueue` | 593 | 417.4 KiB |
-| denque | 2,342 | 515.2 KiB |
-| yocto-queue | 2,449 | 1.91 MiB |
-
-**Browser (Chromium)** — in-memory vs durable worker drain, 5k jobs c=1: bare ~2 ms · localStorage ~410 ms (`npm run compare:stores`).
-
-Timing uses tinybench p50 (median; mean fallback only if p50 is unavailable). Heap Δ is the median of seven post-GC samples. Relative numbers (Node 26.5.0, Windows laptop, 2026-07-30).
+Timing uses tinybench p50 (median; mean fallback only if p50 is unavailable). Heap Δ is the median of seven post-GC samples (`heapUsed` + `arrayBuffers`). Relative numbers (Node 26.5.0, Windows laptop, 2026-07-31).
 
 ## Changelog
 

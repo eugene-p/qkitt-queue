@@ -3,14 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Non-publishable benchmarks for @qkitt/queue vs in-process peers",
+  "description": "Local throughput and retained-memory regression for @qkitt/queue",
   "license": "ISC",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "bench": "tsx --expose-gc src/index.ts",
-    "bench:fifo": "tsx --expose-gc src/index.ts fifo",
     "bench:worker": "tsx --expose-gc src/index.ts worker",
     "bench:payload": "tsx --expose-gc src/index.ts payload",
     "bench:durable": "tsx --expose-gc src/index.ts durable",
@@ -20,11 +19,9 @@
   "dependencies": {
     "@qkitt/queue": "file:../queue",
     "async": "^3.2.6",
-    "denque": "^2.1.0",
     "fastq": "^1.19.1",
     "p-queue": "^8.1.0",
-    "tinybench": "^4.0.1",
-    "yocto-queue": "^1.2.1"
+    "tinybench": "^4.0.1"
   },
   "devDependencies": {
     "@types/async": "^3.2.24",

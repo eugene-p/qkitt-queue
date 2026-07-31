@@ -2,23 +2,30 @@
  * Retained-heap measurement for bench structures.
  *
  * Answers: “how large is this structure when it holds N?”
- * - Measures heapUsed (and rss) delta to build and **keep** N items live, after GC.
+ * - Measures retained process memory delta to build and **keep** N items live, after GC.
+ * - Includes V8 `heapUsed` plus `arrayBuffers` so typed-array payloads (e.g. Uint8Array
+ *   job bodies) are not under-counted when buffers live outside the V8 heap.
  * - Does not measure peak during ops/s, GC churn while draining, or “memory of the
  *   throughput loop.” ops/s empties/drains each iteration; this keeps N held.
  *
- * FIFO: after N enqueues (queue still full).
- * Worker: N pending jobs with the worker paused / autoStart false.
+ * Payload / workloads / worker: N pending jobs with the worker paused / autoStart false.
+ * Durable: N rows enqueued (or hydrated) and still pending — store writes may flush,
+ * but jobs are not drained.
  */
 
 export type MemRow = {
   name: string
-  /** heapUsed after − before (bytes), structure still held. */
+  /** Retained bytes after − before (heapUsed + arrayBuffers), structure still held. */
   heapDelta: number
   /** rss after − before (bytes). Noisier than heap; informational. */
   rssDelta: number
   /** Human label for what was held (for tables / legends). */
   held: string
 }
+
+/** Process-retained bytes that product memory samples care about. */
+const retainedBytes = (usage: NodeJS.MemoryUsage): number =>
+  usage.heapUsed + usage.arrayBuffers
 
 export const formatBytes = (bytes: number): string => {
   const sign = bytes < 0 ? '-' : ''
@@ -63,7 +70,7 @@ export const measureRetained = (
   return {
     name,
     held,
-    heapDelta: after.heapUsed - before.heapUsed,
+    heapDelta: retainedBytes(after) - retainedBytes(before),
     rssDelta: after.rss - before.rss,
   }
 }
@@ -85,6 +92,57 @@ export const measureRetainedMedian = (
   const rows: MemRow[] = []
   for (let i = 0; i < trials; i++) {
     rows.push(measureRetained(name, held, build))
+  }
+  rows.sort((a, b) => a.heapDelta - b.heapDelta)
+  return rows[(rows.length - 1) / 2]!
+}
+
+/**
+ * Async variant of {@link measureRetained} for builders that must await
+ * (durable enqueue / hydrate).
+ */
+export const measureRetainedAsync = async (
+  name: string,
+  held: string,
+  build: () => unknown | Promise<unknown>,
+): Promise<MemRow> => {
+  tryGc()
+  tryGc()
+  const before = process.memoryUsage()
+  const value = await build()
+  if (value === null || value === undefined) {
+    throw new Error(
+      `measureRetainedAsync(${name}): build() must return a held value`,
+    )
+  }
+  void (value as { constructor?: unknown }).constructor
+  tryGc()
+  const after = process.memoryUsage()
+  void (value as { constructor?: unknown }).constructor
+
+  return {
+    name,
+    held,
+    heapDelta: retainedBytes(after) - retainedBytes(before),
+    rssDelta: after.rss - before.rss,
+  }
+}
+
+/** Median of independent async retained-heap samples. */
+export const measureRetainedMedianAsync = async (
+  name: string,
+  held: string,
+  build: () => unknown | Promise<unknown>,
+  trials = 7,
+): Promise<MemRow> => {
+  if (!Number.isSafeInteger(trials) || trials < 1 || trials % 2 === 0) {
+    throw new Error(
+      'measureRetainedMedianAsync: trials must be a positive odd integer',
+    )
+  }
+  const rows: MemRow[] = []
+  for (let i = 0; i < trials; i++) {
+    rows.push(await measureRetainedAsync(name, held, build))
   }
   rows.sort((a, b) => a.heapDelta - b.heapDelta)
   return rows[(rows.length - 1) / 2]!

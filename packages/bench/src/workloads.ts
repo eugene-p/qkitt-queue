@@ -9,6 +9,12 @@ import {
   timeAlone,
   type TimingResult,
 } from './helpers.js'
+import { measureRetainedMedian, type MemRow } from './memory.js'
+import {
+  heapTableColumns,
+  printGcFootnote,
+  printProgress,
+} from './report.js'
 
 const makePayloads = (n: number): Uint8Array[] => {
   const payloads = new Array<Uint8Array>(n)
@@ -21,8 +27,32 @@ const makePayloads = (n: number): Uint8Array[] => {
   return payloads
 }
 
-const printTable = (rows: readonly TimingResult[]): void => {
+/**
+ * Hold a full burst backlog: fresh payloads + paused worker (autoStart false).
+ * Allocation is inside the sample so total heap includes job bodies.
+ */
+const holdBurstPending = (): unknown => {
+  const queue = withWorker(
+    buildQueue<Uint8Array>(),
+    async () => undefined,
+    { concurrency: 4, autoStart: false },
+  )
+  const payloads = makePayloads(WORKLOAD_N)
+  for (const body of payloads) queue.enqueue(body)
+  if (queue.size() !== WORKLOAD_N) {
+    throw new Error(
+      `holdBurstPending: expected size ${WORKLOAD_N}, got ${queue.size()}`,
+    )
+  }
+  return queue
+}
+
+type WorkloadTimingRow = TimingResult
+type WorkloadHeapRow = MemRow & { pendingN: number }
+
+const printTimingTable = (rows: readonly WorkloadTimingRow[]): void => {
   console.log('')
+  console.log('Throughput')
   console.table(
     rows.map((row) => ({
       scenario: row.name,
@@ -31,6 +61,22 @@ const printTable = (rows: readonly TimingResult[]): void => {
       samples: row.samples,
     })),
   )
+}
+
+const printHeapTable = (rows: readonly WorkloadHeapRow[]): void => {
+  console.log('')
+  console.log('Retained heap (burst pending; worker paused)')
+  console.log(
+    '  heap Δ = median of seven post-GC samples with N jobs queued; includes 1 KiB bodies + bookkeeping',
+  )
+  console.table(
+    rows.map((row) => ({
+      scenario: row.name,
+      held: row.held,
+      ...heapTableColumns(row.heapDelta, row.pendingN),
+    })),
+  )
+  printGcFootnote(rows)
 }
 
 /**
@@ -81,9 +127,11 @@ export const runWorkloadBench = async (): Promise<void> => {
     'Regression scenarios, not peer comparisons.',
     'Payloads are allocated before timing; workers read payload bytes and yield once.',
     'Burst starts after all jobs are accepted. Steady producer yields after each 100-job batch.',
+    'Heap Δ samples a fresh burst backlog (worker paused) so total and per-job include bodies.',
   ])
 
-  const rows = [
+  printProgress('burst drain, c=4 — timing…')
+  const timingRows = [
     await timeAlone('burst drain, c=4', runBurst, {
       time: 700,
       warmupTime: 150,
@@ -94,5 +142,14 @@ export const runWorkloadBench = async (): Promise<void> => {
     }),
   ]
   if (checksum === Number.MIN_SAFE_INTEGER) throw new Error('unreachable')
-  printTable(rows)
+  printTimingTable(timingRows)
+
+  const heldLabel = `${WORKLOAD_N.toLocaleString()} × ${WORKLOAD_BYTES / 1024} KiB pending (worker paused)`
+  printProgress(`retained heap — ${heldLabel}…`)
+  const heap = measureRetainedMedian(
+    'burst pending',
+    heldLabel,
+    holdBurstPending,
+  )
+  printHeapTable([{ ...heap, pendingN: WORKLOAD_N }])
 }

@@ -3,7 +3,6 @@ import {
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
-import { createSubscriptionCounts } from '../../events/subscription-counts'
 import { LeaseMismatchError } from '../../persist/errors'
 import { isIntegerInRange } from '../../util/number.util'
 import {
@@ -23,7 +22,6 @@ import {
     decorateQueue,
     type PreserveQueueExtras,
 } from '../core/forward.util'
-import { getInlineOps } from '../core/inline-ops'
 import { markQueueLayer, WORKER_LAYER } from '../core/layers.util'
 import type { Lease, Queue, QueueEvents } from '../core/queue'
 import { getQueueName } from '../core/queue-name.util'
@@ -203,17 +201,7 @@ export const withWorker = <
         eventName: string,
         callback: EventCallback<unknown>,
     ) => () => void
-    const { counts: subs, wrapOn } = createSubscriptionCounts({
-        started: 'worker:started',
-        completed: 'worker:completed',
-        failed: 'worker:failed',
-        handled: 'worker:handled',
-        requeued: 'worker:requeued',
-        dropped: 'worker:dropped',
-        idle: 'worker:idle',
-        pumpError: 'worker:pump-error',
-    })
-    const on = wrapOn(onInner) as QueueWithWorker<
+    const on = onInner as QueueWithWorker<
         T,
         R,
         WorkerQueueEvents<T, R, TEvents>
@@ -228,11 +216,9 @@ export const withWorker = <
     /** Idle only when nothing is pending (including delayed rows). */
     const isIdleForWorker = (): boolean => inner.size() === 0
 
-    const inlineOps = getInlineOps<T>(inner)
-
     const finishItem = (): void => {
         active -= 1
-        if (active === 0 && subs.idle > 0 && isIdleForWorker()) {
+        if (active === 0 && isIdleForWorker()) {
             emitInner('worker:idle', undefined)
         }
         if (!pumping) {
@@ -241,10 +227,6 @@ export const withWorker = <
     }
 
     const settleAck = async (lease: Lease<T>): Promise<void> => {
-        if (inlineOps) {
-            inlineOps.ackSync(lease)
-            return
-        }
         await inner.ack(lease)
     }
 
@@ -257,10 +239,6 @@ export const withWorker = <
             dlqHandoffAttempt?: number
         },
     ): Promise<void> => {
-        if (inlineOps) {
-            inlineOps.rescheduleSync(lease, next)
-            return
-        }
         await inner.reschedule(lease, next)
     }
 
@@ -328,9 +306,7 @@ export const withWorker = <
                 delayMs,
                 dlqHandoffAttempt: override?.dlqHandoffAttempt,
             })
-            if (subs.requeued > 0) {
-                emitInner('worker:requeued', { item, error, delayMs })
-            }
+            emitInner('worker:requeued', { item, error, delayMs })
         } catch (cause) {
             const loopError = new LoopEnqueueError(
                 'failed to re-enqueue loop item',
@@ -349,18 +325,14 @@ export const withWorker = <
         const dlq = recovery.dlq
         if (!dlq) {
             await settleAck(lease)
-            if (subs.dropped > 0) {
-                emitInner('worker:dropped', { item, error })
-            }
+            emitInner('worker:dropped', { item, error })
             return
         }
 
         try {
             if (dlq.filter && !dlq.filter(item, error)) {
                 await settleAck(lease)
-                if (subs.dropped > 0) {
-                    emitInner('worker:dropped', { item, error })
-                }
+                emitInner('worker:dropped', { item, error })
                 return
             }
             const map = dlq.map ?? ((x: T) => x as unknown)
@@ -436,9 +408,7 @@ export const withWorker = <
                     nextAttempt: lease.attempt + 1,
                     delayMs,
                 })
-                if (subs.requeued > 0) {
-                    emitInner('worker:requeued', { item, error, delayMs })
-                }
+                emitInner('worker:requeued', { item, error, delayMs })
                 return
             }
             emitInner('retry:exhausted', {
@@ -486,12 +456,9 @@ export const withWorker = <
         void applyRecovery(lease, item, error)
             .catch(async (err) => {
                 if (err instanceof LeaseMismatchError) return
-                if (subs.pumpError > 0) {
-                    emitInner('worker:pump-error', { error: err })
-                }
+                emitInner('worker:pump-error', { error: err })
                 try {
-                    if (inlineOps) inlineOps.releaseSync(lease)
-                    else await inner.release(lease)
+                    await inner.release(lease)
                 } catch {
                     /* already settled or reclaim won */
                 }
@@ -499,16 +466,12 @@ export const withWorker = <
             .finally(() => {
                 // Finish after recovery so gracefulStop waits for it.
                 finishItem()
-                if (subs.failed > 0) {
-                    emitInner('worker:failed', { item, error })
-                }
-                if (subs.handled > 0) {
-                    emitInner('worker:handled', {
-                        item,
-                        outcome: 'failed',
-                        durationMs: elapsedDuration(startedAt),
-                    })
-                }
+                emitInner('worker:failed', { item, error })
+                emitInner('worker:handled', {
+                    item,
+                    outcome: 'failed',
+                    durationMs: elapsedDuration(startedAt),
+                })
             })
     }
 
@@ -518,53 +481,20 @@ export const withWorker = <
         result: R,
         startedAt: number | undefined,
     ): void => {
-        // Inline: ack is sync — finish without Promise hops.
-        if (inlineOps) {
-            try {
-                inlineOps.ackSync(lease)
-                finishItem()
-                if (subs.completed > 0) {
-                    emitInner('worker:completed', { item, result })
-                }
-                if (subs.handled > 0) {
-                    emitInner('worker:handled', {
-                        item,
-                        outcome: 'completed',
-                        durationMs: elapsedDuration(startedAt),
-                    })
-                }
-            } catch (err) {
-                finishItem()
-                if (
-                    !(err instanceof LeaseMismatchError) &&
-                    subs.pumpError > 0
-                ) {
-                    emitInner('worker:pump-error', { error: err })
-                }
-            }
-            return
-        }
         void inner
             .ack(lease)
             .then(() => {
                 finishItem()
-                if (subs.completed > 0) {
-                    emitInner('worker:completed', { item, result })
-                }
-                if (subs.handled > 0) {
-                    emitInner('worker:handled', {
-                        item,
-                        outcome: 'completed',
-                        durationMs: elapsedDuration(startedAt),
-                    })
-                }
+                emitInner('worker:completed', { item, result })
+                emitInner('worker:handled', {
+                    item,
+                    outcome: 'completed',
+                    durationMs: elapsedDuration(startedAt),
+                })
             })
             .catch((err) => {
                 finishItem()
-                if (
-                    !(err instanceof LeaseMismatchError) &&
-                    subs.pumpError > 0
-                ) {
+                if (!(err instanceof LeaseMismatchError)) {
                     emitInner('worker:pump-error', { error: err })
                 }
             })
@@ -577,11 +507,9 @@ export const withWorker = <
 
     const processLease = (lease: Lease<T>): void => {
         const item = lease.item
-        if (subs.started > 0) {
-            emitInner('worker:started', { item })
-        }
+        emitInner('worker:started', { item })
 
-        const startedAt = subs.handled > 0 ? Date.now() : undefined
+        const startedAt = Date.now()
         const needsAbort =
             timeoutMs !== undefined || lease.expiresAt !== null
         const controller = needsAbort ? createAbortController() : undefined
@@ -660,45 +588,7 @@ export const withWorker = <
         unsubscribeEnqueued = undefined
     }
 
-    /**
-     * Inline pump is fully synchronous (no Promise alloc per kick).
-     * Durable path awaits claim on the write chain in pumpDurable.
-     */
-    const pumpInline = (): void => {
-        if (pumping) {
-            pumpAgain = true
-            return
-        }
-        pumping = true
-        try {
-            do {
-                pumpAgain = false
-                while (running && active < concurrency) {
-                    let lease: Lease<T> | undefined
-                    try {
-                        lease = inlineOps!.claimSync()
-                    } catch (error) {
-                        if (subs.pumpError > 0) {
-                            emitInner('worker:pump-error', { error })
-                        }
-                        stop()
-                        break
-                    }
-                    if (lease === undefined) break
-                    active += 1
-                    processLease(lease)
-                }
-            } while (pumpAgain && running)
-        } finally {
-            pumping = false
-            if (pumpAgain && running) {
-                pumpAgain = false
-                pumpInline()
-            }
-        }
-    }
-
-    const pumpDurable = async (): Promise<void> => {
+    const pumpAsync = async (): Promise<void> => {
         if (pumping) {
             pumpAgain = true
             return
@@ -712,9 +602,7 @@ export const withWorker = <
                     try {
                         lease = await inner.claim()
                     } catch (error) {
-                        if (subs.pumpError > 0) {
-                            emitInner('worker:pump-error', { error })
-                        }
+                        emitInner('worker:pump-error', { error })
                         stop()
                         break
                     }
@@ -727,14 +615,13 @@ export const withWorker = <
             pumping = false
             if (pumpAgain && running) {
                 pumpAgain = false
-                void pumpDurable()
+                void pumpAsync()
             }
         }
     }
 
     const pump = (): void => {
-        if (inlineOps) pumpInline()
-        else void pumpDurable()
+        void pumpAsync()
     }
 
     const subscribeEnqueued = (): void => {

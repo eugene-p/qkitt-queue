@@ -14,6 +14,15 @@ import {
   timeAlone,
   type TimingResult,
 } from './helpers.js'
+import {
+  measureRetainedMedianAsync,
+  type MemRow,
+} from './memory.js'
+import {
+  heapTableColumns,
+  printGcFootnote,
+  printProgress,
+} from './report.js'
 
 const rowsForHydrate = (n: number): RowRecord<number>[] => {
   const rows = new Array<RowRecord<number>>(n)
@@ -54,8 +63,32 @@ const hydrateDrainAndFlush = async (n: number): Promise<void> => {
   await queue.flush()
 }
 
-const printTable = (rows: readonly TimingResult[]): void => {
+/**
+ * Hold N durable rows still pending (not drained). Writes are flushed so the
+ * store owns settled row records; the in-memory FIFO still references them.
+ */
+const holdDurablePending = async (): Promise<unknown> => {
+  const store = createMemoryRowStore<number>()
+  const queue = buildQueue<number>({ store })
+  for (let i = 0; i < DURABLE_N; i++) {
+    await queue.enqueue(i)
+  }
+  await queue.flush()
+  if (queue.size() !== DURABLE_N) {
+    throw new Error(
+      `holdDurablePending: expected size ${DURABLE_N}, got ${queue.size()}`,
+    )
+  }
+  // Keep store + queue alive for the sample.
+  return { queue, store }
+}
+
+type DurableTimingRow = TimingResult
+type DurableHeapRow = MemRow & { pendingN: number }
+
+const printTimingTable = (rows: readonly DurableTimingRow[]): void => {
   console.log('')
+  console.log('Throughput')
   console.table(
     rows.map((row) => ({
       operation: row.name,
@@ -64,6 +97,22 @@ const printTable = (rows: readonly TimingResult[]): void => {
       samples: row.samples,
     })),
   )
+}
+
+const printHeapTable = (rows: readonly DurableHeapRow[]): void => {
+  console.log('')
+  console.log('Retained heap (pending durable rows; not drained)')
+  console.log(
+    '  heap Δ = median of seven post-GC samples with N rows enqueued + flushed; not peak during ops/s',
+  )
+  console.table(
+    rows.map((row) => ({
+      scenario: row.name,
+      held: row.held,
+      ...heapTableColumns(row.heapDelta, row.pendingN),
+    })),
+  )
+  printGcFootnote(rows)
 }
 
 /**
@@ -78,9 +127,11 @@ export const runDurableBench = async (): Promise<void> => {
     'Internal regression suite; it is not a comparison with external durable systems.',
     `One op writes or restores and drains ${DURABLE_N.toLocaleString()} rows.`,
     'MemoryRowStore removes device I/O so changes reflect queue durability bookkeeping.',
+    'Heap Δ holds N enqueued rows after flush (still pending — not drained).',
   ])
 
-  const rows = [
+  printProgress('enqueue + flush — timing…')
+  const timingRows = [
     await timeAlone('enqueue + flush', () => writeAndFlush(DURABLE_N), {
       time: 700,
       warmupTime: 150,
@@ -90,6 +141,14 @@ export const runDurableBench = async (): Promise<void> => {
       warmupTime: 150,
     }),
   ]
+  printTimingTable(timingRows)
 
-  printTable(rows)
+  const heldLabel = `${DURABLE_N.toLocaleString()} durable rows pending (flushed, not drained)`
+  printProgress(`retained heap — ${heldLabel}…`)
+  const heap = await measureRetainedMedianAsync(
+    'enqueued + flush (pending)',
+    heldLabel,
+    holdDurablePending,
+  )
+  printHeapTable([{ ...heap, pendingN: DURABLE_N }])
 }

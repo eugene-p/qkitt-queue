@@ -57,7 +57,7 @@ export const buildEventEmitter = <
         if (!listeners) return
 
         // Remove one registration (indexOf + splice). Safe during emit because
-        // dispatchTo snapshots multi-listener lists or captures refs first.
+        // dispatchTo snapshots the listener list before dispatch.
         const idx = listeners.indexOf(
             callback as EventCallback<TEvents[keyof TEvents]>,
         )
@@ -88,16 +88,6 @@ export const buildEventEmitter = <
         listeners: EventCallback<TEvents[keyof TEvents]>[],
         data: TEvents[K],
     ): void => {
-        // Single listener: no snapshot alloc (still isolate throws).
-        if (listeners.length === 1) {
-            try {
-                listeners[0]!(data as TEvents[keyof TEvents])
-            } catch {
-                // Isolate: e.g. a throwing user handler must not skip worker pump.
-            }
-            return
-        }
-
         // Snapshot so subscribe/unsubscribe during emit cannot skip or double-fire listeners.
         for (const callback of [...listeners]) {
             try {

@@ -62,34 +62,7 @@ describe('createMemoryRowStore', () => {
         expect(store.loadAll() as readonly unknown[]).toEqual([])
     })
 
-    it('put updates existing record in place (stable identity)', () => {
-        const store = createMemoryRowStore<string>()
-        store.put({
-            id: 1,
-            item: 'a',
-            availableAt: 0,
-            leaseGeneration: null,
-            leaseExpiresAt: null,
-        })
-        const recordRef = store.rows[0]!
-        store.put({
-            id: 1,
-            item: 'b',
-            availableAt: 10,
-            leaseGeneration: 2,
-            leaseExpiresAt: 99,
-        })
-        expect(store.rows[0]).toBe(recordRef)
-        expect(recordRef).toMatchObject({
-            id: 1,
-            item: 'b',
-            availableAt: 10,
-            leaseGeneration: 2,
-            leaseExpiresAt: 99,
-        })
-    })
-
-    it('remove is O(1) swap-remove and keeps remaining ids', () => {
+    it('remove keeps the remaining rows', () => {
         const store = createMemoryRowStore<number>()
         for (let id = 1; id <= 5; id += 1) {
             store.put({
@@ -135,6 +108,5 @@ describe('createMemoryRowStore', () => {
         ).toEqual([[2, 'b']])
     })
 })
-
 
 

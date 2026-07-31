@@ -4,7 +4,6 @@ import {
     type EventMap,
     type MergeEventMaps,
 } from '../../events'
-import { createSubscriptionCounts } from '../../events/subscription-counts'
 import type { PersistEvents, RowRecord, RowStore } from '../../persist/contracts'
 import {
     DuplicateRowIdError,
@@ -16,13 +15,11 @@ import {
 import { isRowStore } from '../../persist/store-guards.util'
 import { createWriteChain } from '../../persist/write-chain.util'
 import { isIntegerInRange } from '../../util/number.util'
-import { RESOLVED, RESOLVED_UNDEFINED } from '../../util/resolved.util'
 import {
     cancelTimeout,
     scheduleTimeout,
 } from '../../util/schedule-timeout.util'
 import { createIdCounter } from './id-counter.util'
-import { attachInlineOps } from './inline-ops'
 import { createMinHeap, type MinHeap } from './min-heap.util'
 import { markQueueMaxSize } from './queue-max-size.util'
 import { markQueueName } from './queue-name.util'
@@ -91,19 +88,14 @@ export type QueueSlot<T> = {
     readonly value: T
 }
 
-/**
- * In-memory lease row. Structurally a {@link Lease} plus optional TTL.
- * Inline claimSync returns this same object (one alloc) and may recycle it
- * via a freelist after ack/release, dropping the payload reference on settle.
- */
+/** In-memory lease row. Structurally a {@link Lease} plus optional TTL. */
 type LeasedEntry<T> = {
     id: number
     item: T
     generation: number
     expiresAt: number | null
     attempt: number
-    /** Always set on freelist objects (0 = no handoff) for a stable V8 shape. */
-    dlqHandoffAttempt: number
+    dlqHandoffAttempt?: number
 }
 
 type DelayedEntry<T> = {
@@ -237,15 +229,16 @@ export const buildQueue = <T>(
             'buildQueue: store must implement RowStore (loadAll, put, remove, clear)',
         )
     }
-    const durable = store !== undefined
-    const chain = durable ? createWriteChain() : undefined
-    /** Durable queues keep available row ids; inline queues allocate on claim. */
-    const trackAvailableIds = durable
+    const chain = store === undefined ? undefined : createWriteChain()
+    /** Durable queues keep available row ids; bare queues allocate on claim. */
+    const trackAvailableIds = store !== undefined
 
     // In-memory state: available FIFO (+ optional ids) + leased + delayed.
     let availableItems: T[] = []
     let availableHead = 0
-    let availableIds: number[] = []
+    // Bare queues do not need stable ids for ready items; avoid retaining a
+    // parallel numeric array until a durable store actually requires it.
+    let availableIds: number[] | undefined = trackAvailableIds ? [] : undefined
     // Attempts are implicitly 1 until a retry puts a non-default value in FIFO.
     let availableAttempts: number[] | undefined
     // DLQ handoff state is absent until a destination has actually failed.
@@ -254,9 +247,6 @@ export const buildQueue = <T>(
     let hasAvailableMetadata = false
     let availableCount = 0
     const leased = new Map<number, LeasedEntry<T>>()
-    /** Reuse lease objects on the inline claim/ack path. */
-    const leaseFreelist: LeasedEntry<T>[] = []
-    const LEASE_FREELIST_MAX = 64
     // Lazy: most queues never use delay.
     let delayed: MinHeap<DelayedEntry<T>> | undefined
     const getDelayed = (): MinHeap<DelayedEntry<T>> => {
@@ -290,38 +280,22 @@ export const buildQueue = <T>(
         attempt: number,
         dlqHandoffAttempt?: number,
     ): LeasedEntry<T> => {
-        const handoff = dlqHandoffAttempt !== undefined && dlqHandoffAttempt > 0
-            ? dlqHandoffAttempt
-            : 0
-        const recycled = leaseFreelist.pop()
-        if (recycled !== undefined) {
-            recycled.id = id
-            recycled.item = item
-            recycled.generation = generation
-            recycled.expiresAt = expiresAt
-            recycled.attempt = attempt
-            recycled.dlqHandoffAttempt = handoff
-            return recycled
-        }
-        return {
+        const lease: LeasedEntry<T> = {
             id,
             item,
             generation,
             expiresAt,
             attempt,
-            dlqHandoffAttempt: handoff,
         }
+        // The common lease shape does not need a DLQ field. Add it only while
+        // handoff recovery is active so ordinary in-flight jobs retain less.
+        if (dlqHandoffAttempt !== undefined && dlqHandoffAttempt > 0) {
+            lease.dlqHandoffAttempt = dlqHandoffAttempt
+        }
+        return lease
     }
 
-    const recycleLease = (entry: LeasedEntry<T>): void => {
-        // Do not retain completed payloads in the freelist.
-        entry.item = undefined as T
-        if (leaseFreelist.length < LEASE_FREELIST_MAX) {
-            leaseFreelist.push(entry)
-        }
-    }
-
-    /** Map freelist 0 / absent to `undefined` for store and available metadata. */
+    /** Map 0 / absent to `undefined` for store and available metadata. */
     const activeDlqHandoff = (
         value: number | undefined,
     ): number | undefined =>
@@ -329,18 +303,7 @@ export const buildQueue = <T>(
 
     type QueueFullEvents = MergeEventMaps<QueueEvents<T>, PersistEvents>
     const emitter = buildEventEmitter<QueueFullEvents>()
-    const { counts: subs, wrapOn } = createSubscriptionCounts({
-        enqueued: 'queue:enqueued',
-        dequeued: 'queue:dequeued',
-        emptied: 'queue:emptied',
-        cleared: 'queue:cleared',
-        loaded: 'persist:loaded',
-        leaseExpired: 'persist:lease-expired',
-        idSpaceLow: 'persist:id-space-low',
-        persistError: 'persist:error',
-        persistOperation: 'persist:operation',
-    })
-    const on = wrapOn(emitter.on)
+    const on = emitter.on
 
     let delayTimer: unknown
     let leaseTimer: unknown
@@ -370,7 +333,7 @@ export const buildQueue = <T>(
         if (availableHead === 0) return
         if (availableCount === 0) {
             availableItems = []
-            availableIds = []
+            availableIds = trackAvailableIds ? [] : undefined
             availableHead = 0
             if (availableAttempts !== undefined) availableAttempts = []
             if (availableDlqHandoffAttempts !== undefined) {
@@ -385,7 +348,7 @@ export const buildQueue = <T>(
             return
         }
         availableItems = availableItems.slice(availableHead)
-        if (trackAvailableIds) availableIds = availableIds.slice(availableHead)
+        if (trackAvailableIds) availableIds = availableIds!.slice(availableHead)
         if (availableAttempts !== undefined) {
             availableAttempts = availableAttempts.slice(availableHead)
         }
@@ -401,7 +364,7 @@ export const buildQueue = <T>(
         // completed work until another enqueue happens.
         const index = availableHead
         availableItems[index] = undefined as T
-        if (trackAvailableIds) availableIds[index] = 0
+        if (trackAvailableIds) availableIds![index] = 0
         availableHead += 1
         availableCount -= 1
         if (
@@ -431,7 +394,7 @@ export const buildQueue = <T>(
         if (!hasAvailableMetadata && attempt === 1 && handoff === undefined) {
             availableItems.push(item)
             if (trackAvailableIds) {
-                availableIds.push(id as number)
+                availableIds!.push(id as number)
             }
             availableCount += 1
             return
@@ -443,7 +406,7 @@ export const buildQueue = <T>(
         }
         availableItems.push(item)
         if (trackAvailableIds) {
-            availableIds.push(id as number)
+            availableIds!.push(id as number)
         }
         availableAttempts?.push(attempt)
         availableDlqHandoffAttempts?.push(handoff ?? 0)
@@ -462,7 +425,7 @@ export const buildQueue = <T>(
         const index = availableHead
         const item = availableItems[index] as T
         const id = trackAvailableIds
-            ? (availableIds[index] as number)
+            ? (availableIds![index] as number)
             : undefined
         const attempt = availableAttempts?.[index] ?? 1
         const dlqHandoffAttempt = availableDlqHandoffAttempts === undefined
@@ -480,28 +443,23 @@ export const buildQueue = <T>(
         if (availableCount === 0) return undefined
         return {
             item: availableItems[availableHead]!,
-            id: trackAvailableIds ? availableIds[availableHead] : undefined,
+            id: trackAvailableIds ? availableIds![availableHead] : undefined,
         }
     }
 
     const emitEnqueued = (item: T): void => {
-        if (subs.enqueued > 0) {
-            emitter.emit('queue:enqueued', { item, size: totalSize() })
-        }
+        emitter.emit('queue:enqueued', { item, size: totalSize() })
     }
 
     const emitDequeued = (item: T): void => {
-        if (subs.dequeued > 0) {
-            emitter.emit('queue:dequeued', { item, size: totalSize() })
-        }
-        // Only compute size when emptied is observed (hot dequeue path).
-        if (subs.emptied > 0 && totalSize() === 0) {
+        emitter.emit('queue:dequeued', { item, size: totalSize() })
+        if (totalSize() === 0) {
             emitter.emit('queue:emptied', undefined)
         }
     }
 
     const maybeWarnIdSpace = (): void => {
-        if (ids.consumeLowWaterWarning() && subs.idSpaceLow > 0) {
+        if (ids.consumeLowWaterWarning()) {
             emitter.emit('persist:id-space-low', {
                 remaining: Number.MAX_SAFE_INTEGER - ids.peek(),
             })
@@ -529,24 +487,20 @@ export const buildQueue = <T>(
         }
     }
 
-    /** Serialize durable work; always runs `op` (inline path runs immediately). */
+    /** Serialize durable work; bare queues apply the operation immediately. */
     const withChain = <R>(op: () => R | PromiseLike<R>): Promise<R> => {
-        if (!durable || !chain) {
+        if (!chain) {
             return Promise.resolve(op())
         }
         // WriteChain returns the op result; no extra outer Promise wrapper.
         return chain.push(op)
     }
 
-    const runStore = (op: () => void | PromiseLike<void>): Promise<void> =>
-        withChain(op)
-
     const callStore = async <R>(
         operation: 'load' | 'put' | 'remove' | 'clear' | 'replace',
         id: number | undefined,
         op: () => R | PromiseLike<R>,
     ): Promise<R> => {
-        if (subs.persistOperation === 0) return op()
         const startedAt = nowMs()
         const result = await op()
         emitter.emit('persist:operation', {
@@ -580,7 +534,7 @@ export const buildQueue = <T>(
             const head = delayed.peek()
             if (head === undefined || head.availableAt > now) break
             delayed.pop()
-            // Keep durable id when tracking; inline reuses id for delayed→available.
+            // Retain the row id when storage is tracking available rows.
             pushAvailable(
                 head.item,
                 trackAvailableIds ? head.id : undefined,
@@ -654,7 +608,7 @@ export const buildQueue = <T>(
         ) {
             return
         }
-        if (durable && store) {
+        if (store) {
             await callStore('put', id, () => store.put(
                 toRecord(
                     id,
@@ -679,19 +633,13 @@ export const buildQueue = <T>(
         const item = entry.item
         const attempt = entry.attempt
         const dlqHandoffAttempt = activeDlqHandoff(entry.dlqHandoffAttempt)
-        recycleLease(entry)
         pushAvailable(
             item,
             trackAvailableIds ? id : undefined,
             attempt,
             dlqHandoffAttempt,
         )
-        if (subs.leaseExpired > 0) {
-            emitter.emit('persist:lease-expired', {
-                id,
-                item,
-            })
-        }
+        emitter.emit('persist:lease-expired', { id, item })
         emitEnqueued(item)
     }
 
@@ -717,13 +665,11 @@ export const buildQueue = <T>(
                 } catch (error) {
                     // Retain the expiry so a transient store failure retries.
                     leaseExpiries.push(head)
-                    if (subs.persistError > 0) {
-                        emitter.emit('persist:error', {
-                            operation: 'put',
-                            error,
-                            id: head.id,
-                        })
-                    }
+                    emitter.emit('persist:error', {
+                        operation: 'put',
+                        error,
+                        id: head.id,
+                    })
                     if (!suppressStoreErrors) throw error
                     break
                 }
@@ -740,13 +686,12 @@ export const buildQueue = <T>(
     const clearMemory = (): void => {
         availableItems = []
         availableHead = 0
-        availableIds = []
+        availableIds = trackAvailableIds ? [] : undefined
         availableAttempts = undefined
         availableDlqHandoffAttempts = undefined
         hasAvailableMetadata = false
         availableCount = 0
         leased.clear()
-        leaseFreelist.length = 0
         delayed?.clear()
         leaseExpiries?.clear()
         if (delayTimer !== undefined) {
@@ -769,7 +714,7 @@ export const buildQueue = <T>(
         return entry
     }
 
-    /** Sync claim for inline path (and durable body of withChain). */
+    /** Claim one available row and persist the lease when a store is present. */
     const claimCore = async (): Promise<Lease<T> | undefined> => {
         promoteDueDelayed()
         if (leaseTtlMs !== undefined) await reclaimExpiredLeasesCore(false)
@@ -783,7 +728,7 @@ export const buildQueue = <T>(
         const expiresAt =
             leaseTtlMs !== undefined ? nowMs() + leaseTtlMs : null
 
-        if (durable && store) {
+        if (store) {
             try {
                 await callStore('put', id, () => store.put(
                     toRecord(
@@ -827,104 +772,7 @@ export const buildQueue = <T>(
         return lease
     }
 
-    const claimSync = (): Lease<T> | undefined => {
-        // Inline only — no awaitable store / TTL reclaim await.
-        // Fast empty check before delayed promotion / id work.
-        if (availableCount === 0) {
-            if (delayed === undefined || delayed.size === 0) return undefined
-            promoteDueDelayed()
-            if (availableCount === 0) return undefined
-        }
-        const index = availableHead
-        const item = availableItems[index] as T
-        let attempt = 1
-        let dlqHandoffAttempt: number | undefined
-        if (hasAvailableMetadata) {
-            attempt = availableAttempts?.[index] ?? 1
-            dlqHandoffAttempt = activeDlqHandoff(
-                availableDlqHandoffAttempts?.[index],
-            )
-            consumeAvailableSlot()
-        } else {
-            consumeAvailableSlot()
-        }
-        // One monotonic counter serves as both row id and lease generation
-        // (inline never reuses an id while a lease is live).
-        const id = ids.next()
-        const lease = allocLease(id, item, id, null, attempt, dlqHandoffAttempt)
-        leased.set(id, lease)
-        // Same object is the public Lease (one alloc, freelist on settle).
-        return lease
-    }
-
-    const ackSync = (lease: Lease<T>): void => {
-        const entry = leased.get(lease.id)
-        if (entry === undefined || entry.generation !== lease.generation) {
-            throw new LeaseMismatchError()
-        }
-        leased.delete(lease.id)
-        recycleLease(entry)
-    }
-
-    const releaseSync = (lease: Lease<T>): void => {
-        const entry = leased.get(lease.id)
-        if (entry === undefined || entry.generation !== lease.generation) {
-            throw new LeaseMismatchError()
-        }
-        leased.delete(lease.id)
-        const item = entry.item
-        const handoff = activeDlqHandoff(entry.dlqHandoffAttempt)
-        recycleLease(entry)
-        // Inline available has no stable ids.
-        pushAvailable(item, undefined, entry.attempt, handoff)
-        emitEnqueued(item)
-    }
-
-    const rescheduleSync = (
-        lease: Lease<T>,
-        next: { item: T; delayMs?: number; attempt?: number; dlqHandoffAttempt?: number },
-    ): void => {
-        const entry = leased.get(lease.id)
-        if (entry === undefined || entry.generation !== lease.generation) {
-            throw new LeaseMismatchError()
-        }
-        const delayMs = next.delayMs ?? 0
-        const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
-        const leaseId = lease.id
-        const attempt = next.attempt ?? entry.attempt
-        const dlqHandoffAttempt = activeDlqHandoff(
-            next.dlqHandoffAttempt ?? entry.dlqHandoffAttempt,
-        )
-        leased.delete(lease.id)
-        recycleLease(entry)
-        if (availableAt === 0) {
-            pushAvailable(next.item, undefined, attempt, dlqHandoffAttempt)
-            emitEnqueued(next.item)
-        } else {
-            getDelayed().push({
-                id: leaseId,
-                item: next.item,
-                availableAt,
-                attempt,
-                ...(dlqHandoffAttempt !== undefined ? { dlqHandoffAttempt } : {}),
-            })
-            armDelayTimer()
-        }
-    }
-
     const enqueue = (item: T, opts?: { delayMs?: number }): Promise<void> => {
-        // Hot path first: inline + immediate — no id, no Promise alloc.
-        if (!durable && !hydrating && opts === undefined) {
-            if (maxSize !== undefined && totalSize() >= maxSize) {
-                return Promise.reject(new QueueFullError(maxSize))
-            }
-            pushAvailable(item)
-            if (subs.enqueued > 0) {
-                emitter.emit('queue:enqueued', { item, size: totalSize() })
-            }
-            return RESOLVED
-        }
-
         if (hydrating) {
             return Promise.reject(
                 new HydrateWhileActiveError(
@@ -947,13 +795,6 @@ export const buildQueue = <T>(
             return Promise.reject(e)
         }
 
-        // Inline delayed/opts path without store.
-        if (!durable && delayMs === 0) {
-            pushAvailable(item)
-            emitEnqueued(item)
-            return RESOLVED
-        }
-
         let id: number
         try {
             id = ids.next()
@@ -966,7 +807,7 @@ export const buildQueue = <T>(
 
         const applyMemory = (): void => {
             if (availableAt === 0) {
-                pushAvailable(item, id)
+                pushAvailable(item, trackAvailableIds ? id : undefined)
             } else {
                 getDelayed().push({ id, item, availableAt, attempt: 1 })
                 armDelayTimer()
@@ -974,15 +815,12 @@ export const buildQueue = <T>(
             emitEnqueued(item)
         }
 
-        if (!store) {
-            applyMemory()
-            return RESOLVED
-        }
-
-        return runStore(async () => {
-            await callStore('put', id, () => store.put(
-                toRecord(id, item, availableAt, null, null),
-            ))
+        return withChain(async () => {
+            if (store) {
+                await callStore('put', id, () => store.put(
+                    toRecord(id, item, availableAt, null, null),
+                ))
+            }
             applyMemory()
         })
     }
@@ -995,12 +833,6 @@ export const buildQueue = <T>(
                 ),
             )
         }
-        if (!durable && leaseTtlMs === undefined) {
-            const lease = claimSync()
-            return lease === undefined
-                ? (RESOLVED_UNDEFINED as Promise<undefined>)
-                : Promise.resolve(lease)
-        }
         return withChain(() => claimCore())
     }
 
@@ -1009,14 +841,6 @@ export const buildQueue = <T>(
             return Promise.reject(
                 new HydrateWhileActiveError('cannot ack while hydrate is in progress'),
             )
-        }
-        if (!durable) {
-            try {
-                ackSync(lease)
-                return RESOLVED
-            } catch (e) {
-                return Promise.reject(e)
-            }
         }
         return withChain(async () => {
             requireLease(lease)
@@ -1031,7 +855,6 @@ export const buildQueue = <T>(
                 throw new LeaseMismatchError()
             }
             leased.delete(lease.id)
-            recycleLease(entry)
             armLeaseTimer()
         })
     }
@@ -1043,14 +866,6 @@ export const buildQueue = <T>(
                     'cannot release while hydrate is in progress',
                 ),
             )
-        }
-        if (!durable) {
-            try {
-                releaseSync(lease)
-                return RESOLVED
-            } catch (e) {
-                return Promise.reject(e)
-            }
         }
         return withChain(async () => {
             const entry = requireLease(lease)
@@ -1077,8 +892,12 @@ export const buildQueue = <T>(
             const item = entry.item
             const handoff = activeDlqHandoff(entry.dlqHandoffAttempt)
             leased.delete(lease.id)
-            recycleLease(entry)
-            pushAvailable(item, lease.id, entry.attempt, handoff)
+            pushAvailable(
+                item,
+                trackAvailableIds ? lease.id : undefined,
+                entry.attempt,
+                handoff,
+            )
             armLeaseTimer()
             emitEnqueued(item)
         })
@@ -1102,14 +921,6 @@ export const buildQueue = <T>(
                     'delayMs must be a finite number >= 0',
                 ),
             )
-        }
-        if (!durable) {
-            try {
-                rescheduleSync(lease, next)
-                return RESOLVED
-            } catch (e) {
-                return Promise.reject(e)
-            }
         }
         const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
         const item = next.item
@@ -1141,9 +952,13 @@ export const buildQueue = <T>(
                 throw new LeaseMismatchError()
             }
             leased.delete(lease.id)
-            recycleLease(still)
             if (availableAt === 0) {
-                pushAvailable(item, lease.id, attempt, dlqHandoffAttempt)
+                pushAvailable(
+                    item,
+                    trackAvailableIds ? lease.id : undefined,
+                    attempt,
+                    dlqHandoffAttempt,
+                )
                 emitEnqueued(item)
             } else {
                 getDelayed().push({
@@ -1169,40 +984,23 @@ export const buildQueue = <T>(
                 ),
             )
         }
-        // Inline admin drop: head-index FIFO pop, no chain.
-        if (!durable) {
-            if (availableCount === 0) {
-                if (delayed !== undefined && delayed.size > 0) {
-                    promoteDueDelayed()
-                }
-                if (availableCount === 0) {
-                    return RESOLVED_UNDEFINED as Promise<undefined>
-                }
-            }
-            const item = availableItems[availableHead] as T
-            if (hasAvailableMetadata) {
-                consumeAvailableSlot()
-            } else {
-                consumeAvailableSlot()
-            }
-            emitDequeued(item)
-            return Promise.resolve({ value: item })
-        }
         return withChain(async () => {
             promoteDueDelayed()
             const head = popAvailable()
             if (head === undefined) return undefined
-            const id = head.id as number
-            try {
-                await callStore('remove', id, () => store!.remove(id))
-            } catch (error) {
-                pushAvailable(
-                    head.item,
-                    id,
-                    head.attempt,
-                    head.dlqHandoffAttempt,
-                )
-                throw error
+            if (store) {
+                const id = head.id as number
+                try {
+                    await callStore('remove', id, () => store.remove(id))
+                } catch (error) {
+                    pushAvailable(
+                        head.item,
+                        id,
+                        head.attempt,
+                        head.dlqHandoffAttempt,
+                    )
+                    throw error
+                }
             }
             emitDequeued(head.item)
             return { value: head.item }
@@ -1210,33 +1008,6 @@ export const buildQueue = <T>(
     }
 
     const dequeue = (): Promise<T | undefined> => {
-        // Inline: avoid async-function Promise + tryDequeue slot envelope.
-        if (!durable && !hydrating) {
-            if (availableCount === 0) {
-                if (delayed !== undefined && delayed.size > 0) {
-                    promoteDueDelayed()
-                }
-                if (availableCount === 0) {
-                    return RESOLVED_UNDEFINED as Promise<undefined>
-                }
-            }
-            const item = availableItems[availableHead] as T
-            if (hasAvailableMetadata) {
-                consumeAvailableSlot()
-            } else {
-                consumeAvailableSlot()
-            }
-            if (subs.dequeued > 0) {
-                emitter.emit('queue:dequeued', {
-                    item,
-                    size: totalSize(),
-                })
-            }
-            if (subs.emptied > 0 && totalSize() === 0) {
-                emitter.emit('queue:emptied', undefined)
-            }
-            return Promise.resolve(item)
-        }
         return tryDequeue().then((slot) => slot?.value)
     }
 
@@ -1273,24 +1044,20 @@ export const buildQueue = <T>(
             )
         }
         const removed = totalSize()
-        if (removed === 0 && !durable) return RESOLVED
 
         const applyMemory = (): void => {
             clearMemory()
             ids.reset()
             leaseGenSeq = 0
-            if (removed > 0 && subs.cleared > 0) {
+            if (removed > 0) {
                 emitter.emit('queue:cleared', { removed })
             }
         }
 
-        if (!durable || !store) {
-            applyMemory()
-            return RESOLVED
-        }
-
-        return runStore(async () => {
-            await callStore('clear', undefined, () => store.clear())
+        return withChain(async () => {
+            if (store) {
+                await callStore('clear', undefined, () => store.clear())
+            }
             applyMemory()
         })
     }
@@ -1310,18 +1077,6 @@ export const buildQueue = <T>(
             return Promise.reject(new QueueFullError(maxSize))
         }
 
-        if (!durable) {
-            clearMemory()
-            ids.reset()
-            leaseGenSeq = 0
-            // Inline rows have no stable available ids, so avoid allocating
-            // durable RowRecord envelopes solely to rebuild the FIFO.
-            for (let i = 0; i < items.length; i += 1) {
-                pushAvailable(items[i]!)
-            }
-            return RESOLVED
-        }
-
         const planned = new Array<RowRecord<T>>(items.length)
         for (let i = 0; i < items.length; i += 1) {
             planned[i] = toRecord(i + 1, items[i]!, 0, null, null)
@@ -1335,24 +1090,17 @@ export const buildQueue = <T>(
                 pushAvailable(rec.item, trackAvailableIds ? rec.id : undefined)
                 if (trackAvailableIds) ids.fixup(rec.id)
             }
-            if (!trackAvailableIds) {
-                // Inline: no durable ids; keep counter ready for claim.
-                ids.reset()
-            }
-        }
-
-        if (!store) {
-            applyMemory()
-            return RESOLVED
         }
 
         return withChain(async () => {
-            if (store.replaceAll) {
-                await callStore('replace', undefined, () => store.replaceAll!(planned))
-            } else {
-                await callStore('clear', undefined, () => store.clear())
-                for (const rec of planned) {
-                    await callStore('put', rec.id, () => store.put(rec))
+            if (store) {
+                if (store.replaceAll) {
+                    await callStore('replace', undefined, () => store.replaceAll!(planned))
+                } else {
+                    await callStore('clear', undefined, () => store.clear())
+                    for (const rec of planned) {
+                        await callStore('put', rec.id, () => store.put(rec))
+                    }
                 }
             }
             applyMemory()
@@ -1383,11 +1131,11 @@ export const buildQueue = <T>(
         promoteDueDelayed()
         const out: number[] = []
         if (trackAvailableIds) {
-            for (let i = availableHead; i < availableIds.length; i += 1) {
-                out.push(availableIds[i]!)
+            for (let i = availableHead; i < availableIds!.length; i += 1) {
+                out.push(availableIds![i]!)
             }
         }
-        // Inline available has no stable ids until claim; omit those.
+        // Bare available rows have no stable ids until claim; omit those.
         if (delayed !== undefined && delayed.size > 0) {
             const delayedList = delayed.toArray().sort((a, b) => {
                 if (a.availableAt !== b.availableAt) {
@@ -1414,7 +1162,7 @@ export const buildQueue = <T>(
         for (let i = availableHead; i < availableItems.length; i += 1) {
             entries.push({
                 item: availableItems[i]!,
-                id: trackAvailableIds ? availableIds[i] : undefined,
+                id: trackAvailableIds ? availableIds![i] : undefined,
                 attempt: availableAttempts?.[i] ?? 1,
                 ...(availableDlqHandoffAttempts?.[i]
                     ? { dlqHandoffAttempt: availableDlqHandoffAttempts[i] }
@@ -1427,7 +1175,7 @@ export const buildQueue = <T>(
     const replaceReady = (entries: readonly ReadyEntry[]): void => {
         availableItems = []
         availableHead = 0
-        availableIds = []
+        availableIds = trackAvailableIds ? [] : undefined
         availableAttempts = undefined
         availableDlqHandoffAttempts = undefined
         hasAvailableMetadata = false
@@ -1579,7 +1327,7 @@ export const buildQueue = <T>(
             const found = locatePendingJob(applicationId)
             if (!found) return false
             const rowId = found.entry.id
-            if (durable && rowId !== undefined) {
+            if (store && rowId !== undefined) {
                 await callStore('remove', rowId, () => store!.remove(rowId))
             }
             removePendingJob(found)
@@ -1604,7 +1352,7 @@ export const buildQueue = <T>(
             if (!found) return false
             const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
             const rowId =
-                found.entry.id ?? (availableAt > 0 || durable ? ids.next() : 0)
+                found.entry.id ?? (availableAt > 0 || store ? ids.next() : 0)
             const next: DelayedEntry<T> = {
                 id: rowId,
                 item: found.entry.item,
@@ -1614,7 +1362,7 @@ export const buildQueue = <T>(
                     ? { dlqHandoffAttempt: found.entry.dlqHandoffAttempt }
                     : {}),
             }
-            if (durable) {
+            if (store) {
                 await callStore('put', rowId, () => store!.put(
                     toRecord(
                         rowId,
@@ -1654,7 +1402,7 @@ export const buildQueue = <T>(
         return withChain(async () => {
             const found = locatePendingJob(applicationId)
             if (!found || found.state !== 'delayed') return false
-            if (durable) {
+            if (store) {
                 await callStore('put', found.entry.id, () => store!.put(
                     toRecord(
                         found.entry.id,
@@ -1699,12 +1447,12 @@ export const buildQueue = <T>(
     }
 
     const flush = (): Promise<void> => {
-        if (!chain) return RESOLVED
+        if (!chain) return Promise.resolve()
         return chain.flush()
     }
 
     const hydrate = async (): Promise<void> => {
-        if (!durable || !store) return
+        if (!store) return
         if (hydrating || leased.size > 0) {
             throw new HydrateWhileActiveError()
         }
@@ -1782,9 +1530,7 @@ export const buildQueue = <T>(
                 getDelayed().push(d)
             }
             armDelayTimer()
-            if (subs.loaded > 0) {
-                emitter.emit('persist:loaded', { size: totalSize() })
-            }
+            emitter.emit('persist:loaded', { size: totalSize() })
             if (availableCount > 0) {
                 const head = peekAvailable()
                 if (head) emitEnqueued(head.item)
@@ -1824,14 +1570,5 @@ export const buildQueue = <T>(
         emit: emitter.emit,
     }
 
-    const marked = markQueueName(markQueueMaxSize(api, maxSize), name)
-    if (!durable && leaseTtlMs === undefined) {
-        attachInlineOps(marked, {
-            claimSync,
-            ackSync,
-            releaseSync,
-            rescheduleSync,
-        })
-    }
-    return marked
+    return markQueueName(markQueueMaxSize(api, maxSize), name)
 }

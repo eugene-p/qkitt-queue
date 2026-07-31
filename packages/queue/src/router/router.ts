@@ -153,8 +153,6 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
     }
 
     const routes: InternalBinding[] = []
-    /** Bumped on bind / unbind / clear so publish can skip a full snapshot. */
-    let routeVersion = 0
     let unmatchedTarget: RouteTarget | undefined = options.unmatchedTarget
     let unmatchedTotal = 0
     let lastUnmatchedRecord: UnmatchedRecord | undefined
@@ -175,7 +173,6 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
             target: target as RouteTarget,
         }
         routes.push(binding)
-        routeVersion += 1
         emitRouter('router:bound', { pattern })
 
         return () => {
@@ -196,7 +193,6 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
             removed += 1
         }
         if (removed > 0) {
-            routeVersion += 1
             emitRouter('router:unbound', { pattern, removed })
         }
     }
@@ -266,33 +262,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
 
         const message: RouteMessage<T> = { topic, data }
         let matched = 0
-        const startVersion = routeVersion
-
-        // Fast path: iterate in place when bindings are stable. If bind/unbind
-        // runs mid-publish, snapshot the *unprocessed* tail and finish safely.
-        //
-        // Intentional departure from strict snapshot-at-start (`[...routes]`):
-        // - A route unbound before it is reached is skipped (old: still matched).
-        // - A route bound mid-publish can still match if appended before the
-        //   version bump is observed (old: not in the start snapshot).
-        // Both require re-entrant bind/unbind from a target's enqueue — rare.
-        for (let i = 0; ; ) {
-            if (i >= routes.length) break
-
-            if (routeVersion !== startVersion) {
-                const snapshot = routes.slice(i)
-                for (const route of snapshot) {
-                    if (!matchTopicParts(route.patternParts, topicParts)) {
-                        continue
-                    }
-                    matched += 1
-                    deliverToRoute(route, message, topic)
-                }
-                break
-            }
-
-            const route = routes[i]!
-            i += 1
+        for (const route of [...routes]) {
             if (!matchTopicParts(route.patternParts, topicParts)) continue
             matched += 1
             deliverToRoute(route, message, topic)
@@ -319,7 +289,6 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
     const clear = (): void => {
         if (routes.length === 0) return
         routes.length = 0
-        routeVersion += 1
     }
 
     const setUnmatchedTarget = (target: RouteTarget | undefined): void => {

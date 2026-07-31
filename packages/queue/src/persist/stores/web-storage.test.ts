@@ -14,25 +14,6 @@ const memoryStorage = () => {
     }
 }
 
-const countingStorage = () => {
-    const map = new Map<string, string>()
-    let setItemCalls = 0
-    return {
-        getItem: (k: string) => map.get(k) ?? null,
-        setItem: (k: string, v: string) => {
-            setItemCalls += 1
-            map.set(k, v)
-        },
-        removeItem: (k: string) => {
-            map.delete(k)
-        },
-        stats: () => ({ setItemCalls }),
-        resetStats: () => {
-            setItemCalls = 0
-        },
-    }
-}
-
 describe('createWebRowStore', () => {
     it('round-trips full row records', () => {
         const storage = memoryStorage()
@@ -56,34 +37,6 @@ describe('createWebRowStore', () => {
         ])
         store.remove(1)
         expect(store.loadAll()).toEqual([])
-    })
-
-    it('put of existing id does not rewrite order key', () => {
-        const storage = countingStorage()
-        const store = createWebRowStore<string>({ key: 'q', storage })
-        store.put({
-            id: 1,
-            item: 'a',
-            availableAt: 0,
-            leaseGeneration: null,
-            leaseExpiresAt: null,
-        })
-        storage.resetStats()
-        // Claim-style upsert: same id, new lease fields.
-        store.put({
-            id: 1,
-            item: 'a',
-            availableAt: 0,
-            leaseGeneration: 1,
-            leaseExpiresAt: 999,
-        })
-        const { setItemCalls } = storage.stats()
-        // Only the row body key — not `:order`.
-        expect(setItemCalls).toBe(1)
-        const afterUpsert = store.loadAll() as ReadonlyArray<{
-            leaseGeneration: number | null
-        }>
-        expect(afterUpsert[0]?.leaseGeneration).toBe(1)
     })
 
     it('putBatch and removeBatch round-trip', () => {

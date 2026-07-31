@@ -15,13 +15,13 @@
 
 Run reliable background work **inside one Node process or browser**: concurrent workers, retries, topic routing, and persistence when restart safety matters. It is not a distributed broker; jobs do not cross servers or processes.
 
-> Need a speed-focused, memory-only queue? Use the sibling project [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq). Choose `@qkitt/queue` when work must survive restarts or you need declarative multi-queue configuration.
+> Need a simpler worker/drain-first in-memory queue? Use the sibling project [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq). Choose `@qkitt/queue` when unfinished jobs must survive restart, or you need this package’s composition surface (persistence, routing, durable retries, declarative multi-queue).
 
 | Package | What it is |
 | --- | --- |
-| [`@qkitt/queue`](./packages/queue) | Queue, worker, persistence, durable retry, routing, job admin, observability, pipeline, loop / DLQ |
+| [`@qkitt/queue`](./packages/queue) | Composable, persistence-first in-process job queue: worker, durable retry, routing, job admin, observability, pipeline, loop / DLQ |
 | [`@qkitt/queue-config`](./packages/queue-config) | Optional: build a system from a config object |
-| [`@qkitt/queue-bench`](./packages/bench) | Benchmarks against in-process peers |
+| [`@qkitt/queue-bench`](./packages/bench) | Local harness for workload regression and retained-memory checks |
 
 Most apps only need `@qkitt/queue` — compose layers in code and reach for `@qkitt/queue-config` when you want a declarative setup instead.
 
@@ -208,58 +208,50 @@ npm run build
 npm run bench
 ```
 
+`npm run bench` runs the default payload, durable, and workload suites (regression and retained-memory guardrails). Optional scheduler drain: `npm run bench:worker`. Details: [`packages/bench`](./packages/bench).
+
 ## Benchmarks
 
 Run with `npm run bench`. Details: [`packages/bench`](./packages/bench).
 
-> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-30
+> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-31 · full tables and re-capture notes: [`packages/bench`](./packages/bench/README.md#release-baseline-0131)
 
-`@qkitt/queue` is persistence-first by design; the peers are memory-only. These tables compare relative throughput and retained heap, not end-to-end application performance. For a speed-focused memory-only queue, see [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq).
+`@qkitt/queue` is a composable, persistence-first in-process job queue. Performance work prioritizes persistence and correctness, then retained memory, then throughput. The numbers below are workload context and regression evidence — not a competitive scoreboard. For a simpler worker/drain-first in-memory queue when persistence and this package’s composition surface are not needed, see [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq).
 
-### Scheduler drain — N async no-op jobs, concurrency C
+### Payload worker drain — workload context (5k × 1 KiB job objects, c=4)
 
-| Library | 1k c=1 | 1k c=4 | 10k c=1 | 10k c=4 | heap Δ (10k c=1) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 4,568 | 5,005 | 399 | 508 | **95.6 KiB** |
-| fastq | **11,299** | **9,775** | **899** | **941** | 1.76 MiB |
-| async.queue | 3,334 | 3,591 | 243 | 284 | 3.89 MiB |
-| p-queue | 1,799 | 1,766 | 123 | 119 | 6.19 MiB |
-
-### Payload worker drain — 5k × 1 KiB job objects, c=4
+Representative peer context for a realistic payload + drain path. Useful for spotting severe regressions in retained heap or throughput under load — not a ranking target.
 
 Preallocated 1 KiB jobs; each handler reads and hashes the payload, then yields.
 
 | Library | ops/s (med) | heap Δ total | heap Δ / item |
 | --- | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 90 | **5.58 MiB** | **1.1 KiB** |
-| fastq | **102** | 6.40 MiB | 1.3 KiB |
-| async.queue | 92 | 7.47 MiB | 1.5 KiB |
-| p-queue | 73 | 8.82 MiB | 1.8 KiB |
+| @qkitt/queue `withWorker` | 92 | **5.58 MiB** | **1.1 KiB** |
+| fastq | **108** | 6.40 MiB | 1.3 KiB |
+| async.queue | 97 | 7.47 MiB | 1.5 KiB |
+| p-queue | 75 | 8.82 MiB | 1.8 KiB |
 
-### Bare queue API — 50k enqueue + dequeue
-
-`buildQueue` is Promise-based; peer FIFOs are synchronous. This compares API overhead and retained heap, not raw FIFO speed.
-
-| Library | ops/s (med) | heap Δ |
-| --- | ---: | ---: |
-| @qkitt/queue `buildQueue` | 593 | 417.4 KiB |
-| denque | 2,342 | 515.2 KiB |
-| yocto-queue | 2,449 | 1.91 MiB |
-
-Timing uses tinybench p50 (median; mean fallback only if p50 is unavailable). Heap Δ is the median of seven post-GC samples with N items held.
+Timing uses tinybench p50 (median; mean fallback only if p50 is unavailable). Heap Δ is the median of seven post-GC samples with N items held (`heapUsed` + `arrayBuffers`).
 
 ### Durable row lifecycle — internal regression, `MemoryRowStore`
 
 Internal `MemoryRowStore` bookkeeping check; not a storage-backend benchmark.
 
-| Operation (5k rows) | ops/s (med) |
-| --- | ---: |
-| enqueue + flush | 447 |
-| hydrate + worker drain + flush | 145 |
+| Operation (5k rows) | ops/s (med) | heap Δ (pending) |
+| --- | ---: | ---: |
+| enqueue + flush | 423 | **786 KiB** total · **161 B**/job |
+| hydrate + worker drain + flush | 134 | — |
 
-### Browser — in-process vs durable (Chromium)
+### Workload shapes — internal regression (5k × 1 KiB, c=4)
 
-Illustrative wall times only; not a peer benchmark.
+| Scenario | ops/s (med) | heap Δ (burst pending) |
+| --- | ---: | ---: |
+| burst drain | 506 | **5.90 MiB** total · **1.2 KiB**/job |
+| steady producer | 453 | — |
+
+### Browser — durability context (Chromium)
+
+Wall times for in-memory vs durable drain — durability cost context, not a peer scoreboard.
 
 | Mode (5k jobs, c=1) | Drain |
 | --- | ---: |
@@ -267,6 +259,17 @@ Illustrative wall times only; not a peer benchmark.
 | `localStorage` rows | ~410 ms |
 
 Store put N=5k: localStorage ~245 ms. Full matrix: [persistence — browser](./packages/queue/docs/persistence.md#browser-integration-checks).
+
+### Optional diagnostic — scheduler drain
+
+Async no-op worker drain (scheduling overhead only). Re-run with `npm run bench:worker`. Not a product scoreboard.
+
+| Library | 1k c=1 | 1k c=4 | 10k c=1 | 10k c=4 | heap Δ (10k c=1) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| @qkitt/queue `withWorker` | 4,568 | 5,005 | 399 | 508 | **95.6 KiB** |
+| fastq | **11,299** | **9,775** | **899** | **941** | 1.76 MiB |
+| async.queue | 3,334 | 3,591 | 243 | 284 | 3.89 MiB |
+| p-queue | 1,799 | 1,766 | 123 | 119 | 6.19 MiB |
 
 ## Contributing
 

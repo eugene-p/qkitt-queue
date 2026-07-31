@@ -1,9 +1,6 @@
 import { Bench } from 'tinybench'
 
-/** Items per FIFO round (enqueue then dequeue all). */
-export const FIFO_N = 50_000
-
-/** Async no-op scheduler matrix (2×2 cells). */
+/** Async no-op scheduler matrix (2×2 cells). Optional diagnostic only. */
 export const WORKER_JOB_COUNTS = [1_000, 10_000] as const
 export const WORKER_CONCURRENCIES = [1, 4] as const
 

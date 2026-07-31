@@ -37,28 +37,19 @@ export const printProgress = (message: string): void => {
   console.log(`  · ${message}`)
 }
 
-/** FIFO: one table, all libraries. */
-export const printFifoTable = (
-  n: number,
-  rows: readonly LibraryResult[],
-): void => {
-  console.log('')
-  console.log(`Bare FIFO results — N=${n.toLocaleString()} enqueue+dequeue per op`)
-  console.log(
-    '  heap Δ = median of seven post-GC samples for a full queue of N; not peak during the ops/s loop',
-  )
-  console.table(
-    rows.map((row) => ({
-      library: row.name,
-      'ops/s med': formatOps(row.opsPerSecMed),
-      'latency med': formatNs(row.latencyMedNs),
-      samples: row.samples,
-      'heap Δ (held N)': formatBytes(row.heapDelta),
-      'heap Δ (B)': row.heapDelta,
-    })),
-  )
-  printGcFootnote(rows)
-}
+/** Table columns for total retained heap and per-pending-job heap. */
+export const heapTableColumns = (
+  heapDelta: number,
+  pendingN: number,
+): {
+  'heap Δ total': string
+  'heap Δ / job': string
+  'heap Δ (B)': number
+} => ({
+  'heap Δ total': formatBytes(heapDelta),
+  'heap Δ / job': formatBytes(Math.round(heapDelta / pendingN)),
+  'heap Δ (B)': heapDelta,
+})
 
 /** Worker matrix: one row per (library × N × concurrency). */
 export type WorkerResult = LibraryResult & {
@@ -103,8 +94,7 @@ export const printWorkerTable = (rows: readonly WorkerResult[]): void => {
         'ops/s med': formatOps(row.opsPerSecMed),
         'latency med': formatNs(row.latencyMedNs),
         samples: row.samples,
-        'heap Δ (held N pending)': formatBytes(row.heapDelta),
-        'heap Δ (B)': row.heapDelta,
+        ...heapTableColumns(row.heapDelta, setup.jobs),
       })),
     )
   }
@@ -112,7 +102,7 @@ export const printWorkerTable = (rows: readonly WorkerResult[]): void => {
   printGcFootnote(rows)
 }
 
-const printGcFootnote = (
+export const printGcFootnote = (
   rows: readonly { heapDelta: number }[],
 ): void => {
   if (!isGcExposed()) {

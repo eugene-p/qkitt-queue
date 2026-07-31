@@ -437,23 +437,12 @@ describe('withWorker', () => {
     })
 
     it('emits worker:pump-error and stops on unexpected claim failures', async () => {
-        const { INLINE_OPS } = await import('../core/inline-ops')
         const queue = buildQueue<number>()
-        const ops = (queue as Record<symbol, {
-            claimSync: () => unknown
-            ackSync: (lease: unknown) => void
-            releaseSync: (lease: unknown) => void
-            rescheduleSync: (lease: unknown, next: unknown) => void
-        }>)[INLINE_OPS]
-        const originalClaimSync = ops.claimSync.bind(ops)
+        const claim = queue.claim.bind(queue)
         let failNext = false
         const boom = new Error('custom claim failure')
-        ops.claimSync = () => {
-            if (failNext) {
-                throw boom
-            }
-            return originalClaimSync()
-        }
+        queue.claim = () =>
+            failNext ? Promise.reject(boom) : claim()
 
         let release!: () => void
         const hold = new Promise<void>((resolve) => {

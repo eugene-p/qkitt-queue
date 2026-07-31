@@ -13,8 +13,8 @@ import {
   timeAlone,
   type TimingResult,
 } from './helpers.js'
-import { formatBytes, measureRetainedMedian, type MemRow } from './memory.js'
-import { printProgress } from './report.js'
+import { measureRetainedMedian, type MemRow } from './memory.js'
+import { heapTableColumns, printGcFootnote, printProgress } from './report.js'
 
 type PayloadJob = {
   id: string
@@ -187,16 +187,19 @@ type PayloadResult = TimingResult & MemRow
 
 const printTable = (rows: readonly PayloadResult[]): void => {
   console.log('')
+  console.log(
+    '  heap Δ = median of seven post-GC samples with N jobs queued (worker paused); total and per job',
+  )
   console.table(
     rows.map((row) => ({
       library: row.name,
       'ops/s med': formatOps(row.opsPerSecMed),
       'latency med': formatNs(row.latencyMedNs),
       samples: row.samples,
-      'heap Δ total': formatBytes(row.heapDelta),
-      'heap Δ / item': formatBytes(Math.round(row.heapDelta / PAYLOAD_WORKER_N)),
+      ...heapTableColumns(row.heapDelta, PAYLOAD_WORKER_N),
     })),
   )
+  printGcFootnote(rows)
 }
 
 /** A peer comparison with job-shaped payloads and a small async worker task. */
@@ -209,7 +212,7 @@ export const runPayloadWorkerBench = async (): Promise<void> => {
     'Timing uses preallocated job objects; payload allocation is outside timing.',
     'Each worker reads job fields, hashes the full 1 KiB body, then yields once.',
     'One op enqueues all jobs and drains them; this is closer to application work than the async no-op scheduler matrix.',
-    'Heap Δ holds a newly allocated full backlog, so total and per-item values include payloads plus runner bookkeeping.',
+    'Heap Δ holds a newly allocated full backlog, so total and per-job values include payloads plus runner bookkeeping.',
   ])
 
   const rows: PayloadResult[] = []

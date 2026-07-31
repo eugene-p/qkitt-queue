@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-07-31
+
+### Changed
+
+- Simplified bare and durable queue delivery onto one async operation path by
+  removing benchmark-only inline operations, lease recycling, and other
+  speed-specific branches.
+- Refreshed the private benchmark suite around retained memory and
+  product-shaped workloads.
+
+### Fixed
+
+- Bare ready queues no longer retain durable-only row-id storage, and ordinary
+  leases omit inactive DLQ handoff metadata.
+
 ## [0.13.1] — 2026-07-30
 
 ### Fixed
@@ -486,6 +501,7 @@ First public release of `@qkitt/queue`.
 - Public surface: `@qkitt/queue` root entry only
 
 [0.13.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.1
+[0.13.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.2
 [0.13.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.0
 [0.12.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.12.0
 [0.11.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.11.0

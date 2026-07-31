@@ -166,7 +166,7 @@ describe('buildQueue', () => {
         expect(queue.stats().delayed).toBe(1)
     })
 
-    it('preserves pending DLQ handoff state across an inline delay', async () => {
+    it('preserves pending DLQ handoff state across a delay', async () => {
         vi.useFakeTimers()
         try {
             const queue = buildQueue<string>()

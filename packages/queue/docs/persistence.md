@@ -23,7 +23,7 @@ Persistence is a reliability boundary, not a default optimization. It adds stora
 | Wait for I/O | `flush()` is a no-op | `await flush()` before process exit |
 | Restart | Lost | `await hydrate()` loads rows |
 
-Mutations return `Promise` so async stores work. Bare (no store) paths resolve immediately after the in-process update (shared settled promises on the hot path).
+Mutations return `Promise` so async stores work. Bare (no store) paths resolve immediately after the in-process update; durable paths also await the serialized store operation.
 
 While `hydrate` runs, concurrent mutations reject with `HydrateWhileActiveError`. Hydrate also requires an idle queue (no leased rows / active workers).
 
