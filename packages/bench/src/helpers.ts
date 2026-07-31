@@ -3,25 +3,27 @@ import { Bench } from 'tinybench'
 /** Items per FIFO round (enqueue then dequeue all). */
 export const FIFO_N = 50_000
 
-/**
- * Worker drain matrix (2×2 = 4 cells).
- * Corners only: small vs large backlog × serial vs modest concurrency.
- */
+/** Async no-op scheduler matrix (2×2 cells). */
 export const WORKER_JOB_COUNTS = [1_000, 10_000] as const
 export const WORKER_CONCURRENCIES = [1, 4] as const
 
-/** Rows per durable lifecycle round. Kept lower because every mutation writes. */
+/** Rows per durable lifecycle round. */
 export const DURABLE_N = 5_000
 
-/** Workload-shaped scenarios: enough jobs to exercise a sustained pump. */
+/** Jobs and payload size for qkitt-only workload scenarios. */
 export const WORKLOAD_N = 5_000
 export const WORKLOAD_BYTES = 1_024
 
+/** Peer payload drain. */
+export const PAYLOAD_WORKER_N = 5_000
+export const PAYLOAD_WORKER_BYTES = 1_024
+export const PAYLOAD_WORKER_CONCURRENCY = 4
+
 export type TimingResult = {
   name: string
-  /** Median full-cycle throughput (ops/s). One op = one bench iteration. */
+  /** Median full-cycle throughput (ops/s); mean fallback if p50 is missing. */
   opsPerSecMed: number
-  /** Median latency of one iteration (ns). */
+  /** Median latency (ns); mean fallback if p50 is missing. */
   latencyMedNs: number
   samples: number
 }
@@ -39,10 +41,7 @@ export const printNote = (lines: readonly string[]): void => {
   console.log('')
 }
 
-/**
- * Time a single task in isolation (own Bench instance).
- * Prefer one library at a time so long runs do not interleave heap noise.
- */
+/** Time one task in its own Bench instance. */
 export const timeAlone = async (
   name: string,
   fn: () => unknown | Promise<unknown>,
@@ -59,7 +58,7 @@ export const timeAlone = async (
   if (!result || result.error) {
     throw result?.error ?? new Error(`timeAlone(${name}): no result`)
   }
-  // tinybench latency is in ms; convert median to ns for display.
+  // Convert milliseconds to nanoseconds.
   const latencyMedMs = result.latency.p50 ?? result.latency.mean
   const opsPerSecMed = result.throughput.p50 ?? result.throughput.mean
   return {

@@ -57,6 +57,24 @@ describe('buildQueue', () => {
         expect(queue.toArray()).toEqual([2, 3, 4])
     })
 
+    it('preserves order after head compaction and appended work', async () => {
+        const queue = buildQueue<number>()
+        for (let i = 0; i < 2_048; i += 1) await queue.enqueue(i)
+        for (let i = 0; i < 1_536; i += 1) {
+            expect(await queue.dequeue()).toBe(i)
+        }
+        await queue.enqueue(2_048)
+        await queue.enqueue(2_049)
+        await queue.enqueue(2_050)
+
+        expect(queue.toArray()).toEqual([
+            ...Array.from({ length: 512 }, (_, i) => i + 1_536),
+            2_048,
+            2_049,
+            2_050,
+        ])
+    })
+
     it('emits queue:enqueued with item and size', async () => {
         const queue = buildQueue<string>()
         const handler = vi.fn()
@@ -198,6 +216,70 @@ describe('buildQueue', () => {
         const recovered = buildQueue<string>({ store })
         await recovered.hydrate()
         expect((await recovered.claim())?.dlqHandoffAttempt).toBe(1)
+    })
+
+    it('preserves durable retry metadata after head compaction and hydrate', async () => {
+        const store = createMemoryRowStore<number | string>()
+        const source = buildQueue<number | string>({ store })
+        for (let i = 0; i < 2_048; i += 1) await source.enqueue(i)
+
+        for (let i = 0; i < 1_024; i += 1) {
+            const lease = await source.claim()
+            expect(lease?.item).toBe(i)
+            await source.ack(lease!)
+        }
+
+        const retried = await source.claim()
+        expect(retried?.item).toBe(1_024)
+        await source.reschedule(retried!, {
+            item: 'retry',
+            attempt: 7,
+            dlqHandoffAttempt: 3,
+        })
+
+        const recovered = buildQueue<number | string>({ store })
+        await recovered.hydrate()
+
+        const retryLease = await recovered.claim()
+        expect(retryLease).toMatchObject({
+            item: 'retry',
+            attempt: 7,
+            dlqHandoffAttempt: 3,
+        })
+        await recovered.ack(retryLease!)
+
+        const remaining: Array<number | string> = []
+        for (;;) {
+            const lease = await recovered.claim()
+            if (lease === undefined) break
+            remaining.push(lease.item)
+            await recovered.ack(lease)
+        }
+        expect(remaining).toEqual(
+            Array.from({ length: 1_023 }, (_, i) => i + 1_025),
+        )
+    })
+
+    it('keeps durable rows recoverable when dequeue persistence fails', async () => {
+        const store = createMemoryRowStore<number>()
+        const remove = store.remove
+        let failOnce = true
+        store.remove = (id) => {
+            if (failOnce) {
+                failOnce = false
+                throw new Error('transient remove failure')
+            }
+            return remove(id)
+        }
+
+        const source = buildQueue<number>({ store })
+        await source.enqueue(1)
+        await source.enqueue(2)
+        await expect(source.dequeue()).rejects.toThrow('transient remove failure')
+
+        const recovered = buildQueue<number>({ store })
+        await recovered.hydrate()
+        expect(recovered.toArray()).toEqual([1, 2])
     })
 
     it('size counts delayed and leased; readyCount only available', async () => {

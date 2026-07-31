@@ -12,6 +12,7 @@
     "bench": "tsx --expose-gc src/index.ts",
     "bench:fifo": "tsx --expose-gc src/index.ts fifo",
     "bench:worker": "tsx --expose-gc src/index.ts worker",
+    "bench:payload": "tsx --expose-gc src/index.ts payload",
     "bench:durable": "tsx --expose-gc src/index.ts durable",
     "bench:workloads": "tsx --expose-gc src/index.ts workloads",
     "typecheck": "tsc --noEmit"

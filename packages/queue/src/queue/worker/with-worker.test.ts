@@ -149,6 +149,22 @@ describe('withWorker', () => {
         expect(idle).toHaveBeenCalledOnce()
     })
 
+    it('reports handler duration when worker:handled is observed', async () => {
+        const queue = withWorker(buildQueue<number>(), async (item) => item)
+        const handled = vi.fn()
+        queue.on('worker:handled', handled)
+
+        const idlePromise = waitForIdle(queue)
+        await queue.enqueue(1)
+        await idlePromise
+
+        expect(handled).toHaveBeenCalledWith({
+            item: 1,
+            outcome: 'completed',
+            durationMs: expect.any(Number),
+        })
+    })
+
     it('emits worker:failed when the worker throws', async () => {
         const error = new Error('boom')
         const queue = withWorker(buildQueue<number>(), async () => {

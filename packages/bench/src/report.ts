@@ -71,7 +71,7 @@ export type WorkerResult = LibraryResult & {
  */
 export const printWorkerTable = (rows: readonly WorkerResult[]): void => {
   console.log('')
-  console.log('Worker drain results — one op = enqueue N jobs and drain until finished')
+  console.log('Scheduler drain results — one op = enqueue N jobs and drain until finished')
   console.log(
     '  heap Δ = median of seven post-GC samples with N jobs queued (worker paused); not peak during drain',
   )

@@ -15,7 +15,7 @@
 
 Run reliable background work **inside one Node process or browser**: concurrent workers, retries, topic routing, and persistence when restart safety matters. It is not a distributed broker; jobs do not cross servers or processes.
 
-> Need only a fast, memory-only queue? Use the sibling project [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq). Choose `@qkitt/queue` when work must survive restarts or you need declarative multi-queue configuration.
+> Need a speed-focused, memory-only queue? Use the sibling project [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq). Choose `@qkitt/queue` when work must survive restarts or you need declarative multi-queue configuration.
 
 | Package | What it is |
 | --- | --- |
@@ -42,11 +42,11 @@ Most applications begin with one queue and one worker: install `@qkitt/queue`, c
 | One message to reach multiple consumers | `buildRouter` | Fans topic messages out to bound queues. |
 | Many related queues | `@qkitt/queue-config` | Keeps the same composition in one declarative object. |
 
-Why use it: it is TypeScript-first, has no core runtime dependencies, and makes each reliability choice visible in code. The trade-off is intentional: it does not coordinate work across machines. Use a broker or distributed job system for that.
+Why use it: TypeScript-first, zero core runtime dependencies, and explicit reliability choices. It is not distributed; use a broker for work across machines or processes.
 
 ## When to use this
 
-Use it when the producer and consumer can live in the same process (or browser tab) and you want a typed, explicit alternative to wiring your own array, concurrency loop, retry policy, and shutdown handling. Start bare, then add a layer as requirements change:
+Use it when producers and consumers share a process or browser tab and you need FIFO work, concurrency, retries, persistence, routing, or shutdown handling. Start bare, then add layers as needed:
 
 - **FIFO backlog** — hold work in order until something drains it (orders awaiting fulfillment, moderation queue, form submissions waiting for review).
 - **Concurrent workers** — drain that backlog with a concurrency cap (inbound webhooks, notification sends, thumbnail generation).
@@ -210,44 +210,56 @@ npm run bench
 
 ## Benchmarks
 
-Details and setup: [`packages/bench`](./packages/bench) · re-run: `npm run bench` (`npm run bench:durable` for durable bookkeeping) · summary also in the [queue package README](./packages/queue/README.md#benchmark-summary).
+Run with `npm run bench`. Details: [`packages/bench`](./packages/bench).
 
-> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-30 · YMMV
+> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-30
 
-**Backlog memory is the strength.** The worker queue retains far less heap under a large waiting backlog. In a raw asynchronous no-op drain, fastq is faster; bare enqueue/dequeue also trails dedicated FIFO structures. Choose this package for its durable queue model and small retained backlog footprint, not as a claim to be the fastest in-memory runner.
+`@qkitt/queue` is persistence-first by design; the peers are memory-only. These tables compare relative throughput and retained heap, not end-to-end application performance. For a speed-focused memory-only queue, see [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq).
 
-### Worker drain — N async no-op jobs, concurrency C
+### Scheduler drain — N async no-op jobs, concurrency C
 
 | Library | 1k c=1 | 1k c=4 | 10k c=1 | 10k c=4 | heap Δ (10k c=1) |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 4,819 | 5,464 | 495 | 524 | **82.5 KiB** |
-| fastq | **10,621** | **9,398** | **937** | **926** | 1.76 MiB |
-| async.queue | 3,404 | 3,526 | 235 | 297 | 3.89 MiB |
-| p-queue | 1,759 | 1,632 | 121 | 117 | 6.19 MiB |
+| @qkitt/queue `withWorker` | 4,568 | 5,005 | 399 | 508 | **95.6 KiB** |
+| fastq | **11,299** | **9,775** | **899** | **941** | 1.76 MiB |
+| async.queue | 3,334 | 3,591 | 243 | 284 | 3.89 MiB |
+| p-queue | 1,799 | 1,766 | 123 | 119 | 6.19 MiB |
 
-### Bare queue — 50k enqueue + dequeue
+### Payload worker drain — 5k × 1 KiB job objects, c=4
+
+Preallocated 1 KiB jobs; each handler reads and hashes the payload, then yields.
+
+| Library | ops/s (med) | heap Δ total | heap Δ / item |
+| --- | ---: | ---: | ---: |
+| @qkitt/queue `withWorker` | 90 | **5.58 MiB** | **1.1 KiB** |
+| fastq | **102** | 6.40 MiB | 1.3 KiB |
+| async.queue | 92 | 7.47 MiB | 1.5 KiB |
+| p-queue | 73 | 8.82 MiB | 1.8 KiB |
+
+### Bare queue API — 50k enqueue + dequeue
+
+`buildQueue` is Promise-based; peer FIFOs are synchronous. This compares API overhead and retained heap, not raw FIFO speed.
 
 | Library | ops/s (med) | heap Δ |
 | --- | ---: | ---: |
-| @qkitt/queue `buildQueue` | 761 | 410.5 KiB |
-| denque | 2,273 | 515.0 KiB |
-| yocto-queue | 2,377 | 1.91 MiB |
-| native `Array` push/shift | 8 | 397.5 KiB |
+| @qkitt/queue `buildQueue` | 593 | 417.4 KiB |
+| denque | 2,342 | 515.2 KiB |
+| yocto-queue | 2,449 | 1.91 MiB |
 
-Median ops/s, higher is better. Heap Δ = median of seven post-GC samples measured with all items still held (worker paused).
+Timing uses tinybench p50 (median; mean fallback only if p50 is unavailable). Heap Δ is the median of seven post-GC samples with N items held.
 
 ### Durable row lifecycle — internal regression, `MemoryRowStore`
 
-This checks queue bookkeeping without browser, filesystem, or database latency; it is not a peer or storage-backend comparison.
+Internal `MemoryRowStore` bookkeeping check; not a storage-backend benchmark.
 
 | Operation (5k rows) | ops/s (med) |
 | --- | ---: |
-| enqueue + flush | 499 |
-| hydrate + worker drain + flush | 171 |
+| enqueue + flush | 447 |
+| hydrate + worker drain + flush | 145 |
 
 ### Browser — in-process vs durable (Chromium)
 
-Illustrative wall times only (`npm run compare:stores`). Not a peer bench.
+Illustrative wall times only; not a peer benchmark.
 
 | Mode (5k jobs, c=1) | Drain |
 | --- | ---: |

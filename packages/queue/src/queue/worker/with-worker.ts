@@ -155,6 +155,9 @@ const createAbortController = (): AbortControllerLike =>
     ).AbortController()
 
 const NEVER_ABORT_SIGNAL = createAbortController().signal
+const NOOP_DISPOSE = (): void => {}
+const elapsedDuration = (startedAt: number | undefined): number =>
+    startedAt === undefined ? 0 : Math.max(0, Date.now() - startedAt)
 
 const isPlainQueueMeta = (item: unknown): unknown => {
     if (item === null || typeof item !== 'object') return undefined
@@ -478,7 +481,7 @@ export const withWorker = <
         lease: Lease<T>,
         item: T,
         error: unknown,
-        durationMs: number,
+        startedAt: number | undefined,
     ): void => {
         void applyRecovery(lease, item, error)
             .catch(async (err) => {
@@ -494,7 +497,7 @@ export const withWorker = <
                 }
             })
             .finally(() => {
-                // active-- then failed so gracefulStop settles after recovery.
+                // Finish after recovery so gracefulStop waits for it.
                 finishItem()
                 if (subs.failed > 0) {
                     emitInner('worker:failed', { item, error })
@@ -503,7 +506,7 @@ export const withWorker = <
                     emitInner('worker:handled', {
                         item,
                         outcome: 'failed',
-                        durationMs,
+                        durationMs: elapsedDuration(startedAt),
                     })
                 }
             })
@@ -513,7 +516,7 @@ export const withWorker = <
         lease: Lease<T>,
         item: T,
         result: R,
-        durationMs: number,
+        startedAt: number | undefined,
     ): void => {
         // Inline: ack is sync — finish without Promise hops.
         if (inlineOps) {
@@ -527,7 +530,7 @@ export const withWorker = <
                     emitInner('worker:handled', {
                         item,
                         outcome: 'completed',
-                        durationMs,
+                        durationMs: elapsedDuration(startedAt),
                     })
                 }
             } catch (err) {
@@ -552,7 +555,7 @@ export const withWorker = <
                     emitInner('worker:handled', {
                         item,
                         outcome: 'completed',
-                        durationMs,
+                        durationMs: elapsedDuration(startedAt),
                     })
                 }
             })
@@ -567,51 +570,6 @@ export const withWorker = <
             })
     }
 
-    const createContext = (
-        lease: Lease<T>,
-        item: T,
-    ): { context: WorkerContext; dispose: () => void } => {
-        const needsAbort = timeoutMs !== undefined || lease.expiresAt !== null
-        const controller = needsAbort ? createAbortController() : undefined
-        const job = isJob(item) ? item : undefined
-        const traceContext = options.traceContext
-            ? options.traceContext(item)
-            : job?.metadata
-        const timers = needsAbort ? [] as unknown[] : undefined
-        const abortAfter = (ms: number, reason: unknown): void => {
-            timers!.push(
-                scheduleTimeout(() => {
-                    if (!controller!.signal.aborted) controller!.abort(reason)
-                }, ms),
-            )
-        }
-
-        if (timeoutMs !== undefined) {
-            abortAfter(timeoutMs, new WorkerTimeoutError(timeoutMs))
-        }
-        if (lease.expiresAt !== null) {
-            abortAfter(
-                Math.max(0, lease.expiresAt - Date.now()),
-                new WorkerLeaseExpiredError(lease.expiresAt),
-            )
-        }
-
-        return {
-            context: {
-                jobId: job?.id,
-                attempt: lease.attempt,
-                leaseDeadline: lease.expiresAt ?? undefined,
-                traceContext,
-                signal: controller?.signal ?? NEVER_ABORT_SIGNAL,
-            },
-            dispose: () => {
-                if (timers !== undefined) {
-                    for (const timer of timers) cancelTimeout(timer)
-                }
-            },
-        }
-    }
-
     const callWorker = (
         item: T,
         context: WorkerContext,
@@ -623,35 +581,75 @@ export const withWorker = <
             emitInner('worker:started', { item })
         }
 
-        const startedAt = Date.now()
-        const duration = (): number => Math.max(0, Date.now() - startedAt)
+        const startedAt = subs.handled > 0 ? Date.now() : undefined
+        const needsAbort =
+            timeoutMs !== undefined || lease.expiresAt !== null
+        const controller = needsAbort ? createAbortController() : undefined
+        const job =
+            item !== null && typeof item === 'object' && isJob(item)
+                ? item
+                : undefined
+        const traceContext = options.traceContext
+            ? options.traceContext(item)
+            : job?.metadata
+        const context: WorkerContext = {
+            jobId: job?.id,
+            attempt: lease.attempt,
+            leaseDeadline: lease.expiresAt ?? undefined,
+            traceContext,
+            signal: controller?.signal ?? NEVER_ABORT_SIGNAL,
+        }
+
+        let dispose: () => void = NOOP_DISPOSE
+        if (needsAbort) {
+            const timers: unknown[] = []
+            const abortAfter = (ms: number, reason: unknown): void => {
+                timers.push(
+                    scheduleTimeout(() => {
+                        if (!controller!.signal.aborted) {
+                            controller!.abort(reason)
+                        }
+                    }, ms),
+                )
+            }
+            if (timeoutMs !== undefined) {
+                abortAfter(timeoutMs, new WorkerTimeoutError(timeoutMs))
+            }
+            if (lease.expiresAt !== null) {
+                abortAfter(
+                    Math.max(0, lease.expiresAt - Date.now()),
+                    new WorkerLeaseExpiredError(lease.expiresAt),
+                )
+            }
+            dispose = () => {
+                for (const timer of timers) cancelTimeout(timer)
+            }
+        }
+
         let ret: R | PromiseLike<R>
-        let dispose: () => void = () => {}
         try {
-            const delivery = createContext(lease, item)
-            dispose = delivery.dispose
-            ret = callWorker(item, delivery.context)
+            ret = callWorker(item, context)
             if (isThenable(ret)) {
                 Promise.resolve(ret).then(
                     (result) => {
                         dispose()
-                        completeLease(lease, item, result as R, duration())
+                        completeLease(lease, item, result as R, startedAt)
                     },
                     (error: unknown) => {
                         dispose()
-                        failLease(lease, item, error, duration())
+                        failLease(lease, item, error, startedAt)
                     },
                 )
                 return
             }
         } catch (error) {
-            dispose?.()
-            failLease(lease, item, error, duration())
+            dispose()
+            failLease(lease, item, error, startedAt)
             return
         }
 
-        dispose!()
-        completeLease(lease, item, ret, duration())
+        dispose()
+        completeLease(lease, item, ret, startedAt)
     }
 
     let unsubscribeEnqueued: (() => void) | undefined

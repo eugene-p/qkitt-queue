@@ -9,7 +9,7 @@
 
 Reliable background jobs in one Node process or browser: concurrent workers, retries, topic routing, and optional persistence. Zero runtime dependencies.
 
-Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence, topic routing, and failure routing (durable retry / loop / dead letter). Worker helpers (`retryWorker`, `pipelineWorker`) return functions you pass to `withWorker`. ESM only. Runs in Node.js 20+ and modern browsers. Requires TypeScript **5.0+** with `moduleResolution` `node16`, `nodenext`, or `bundler`.
+Layers: FIFO queue, worker, optional persistence, routing, and failure handling. ESM-only; Node.js 20+, modern browsers, and TypeScript **5.0+** (`moduleResolution`: `node16`, `nodenext`, or `bundler`).
 
 **Out of scope:** work that spans machines or processes.
 
@@ -17,14 +17,9 @@ Layers you can stack: bare queue (FIFO), concurrent worker, optional persistence
 
 ## What it is for
 
-Use `@qkitt/queue` to move slow or retryable work out of the immediate path of an application: process webhooks, send notifications, generate files, or run a small workflow with a concurrency limit. Start with an in-memory FIFO and add only the layer that earns its place:
+Use it for in-process work that needs concurrency, retries, routing, or restart recovery. Start with `buildQueue()`; add `withWorker()`, a `RowStore`, or helpers as needed.
 
-1. `buildQueue()` holds work in FIFO order.
-2. `withWorker()` consumes it with a concurrency limit.
-3. A `store` makes unfinished work recoverable after restart.
-4. Helpers and decorators add retry, failure handling, or routing.
-
-This is deliberately not a distributed queue. If producers and consumers need to run on different machines or survive independent deploys, use a broker or job system designed for that boundary.
+It is not a distributed queue. Use a broker for work across machines or processes.
 
 **Versioning:** pre-1.0 — SemVer; on `0.x`, breaking changes ship in minor bumps (`0.5` → `0.6`). Check the changelog on minor upgrades.
 
@@ -67,7 +62,7 @@ Subpath exports: `@qkitt/queue/queue`, `/worker`, `/router`, `/persist`, `/persi
 
 ## Quick start
 
-For most apps, this is the whole starting point: it accepts jobs now and handles up to two at a time. `enqueue` resolves after the queue accepts the job; the worker runs in the background.
+Minimal concurrent drain:
 
 ```ts
 import { buildQueue, withWorker } from '@qkitt/queue'
@@ -85,7 +80,7 @@ const queue = withWorker(
 await queue.enqueue({ id: '1' })
 ```
 
-Need a different outcome? Persist jobs across restart with [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md); retry a flaky call with [worker helpers](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers); or decide where permanent failures go with [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md).
+For persistence, retries, or failure routing, see [Persistence](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/persistence.md), [worker helpers](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md#4-worker-helpers), and [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md).
 
 When a durable job needs an application id for idempotency or correlation,
 queue an opt-in `Job<T>` envelope. Its id is separate from the queue's internal
@@ -103,10 +98,9 @@ await jobs.enqueue(
 See [`Job` / `createJob`](./docs/api.md#job--createjob) for the complete
 contract.
 
-Job queues also support operational paging and control by `Job.id`:
-`listJobs`, `getJob`, `cancelJob`, `rescheduleJob`, `promoteJob`, and
-enqueue-first `replayJob` for DLQ queues. Add `withObservability(queue)` when
-you need pull metrics plus metrics/tracing hooks. Details: [API reference](./docs/api.md#withobservability).
+Job operations include `listJobs`, `getJob`, `cancelJob`, `rescheduleJob`,
+`promoteJob`, and `replayJob`. Add `withObservability(queue)` for metrics and
+tracing. See the [API reference](./docs/api.md#withobservability).
 
 > **Durable workers are at-least-once, not exactly-once.** A completed side
 > effect can be delivered again if the process stops before its queue
@@ -157,7 +151,7 @@ const run = retryWorker(
 const queue = withWorker(buildQueue<Job>(), run, { concurrency: 4 })
 ```
 
-Failed items are **not** re-queued by default. Use `retryWorker` for in-call retries, or durable [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) (`withRetry`, `withLoop`, `withDlq`). Workers can also receive a second context argument with `Job.id`, delivery attempt, lease deadline, tracing metadata, and a cooperative cancellation signal; see the [API reference](./docs/api.md#withworker).
+Failed items are **not** re-queued by default. Use `retryWorker` for in-call retries or durable [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md). Worker context includes job id, attempt, lease deadline, metadata, and cancellation; see the [API reference](./docs/api.md#withworker).
 
 When stacks grow (many queues, router, stores), prefer [`@qkitt/queue-config`](https://www.npmjs.com/package/@qkitt/queue-config).
 
@@ -184,29 +178,39 @@ Runnable scenarios: [examples/](https://github.com/eugene-p/qkitt-queue/tree/mai
 
 In-process peers only. Full tables and setup: [root README](https://github.com/eugene-p/qkitt-queue/blob/main/README.md#benchmarks). Re-run: [`packages/bench`](https://github.com/eugene-p/qkitt-queue/tree/main/packages/bench) (`npm run bench` from repo root).
 
-**Strength is retained backlog memory and a durable queue model.** In a raw asynchronous no-op drain, fastq is faster; `withWorker` keeps far less heap while jobs wait. Bare `buildQueue` also trails dedicated FIFO structures in pure enqueue/dequeue throughput. Choose it for persistence and explicit composition, not a claim to be the fastest memory-only runner.
+These in-process tables compare relative speed and retained heap. `buildQueue()` is Promise-based; peer FIFOs are synchronous.
 
-**Worker drain** — 10 000 no-op jobs (ops/s · pending-job heap)
+**Scheduler drain** — 10 000 async no-op jobs (ops/s · pending-job heap)
 
 | Library | c=1 | c=4 | heap Δ (c=1) |
 | --- | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 495 | 524 | **82.5 KiB** |
-| fastq | **937** | **926** | 1.76 MiB |
-| async.queue | 235 | 297 | 3.89 MiB |
-| p-queue | 121 | 117 | 6.19 MiB |
+| @qkitt/queue `withWorker` | 399 | 508 | **95.6 KiB** |
+| fastq | **899** | **941** | 1.76 MiB |
+| async.queue | 243 | 284 | 3.89 MiB |
+| p-queue | 123 | 119 | 6.19 MiB |
 
-**Bare queue** — 50 000 enqueue + dequeue (ops/s median · retained heap)
+**Payload worker drain** — 5,000 preallocated 1 KiB jobs, c=4. Each handler reads and hashes the payload, then yields.
+
+| Library | ops/s | heap Δ total | heap Δ / item |
+| --- | ---: | ---: | ---: |
+| @qkitt/queue `withWorker` | 90 | **5.58 MiB** | **1.1 KiB** |
+| fastq | **102** | 6.40 MiB | 1.3 KiB |
+| async.queue | 92 | 7.47 MiB | 1.5 KiB |
+| p-queue | 73 | 8.82 MiB | 1.8 KiB |
+
+**Bare queue API** — 50 000 enqueue + dequeue (ops/s median · retained heap)
+
+`buildQueue` is Promise-based; peer FIFOs are synchronous. This compares API overhead and retained heap, not raw FIFO speed.
 
 | Library | ops/s | heap Δ |
 | --- | ---: | ---: |
-| @qkitt/queue `buildQueue` | 761 | 410.5 KiB |
-| denque | 2,273 | 515.0 KiB |
-| yocto-queue | 2,377 | 1.91 MiB |
-| native `Array` push/shift | 8 | 397.5 KiB |
+| @qkitt/queue `buildQueue` | 593 | 417.4 KiB |
+| denque | 2,342 | 515.2 KiB |
+| yocto-queue | 2,449 | 1.91 MiB |
 
 **Browser (Chromium)** — in-memory vs durable worker drain, 5k jobs c=1: bare ~2 ms · localStorage ~410 ms (`npm run compare:stores`).
 
-Retained heap is the median of seven post-GC samples. Relative numbers (Node 26.5.0, Windows laptop, 2026-07-30). YMMV.
+Timing uses tinybench p50 (median; mean fallback only if p50 is unavailable). Heap Δ is the median of seven post-GC samples. Relative numbers (Node 26.5.0, Windows laptop, 2026-07-30).
 
 ## Changelog
 

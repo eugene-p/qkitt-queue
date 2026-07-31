@@ -2,6 +2,7 @@ import { runFifoBench } from './fifo.js'
 import { runDurableBench } from './durable.js'
 import { runWorkloadBench } from './workloads.js'
 import { runWorkerBench } from './worker.js'
+import { runPayloadWorkerBench } from './payload-worker.js'
 
 const suite = (process.argv[2] ?? 'all').toLowerCase()
 
@@ -18,6 +19,9 @@ const main = async (): Promise<void> => {
   if (suite === 'all' || suite === 'worker') {
     await runWorkerBench()
   }
+  if (suite === 'all' || suite === 'payload') {
+    await runPayloadWorkerBench()
+  }
   if (suite === 'all' || suite === 'durable') {
     await runDurableBench()
   }
@@ -25,8 +29,8 @@ const main = async (): Promise<void> => {
     await runWorkloadBench()
   }
 
-  if (suite !== 'all' && suite !== 'fifo' && suite !== 'worker' && suite !== 'durable' && suite !== 'workloads') {
-    console.error(`Unknown suite "${suite}". Use: all | fifo | worker | durable | workloads`)
+  if (suite !== 'all' && suite !== 'fifo' && suite !== 'worker' && suite !== 'payload' && suite !== 'durable' && suite !== 'workloads') {
+    console.error(`Unknown suite "${suite}". Use: all | fifo | worker | payload | durable | workloads`)
     process.exitCode = 1
   }
 }

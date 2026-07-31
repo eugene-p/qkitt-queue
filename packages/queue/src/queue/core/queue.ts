@@ -47,7 +47,10 @@ export type Lease<T> = {
     expiresAt: number | null
     /** 1-based delivery attempt; older durable rows begin at 1. */
     attempt: number
-    /** Present only while a failed DLQ handoff is being retried. */
+    /**
+     * DLQ handoff retry count. `0` (or omitted on older rows) means no handoff
+     * is in progress; values `>= 1` count failed dead-letter enqueue attempts.
+     */
     dlqHandoffAttempt?: number
 }
 
@@ -99,7 +102,8 @@ type LeasedEntry<T> = {
     generation: number
     expiresAt: number | null
     attempt: number
-    dlqHandoffAttempt?: number
+    /** Always set on freelist objects (0 = no handoff) for a stable V8 shape. */
+    dlqHandoffAttempt: number
 }
 
 type DelayedEntry<T> = {
@@ -235,26 +239,22 @@ export const buildQueue = <T>(
     }
     const durable = store !== undefined
     const chain = durable ? createWriteChain() : undefined
-    /**
-     * Durable rows need stable ids on available. Inline available is raw `T`
-     * (no parallel id array) — ids are allocated only on claim / delay.
-     */
+    /** Durable queues keep available row ids; inline queues allocate on claim. */
     const trackAvailableIds = durable
 
-    // Split in-memory state: available FIFO (+ optional ids) + leased + delayed.
+    // In-memory state: available FIFO (+ optional ids) + leased + delayed.
     let availableItems: T[] = []
+    let availableHead = 0
     let availableIds: number[] = []
     // Attempts are implicitly 1 until a retry puts a non-default value in FIFO.
     let availableAttempts: number[] | undefined
-    let availableOutItems: T[] = []
-    let availableOutIds: number[] = []
-    let availableOutAttempts: number[] | undefined
     // DLQ handoff state is absent until a destination has actually failed.
     let availableDlqHandoffAttempts: number[] | undefined
-    let availableOutDlqHandoffAttempts: number[] | undefined
+    const AVAILABLE_COMPACT_MIN = 1024
+    let hasAvailableMetadata = false
     let availableCount = 0
     const leased = new Map<number, LeasedEntry<T>>()
-    /** Recycled lease objects for the inline claim/ack hot path (cap keeps GC happy). */
+    /** Reuse lease objects on the inline claim/ack path. */
     const leaseFreelist: LeasedEntry<T>[] = []
     const LEASE_FREELIST_MAX = 64
     // Lazy: most queues never use delay.
@@ -290,6 +290,9 @@ export const buildQueue = <T>(
         attempt: number,
         dlqHandoffAttempt?: number,
     ): LeasedEntry<T> => {
+        const handoff = dlqHandoffAttempt !== undefined && dlqHandoffAttempt > 0
+            ? dlqHandoffAttempt
+            : 0
         const recycled = leaseFreelist.pop()
         if (recycled !== undefined) {
             recycled.id = id
@@ -297,8 +300,7 @@ export const buildQueue = <T>(
             recycled.generation = generation
             recycled.expiresAt = expiresAt
             recycled.attempt = attempt
-            if (dlqHandoffAttempt === undefined) delete recycled.dlqHandoffAttempt
-            else recycled.dlqHandoffAttempt = dlqHandoffAttempt
+            recycled.dlqHandoffAttempt = handoff
             return recycled
         }
         return {
@@ -307,17 +309,23 @@ export const buildQueue = <T>(
             generation,
             expiresAt,
             attempt,
-            ...(dlqHandoffAttempt !== undefined ? { dlqHandoffAttempt } : {}),
+            dlqHandoffAttempt: handoff,
         }
     }
 
     const recycleLease = (entry: LeasedEntry<T>): void => {
-        // Do not retain completed payloads solely for object-shape reuse.
+        // Do not retain completed payloads in the freelist.
         entry.item = undefined as T
         if (leaseFreelist.length < LEASE_FREELIST_MAX) {
             leaseFreelist.push(entry)
         }
     }
+
+    /** Map freelist 0 / absent to `undefined` for store and available metadata. */
+    const activeDlqHandoff = (
+        value: number | undefined,
+    ): number | undefined =>
+        value !== undefined && value > 0 ? value : undefined
 
     type QueueFullEvents = MergeEventMaps<QueueEvents<T>, PersistEvents>
     const emitter = buildEventEmitter<QueueFullEvents>()
@@ -350,35 +358,58 @@ export const buildQueue = <T>(
     const materializeAvailableAttempts = (): void => {
         if (availableAttempts !== undefined) return
         availableAttempts = new Array<number>(availableItems.length).fill(1)
-        availableOutAttempts = new Array<number>(availableOutItems.length).fill(1)
     }
 
     const materializeAvailableDlqHandoffAttempts = (): void => {
         if (availableDlqHandoffAttempts !== undefined) return
         availableDlqHandoffAttempts = new Array<number>(availableItems.length).fill(0)
-        availableOutDlqHandoffAttempts = new Array<number>(
-            availableOutItems.length,
-        ).fill(0)
     }
 
-    const flipAvailable = (): void => {
-        availableOutItems = availableItems
-        availableOutItems.reverse()
-        availableItems = []
-        if (trackAvailableIds) {
-            availableOutIds = availableIds
-            availableOutIds.reverse()
+    /** Drop consumed slots and occasionally compact the head-index FIFO. */
+    const compactAvailable = (): void => {
+        if (availableHead === 0) return
+        if (availableCount === 0) {
+            availableItems = []
             availableIds = []
+            availableHead = 0
+            if (availableAttempts !== undefined) availableAttempts = []
+            if (availableDlqHandoffAttempts !== undefined) {
+                availableDlqHandoffAttempts = []
+            }
+            return
         }
+        if (
+            availableHead < AVAILABLE_COMPACT_MIN ||
+            availableHead * 2 < availableItems.length
+        ) {
+            return
+        }
+        availableItems = availableItems.slice(availableHead)
+        if (trackAvailableIds) availableIds = availableIds.slice(availableHead)
         if (availableAttempts !== undefined) {
-            availableOutAttempts = availableAttempts
-            availableOutAttempts.reverse()
-            availableAttempts = []
+            availableAttempts = availableAttempts.slice(availableHead)
         }
         if (availableDlqHandoffAttempts !== undefined) {
-            availableOutDlqHandoffAttempts = availableDlqHandoffAttempts
-            availableOutDlqHandoffAttempts.reverse()
-            availableDlqHandoffAttempts = []
+            availableDlqHandoffAttempts =
+                availableDlqHandoffAttempts.slice(availableHead)
+        }
+        availableHead = 0
+    }
+
+    const consumeAvailableSlot = (): void => {
+        // Clear the payload immediately; a large drained prefix must not retain
+        // completed work until another enqueue happens.
+        const index = availableHead
+        availableItems[index] = undefined as T
+        if (trackAvailableIds) availableIds[index] = 0
+        availableHead += 1
+        availableCount -= 1
+        if (
+            availableCount === 0 ||
+            (availableHead >= AVAILABLE_COMPACT_MIN &&
+                availableHead * 2 >= availableItems.length)
+        ) {
+            compactAvailable()
         }
     }
 
@@ -389,8 +420,25 @@ export const buildQueue = <T>(
         attempt = 1,
         dlqHandoffAttempt?: number,
     ): void => {
+        if (
+            availableHead >= AVAILABLE_COMPACT_MIN &&
+            availableHead * 2 >= availableItems.length
+        ) {
+            compactAvailable()
+        }
+        const handoff = activeDlqHandoff(dlqHandoffAttempt)
+        // Keep the common path free of metadata arrays.
+        if (!hasAvailableMetadata && attempt === 1 && handoff === undefined) {
+            availableItems.push(item)
+            if (trackAvailableIds) {
+                availableIds.push(id as number)
+            }
+            availableCount += 1
+            return
+        }
+        hasAvailableMetadata = true
         if (attempt !== 1) materializeAvailableAttempts()
-        if (dlqHandoffAttempt !== undefined) {
+        if (handoff !== undefined) {
             materializeAvailableDlqHandoffAttempts()
         }
         availableItems.push(item)
@@ -398,7 +446,7 @@ export const buildQueue = <T>(
             availableIds.push(id as number)
         }
         availableAttempts?.push(attempt)
-        availableDlqHandoffAttempts?.push(dlqHandoffAttempt ?? 0)
+        availableDlqHandoffAttempts?.push(handoff ?? 0)
         availableCount += 1
     }
 
@@ -411,38 +459,28 @@ export const buildQueue = <T>(
           }
         | undefined => {
         if (availableCount === 0) return undefined
-        if (availableOutItems.length === 0) flipAvailable()
-        const item = availableOutItems.pop() as T
+        const index = availableHead
+        const item = availableItems[index] as T
         const id = trackAvailableIds
-            ? (availableOutIds.pop() as number)
+            ? (availableIds[index] as number)
             : undefined
-        const attempt = availableOutAttempts?.pop() ?? 1
-        const dlqHandoffAttempt = availableOutDlqHandoffAttempts?.pop()
-        availableCount -= 1
-        return {
-            item,
-            id,
-            attempt,
-            ...(dlqHandoffAttempt !== undefined && dlqHandoffAttempt > 0
-                ? { dlqHandoffAttempt }
-                : {}),
-        }
+        const attempt = availableAttempts?.[index] ?? 1
+        const dlqHandoffAttempt = availableDlqHandoffAttempts === undefined
+            ? undefined
+            : availableDlqHandoffAttempts[index]
+        consumeAvailableSlot()
+        return dlqHandoffAttempt !== undefined && dlqHandoffAttempt > 0
+            ? { item, id, attempt, dlqHandoffAttempt }
+            : { item, id, attempt }
     }
 
     const peekAvailable = ():
         | { item: T; id: number | undefined }
         | undefined => {
         if (availableCount === 0) return undefined
-        if (availableOutItems.length > 0) {
-            const i = availableOutItems.length - 1
-            return {
-                item: availableOutItems[i]!,
-                id: trackAvailableIds ? availableOutIds[i] : undefined,
-            }
-        }
         return {
-            item: availableItems[0]!,
-            id: trackAvailableIds ? availableIds[0] : undefined,
+            item: availableItems[availableHead]!,
+            id: trackAvailableIds ? availableIds[availableHead] : undefined,
         }
     }
 
@@ -478,15 +516,18 @@ export const buildQueue = <T>(
         expiresAt: number | null,
         attempt = 1,
         dlqHandoffAttempt?: number,
-    ): RowRecord<T> => ({
-        id,
-        item,
-        availableAt,
-        leaseGeneration: generation,
-        leaseExpiresAt: expiresAt,
-        ...(attempt > 1 ? { attempt } : {}),
-        ...(dlqHandoffAttempt !== undefined ? { dlqHandoffAttempt } : {}),
-    })
+    ): RowRecord<T> => {
+        const handoff = activeDlqHandoff(dlqHandoffAttempt)
+        return {
+            id,
+            item,
+            availableAt,
+            leaseGeneration: generation,
+            leaseExpiresAt: expiresAt,
+            ...(attempt > 1 ? { attempt } : {}),
+            ...(handoff !== undefined ? { dlqHandoffAttempt: handoff } : {}),
+        }
+    }
 
     /** Serialize durable work; always runs `op` (inline path runs immediately). */
     const withChain = <R>(op: () => R | PromiseLike<R>): Promise<R> => {
@@ -637,7 +678,7 @@ export const buildQueue = <T>(
         leased.delete(id)
         const item = entry.item
         const attempt = entry.attempt
-        const dlqHandoffAttempt = entry.dlqHandoffAttempt
+        const dlqHandoffAttempt = activeDlqHandoff(entry.dlqHandoffAttempt)
         recycleLease(entry)
         pushAvailable(
             item,
@@ -698,13 +739,11 @@ export const buildQueue = <T>(
 
     const clearMemory = (): void => {
         availableItems = []
+        availableHead = 0
         availableIds = []
         availableAttempts = undefined
-        availableOutItems = []
-        availableOutIds = []
-        availableOutAttempts = undefined
         availableDlqHandoffAttempts = undefined
-        availableOutDlqHandoffAttempts = undefined
+        hasAvailableMetadata = false
         availableCount = 0
         leased.clear()
         leaseFreelist.length = 0
@@ -796,11 +835,19 @@ export const buildQueue = <T>(
             promoteDueDelayed()
             if (availableCount === 0) return undefined
         }
-        if (availableOutItems.length === 0) flipAvailable()
-        const item = availableOutItems.pop() as T
-        const attempt = availableOutAttempts?.pop() ?? 1
-        const dlqHandoffAttempt = availableOutDlqHandoffAttempts?.pop()
-        availableCount -= 1
+        const index = availableHead
+        const item = availableItems[index] as T
+        let attempt = 1
+        let dlqHandoffAttempt: number | undefined
+        if (hasAvailableMetadata) {
+            attempt = availableAttempts?.[index] ?? 1
+            dlqHandoffAttempt = activeDlqHandoff(
+                availableDlqHandoffAttempts?.[index],
+            )
+            consumeAvailableSlot()
+        } else {
+            consumeAvailableSlot()
+        }
         // One monotonic counter serves as both row id and lease generation
         // (inline never reuses an id while a lease is live).
         const id = ids.next()
@@ -826,9 +873,10 @@ export const buildQueue = <T>(
         }
         leased.delete(lease.id)
         const item = entry.item
+        const handoff = activeDlqHandoff(entry.dlqHandoffAttempt)
         recycleLease(entry)
         // Inline available has no stable ids.
-        pushAvailable(item, undefined, entry.attempt, entry.dlqHandoffAttempt)
+        pushAvailable(item, undefined, entry.attempt, handoff)
         emitEnqueued(item)
     }
 
@@ -844,8 +892,9 @@ export const buildQueue = <T>(
         const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
         const leaseId = lease.id
         const attempt = next.attempt ?? entry.attempt
-        const dlqHandoffAttempt =
-            next.dlqHandoffAttempt ?? entry.dlqHandoffAttempt
+        const dlqHandoffAttempt = activeDlqHandoff(
+            next.dlqHandoffAttempt ?? entry.dlqHandoffAttempt,
+        )
         leased.delete(lease.id)
         recycleLease(entry)
         if (availableAt === 0) {
@@ -1026,9 +1075,10 @@ export const buildQueue = <T>(
                 throw new LeaseMismatchError()
             }
             const item = entry.item
+            const handoff = activeDlqHandoff(entry.dlqHandoffAttempt)
             leased.delete(lease.id)
             recycleLease(entry)
-            pushAvailable(item, lease.id, entry.attempt, entry.dlqHandoffAttempt)
+            pushAvailable(item, lease.id, entry.attempt, handoff)
             armLeaseTimer()
             emitEnqueued(item)
         })
@@ -1064,8 +1114,9 @@ export const buildQueue = <T>(
         const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
         const item = next.item
         const attempt = next.attempt ?? lease.attempt
-        const dlqHandoffAttempt =
-            next.dlqHandoffAttempt ?? lease.dlqHandoffAttempt
+        const dlqHandoffAttempt = activeDlqHandoff(
+            next.dlqHandoffAttempt ?? lease.dlqHandoffAttempt,
+        )
 
         return withChain(async () => {
             requireLease(lease)
@@ -1118,7 +1169,7 @@ export const buildQueue = <T>(
                 ),
             )
         }
-        // Inline admin drop: two-stack pop, no chain.
+        // Inline admin drop: head-index FIFO pop, no chain.
         if (!durable) {
             if (availableCount === 0) {
                 if (delayed !== undefined && delayed.size > 0) {
@@ -1128,11 +1179,12 @@ export const buildQueue = <T>(
                     return RESOLVED_UNDEFINED as Promise<undefined>
                 }
             }
-            if (availableOutItems.length === 0) flipAvailable()
-            const item = availableOutItems.pop() as T
-            availableOutAttempts?.pop()
-            availableOutDlqHandoffAttempts?.pop()
-            availableCount -= 1
+            const item = availableItems[availableHead] as T
+            if (hasAvailableMetadata) {
+                consumeAvailableSlot()
+            } else {
+                consumeAvailableSlot()
+            }
             emitDequeued(item)
             return Promise.resolve({ value: item })
         }
@@ -1168,11 +1220,12 @@ export const buildQueue = <T>(
                     return RESOLVED_UNDEFINED as Promise<undefined>
                 }
             }
-            if (availableOutItems.length === 0) flipAvailable()
-            const item = availableOutItems.pop() as T
-            availableOutAttempts?.pop()
-            availableOutDlqHandoffAttempts?.pop()
-            availableCount -= 1
+            const item = availableItems[availableHead] as T
+            if (hasAvailableMetadata) {
+                consumeAvailableSlot()
+            } else {
+                consumeAvailableSlot()
+            }
             if (subs.dequeued > 0) {
                 emitter.emit('queue:dequeued', {
                     item,
@@ -1309,12 +1362,7 @@ export const buildQueue = <T>(
     const toArray = (): T[] => {
         promoteDueDelayed()
         const out: T[] = []
-        if (availableOutItems.length > 0) {
-            for (let i = availableOutItems.length - 1; i >= 0; i -= 1) {
-                out.push(availableOutItems[i]!)
-            }
-        }
-        for (let i = 0; i < availableItems.length; i += 1) {
+        for (let i = availableHead; i < availableItems.length; i += 1) {
             out.push(availableItems[i]!)
         }
         if (delayed !== undefined && delayed.size > 0) {
@@ -1335,12 +1383,7 @@ export const buildQueue = <T>(
         promoteDueDelayed()
         const out: number[] = []
         if (trackAvailableIds) {
-            if (availableOutIds.length > 0) {
-                for (let i = availableOutIds.length - 1; i >= 0; i -= 1) {
-                    out.push(availableOutIds[i]!)
-                }
-            }
-            for (let i = 0; i < availableIds.length; i += 1) {
+            for (let i = availableHead; i < availableIds.length; i += 1) {
                 out.push(availableIds[i]!)
             }
         }
@@ -1368,17 +1411,7 @@ export const buildQueue = <T>(
 
     const readyEntries = (): ReadyEntry[] => {
         const entries: ReadyEntry[] = []
-        for (let i = availableOutItems.length - 1; i >= 0; i -= 1) {
-            entries.push({
-                item: availableOutItems[i]!,
-                id: trackAvailableIds ? availableOutIds[i] : undefined,
-                attempt: availableOutAttempts?.[i] ?? 1,
-                ...(availableOutDlqHandoffAttempts?.[i]
-                    ? { dlqHandoffAttempt: availableOutDlqHandoffAttempts[i] }
-                    : {}),
-            })
-        }
-        for (let i = 0; i < availableItems.length; i += 1) {
+        for (let i = availableHead; i < availableItems.length; i += 1) {
             entries.push({
                 item: availableItems[i]!,
                 id: trackAvailableIds ? availableIds[i] : undefined,
@@ -1393,13 +1426,11 @@ export const buildQueue = <T>(
 
     const replaceReady = (entries: readonly ReadyEntry[]): void => {
         availableItems = []
+        availableHead = 0
         availableIds = []
         availableAttempts = undefined
-        availableOutItems = []
-        availableOutIds = []
-        availableOutAttempts = undefined
         availableDlqHandoffAttempts = undefined
-        availableOutDlqHandoffAttempts = undefined
+        hasAvailableMetadata = false
         availableCount = 0
         for (const entry of entries) {
             pushAvailable(

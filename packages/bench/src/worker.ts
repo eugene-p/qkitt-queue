@@ -199,11 +199,11 @@ const WORKER_CASES: WorkerCase[] = [
 ]
 
 /**
- * Worker drain: each (library × N × concurrency) cell measured alone.
+ * Scheduler drain: each (library × N × concurrency) cell measured alone.
  * ops/s and heap Δ answer different questions (drain speed vs size while pending).
  */
 export const runWorkerBench = async (): Promise<void> => {
-  printHeader('Worker drain (per library × N × concurrency)')
+  printHeader('Scheduler drain (async no-op; per library × N × concurrency)')
   printNote([
     'Cells run one at a time (library × N × concurrency; no interleaving).',
     'ops/s  — median throughput; one op = enqueue N jobs and drain until all finished.',

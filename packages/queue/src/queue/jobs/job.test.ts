@@ -34,5 +34,6 @@ describe('createJob', () => {
         expect(isJob({ id: 'x', payload: 1, enqueuedAt: Number.NaN })).toBe(
             false,
         )
+        expect(isJob({ id: '   ', payload: 1, enqueuedAt: 0 })).toBe(false)
     })
 })

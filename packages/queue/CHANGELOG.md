@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-07-30
+
+### Fixed
+
+- Clear consumed available-queue slots and compact the head-index FIFO so
+  drained payloads are not retained unnecessarily.
+- Preserve durable retry and dead-letter handoff state across head compaction
+  and hydration, with regression coverage for transient store failures.
+
+### Changed
+
+- Reduce worker hot-path overhead when handler timing is not observed.
+- Refresh benchmark framing and published measurements.
+
 ## [0.13.0] — 2026-07-30
 
 ### Added
@@ -471,6 +485,7 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
+[0.13.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.1
 [0.13.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.0
 [0.12.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.12.0
 [0.11.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.11.0

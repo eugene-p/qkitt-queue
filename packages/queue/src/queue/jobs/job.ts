@@ -34,6 +34,8 @@ export class InvalidJobOptionError extends Error {
 const isEpochMs = (value: number): boolean =>
     Number.isFinite(value) && value >= 0
 
+const hasNonWhitespace = /\S/u
+
 /** Create a validated job envelope for `buildQueue<Job<T>>()`. */
 export const createJob = <T, TMetadata = Record<string, unknown>>(
     payload: T,
@@ -71,7 +73,8 @@ export const isJob = (value: unknown): value is Job<unknown, unknown> => {
     const job = value as Partial<Job<unknown, unknown>>
     return (
         typeof job.id === 'string' &&
-        job.id.trim().length > 0 &&
+        job.id.length > 0 &&
+        hasNonWhitespace.test(job.id) &&
         typeof job.enqueuedAt === 'number' &&
         isEpochMs(job.enqueuedAt) &&
         'payload' in job
