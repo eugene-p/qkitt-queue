@@ -86,9 +86,9 @@ paused / `autoStart: false`, or durable rows flushed but not drained).
 | workloads | 5_000 | 1_024 B `Uint8Array` | concurrency 4; burst + steady |
 | worker (optional) | 1_000 / 10_000 | number jobs | concurrency 1 / 4 |
 
-## Release baseline (0.13.3)
+## Release baseline (0.14.0)
 
-Captured 2026-07-31 · Node v26.5.0 · win32 x64 · AMD Ryzen 7 4800HS class ·
+Captured 2026-08-05 · Node v26.5.0 · win32 x64 · AMD Ryzen 7 4800HS class ·
 16 GB · Windows 11 · `tsx --expose-gc`. Median ops/s (tinybench p50) and
 median of seven post-GC retained samples (`heapUsed` + `arrayBuffers`).
 Also summarized in the [root README](../../README.md#benchmarks).
@@ -97,24 +97,24 @@ Also summarized in the [root README](../../README.md#benchmarks).
 
 | Library | ops/s med | heap Δ total | heap Δ / job |
 | --- | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 78 | 5.58 MiB | 1.1 KiB |
-| fastq | 106 | 6.40 MiB | 1.3 KiB |
-| async.queue | 94 | 7.47 MiB | 1.5 KiB |
-| p-queue | 72 | 8.82 MiB | 1.8 KiB |
+| @qkitt/queue `withWorker` | 80 | 5.58 MiB | 1.1 KiB |
+| fastq | 108 | 6.40 MiB | 1.3 KiB |
+| async.queue | 96 | 7.47 MiB | 1.5 KiB |
+| p-queue | 75 | 8.82 MiB | 1.8 KiB |
 
 ### Durable — 5k rows, `MemoryRowStore`
 
 | Operation | ops/s med | heap Δ (pending, not drained) |
 | --- | ---: | ---: |
-| enqueue + flush | 80 | 571.3 KiB total · 117 B/job |
-| hydrate + worker drain + flush | 97 | — |
+| enqueue + flush | 327 | 971.7 KiB total · 199 B/job |
+| hydrate + worker drain + flush | 109 | — |
 
 ### Workloads — 5k × 1 KiB, c=4
 
 | Scenario | ops/s med | heap Δ (burst pending) |
 | --- | ---: | ---: |
-| burst drain | 263 | 5.90 MiB total · 1.2 KiB/job |
-| steady producer | 224 | — |
+| burst drain | 276 | 5.90 MiB total · 1.2 KiB/job |
+| steady producer | 240 | — |
 
 ### How to re-capture
 

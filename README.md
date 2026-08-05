@@ -214,7 +214,7 @@ npm run bench
 
 Run with `npm run bench`. Details: [`packages/bench`](./packages/bench).
 
-> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-07-31 · full tables and re-capture notes: [`packages/bench`](./packages/bench/README.md#release-baseline-0133)
+> AMD Ryzen 7 4800HS (8c/16t) · 16 GB · Windows 11 · Node 26.5.0 · `tinybench` via `tsx --expose-gc` · 2026-08-05 · full tables and re-capture notes: [`packages/bench`](./packages/bench/README.md#release-baseline-0140)
 
 `@qkitt/queue` is a composable, persistence-first in-process job queue. Performance work prioritizes persistence and correctness, then retained memory, then throughput. The numbers below are workload context and regression evidence — not a competitive scoreboard. For a simpler worker/drain-first in-memory queue when persistence and this package’s composition surface are not needed, see [`@qkitt/tinyq`](https://github.com/eugene-p/tinyq).
 
@@ -226,10 +226,10 @@ Preallocated 1 KiB jobs; each handler reads and hashes the payload, then yields.
 
 | Library | ops/s (med) | heap Δ total | heap Δ / item |
 | --- | ---: | ---: | ---: |
-| @qkitt/queue `withWorker` | 78 | **5.58 MiB** | **1.1 KiB** |
-| fastq | **106** | 6.40 MiB | 1.3 KiB |
-| async.queue | 94 | 7.47 MiB | 1.5 KiB |
-| p-queue | 72 | 8.82 MiB | 1.8 KiB |
+| @qkitt/queue `withWorker` | 80 | **5.58 MiB** | **1.1 KiB** |
+| fastq | **108** | 6.40 MiB | 1.3 KiB |
+| async.queue | 96 | 7.47 MiB | 1.5 KiB |
+| p-queue | 75 | 8.82 MiB | 1.8 KiB |
 
 Timing uses tinybench p50 (median; mean fallback only if p50 is unavailable). Heap Δ is the median of seven post-GC samples with N items held (`heapUsed` + `arrayBuffers`).
 
@@ -239,15 +239,15 @@ Internal `MemoryRowStore` bookkeeping check; not a storage-backend benchmark.
 
 | Operation (5k rows) | ops/s (med) | heap Δ (pending) |
 | --- | ---: | ---: |
-| enqueue + flush | 80 | **571.3 KiB** total · **117 B**/job |
-| hydrate + worker drain + flush | 97 | — |
+| enqueue + flush | 327 | **971.7 KiB** total · **199 B**/job |
+| hydrate + worker drain + flush | 109 | — |
 
 ### Workload shapes — internal regression (5k × 1 KiB, c=4)
 
 | Scenario | ops/s (med) | heap Δ (burst pending) |
 | --- | ---: | ---: |
-| burst drain | 263 | **5.90 MiB** total · **1.2 KiB**/job |
-| steady producer | 224 | — |
+| burst drain | 276 | **5.90 MiB** total · **1.2 KiB**/job |
+| steady producer | 240 | — |
 
 ### Browser — durability context (Chromium)
 

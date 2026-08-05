@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-05
+
+### Added
+
+- `Router.publishAsync()` reports matched, accepted, and failed target writes.
+- Web Storage rows use generation manifests so reloads see the previous or
+  newly committed generation after an interrupted mutation.
+
+### Fixed
+
+- Serialize durable capacity and exclusive-operation checks with the write
+  chain, preventing enqueue, `replaceAll`, and hydrate races.
+- Emit `persist:error` for ordinary store failures and chunk timers for delays
+  beyond the platform timeout limit.
+
+### Changed
+
+- Reduce large-queue work in row stores, job pagination, and observability
+  snapshots while preserving insertion order and retained-memory behavior.
+
 ## [0.13.3] — 2026-07-31
 
 ### Changed
@@ -514,7 +534,8 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
-[Unreleased]: https://github.com/eugene-p/qkitt-queue/compare/v0.13.3...HEAD
+[Unreleased]: https://github.com/eugene-p/qkitt-queue/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.14.0
 [0.13.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.3
 [0.13.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.1
 [0.13.2]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.2
