@@ -5,9 +5,11 @@ import type {
     QueueConfig,
     WorkerConfig,
 } from '../types'
+import type { RecoveryPolicy } from '@qkitt/queue'
 import { configError } from '../errors'
 import {
     expectBoolean,
+    expectNonNegativeFinite,
     expectPositiveInteger,
     expectString,
     isPlainObject,
@@ -64,7 +66,7 @@ export const parseWorkerConfig = (value: unknown, path: string): WorkerConfig =>
     if (!isPlainObject(value)) {
         return configError(
             'INVALID_TYPE',
-            `${path} must be a function or { run, concurrency?, autoStart? }`,
+            `${path} must be a function or { run, concurrency?, autoStart?, timeoutMs?, traceContext?, onFailure? }`,
             path,
         )
     }
@@ -87,10 +89,45 @@ export const parseWorkerConfig = (value: unknown, path: string): WorkerConfig =>
             ? undefined
             : expectBoolean(value.autoStart, `${path}.autoStart`)
 
+    const timeoutMs =
+        value.timeoutMs === undefined
+            ? undefined
+            : expectNonNegativeFinite(value.timeoutMs, `${path}.timeoutMs`)
+
+    const traceContext =
+        value.traceContext === undefined
+            ? undefined
+            : typeof value.traceContext === 'function'
+              ? (value.traceContext as (item: unknown) => unknown)
+              : configError(
+                    'INVALID_TYPE',
+                    `${path}.traceContext must be a function`,
+                    `${path}.traceContext`,
+                )
+
+    const onFailure = value.onFailure
+    if (
+        onFailure !== undefined &&
+        onFailure !== 'fail' &&
+        onFailure !== 'loop' &&
+        typeof onFailure !== 'function'
+    ) {
+        return configError(
+            'INVALID_TYPE',
+            `${path}.onFailure must be "fail", "loop", or a function`,
+            `${path}.onFailure`,
+        )
+    }
+
     return {
         run: value.run as Extract<WorkerConfig, { run: unknown }>['run'],
         ...(concurrency !== undefined ? { concurrency } : {}),
         ...(autoStart !== undefined ? { autoStart } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(traceContext !== undefined ? { traceContext } : {}),
+        ...(onFailure !== undefined
+            ? { onFailure: onFailure as RecoveryPolicy<unknown> }
+            : {}),
     }
 }
 

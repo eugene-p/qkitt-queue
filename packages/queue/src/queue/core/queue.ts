@@ -588,7 +588,19 @@ export const buildQueue = <T>(
         op: () => R | PromiseLike<R>,
     ): Promise<R> => {
         const startedAt = nowMs()
-        const result = await op()
+        let result: R
+        try {
+            result = await op()
+        } catch (error) {
+            if (hasListeners('persist:error')) {
+                emitter.emit('persist:error', {
+                    operation,
+                    error,
+                    ...(id !== undefined ? { id } : {}),
+                })
+            }
+            throw error
+        }
         if (hasListeners('persist:operation')) {
             emitter.emit('persist:operation', {
                 operation,
@@ -768,13 +780,6 @@ export const buildQueue = <T>(
                 } catch (error) {
                     // Retain the expiry so a transient store failure retries.
                     leaseExpiries.push(head)
-                    if (hasListeners('persist:error')) {
-                        emitter.emit('persist:error', {
-                            operation: 'put',
-                            error,
-                            id: head.id,
-                        })
-                    }
                     if (!suppressStoreErrors) throw error
                     break
                 }
@@ -911,10 +916,12 @@ export const buildQueue = <T>(
             )
         }
 
-        try {
-            assertNotFull(1)
-        } catch (e) {
-            return Promise.reject(e)
+        if (!chain) {
+            try {
+                assertNotFull(1)
+            } catch (e) {
+                return Promise.reject(e)
+            }
         }
 
         let id: number
@@ -937,6 +944,7 @@ export const buildQueue = <T>(
         }
 
         return withChain(async () => {
+            assertNotFull(1)
             await callStore('put', id, () => store!.put(
                 toRecord(id, item, availableAt, null, null),
             ))
@@ -1195,9 +1203,6 @@ export const buildQueue = <T>(
                 ),
             )
         }
-        if (leased.size > 0) {
-            return Promise.reject(new HydrateWhileActiveError())
-        }
         if (maxSize !== undefined && items.length > maxSize) {
             return Promise.reject(new QueueFullError(maxSize))
         }
@@ -1218,6 +1223,9 @@ export const buildQueue = <T>(
         }
 
         return withChain(async () => {
+            if (leased.size > 0) {
+                throw new HydrateWhileActiveError()
+            }
             if (store) {
                 if (store.replaceAll) {
                     await callStore('replace', undefined, () => store.replaceAll!(planned))
@@ -1594,6 +1602,12 @@ export const buildQueue = <T>(
         hydrating = true
         try {
             await flush()
+            // A claim already queued before hydration may have completed while
+            // flush drained the write chain. Re-check after the await so we
+            // never reclaim an active in-process lease.
+            if (leased.size > 0) {
+                throw new HydrateWhileActiveError()
+            }
             const loaded = await callStore('load', undefined, () => store.loadAll())
             const seen = new Set<number>()
             let maxId = 0

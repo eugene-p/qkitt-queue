@@ -66,6 +66,35 @@ describe('buildFromConfig', () => {
         expect(seen).toEqual([1])
     })
 
+    it('forwards all typed worker options', async () => {
+        let receivedTrace: unknown
+        let receivedTimeoutSignal = false
+        const system = buildFromConfigSync({
+            queues: {
+                jobs: {
+                    worker: {
+                        run: async (_item: number, context) => {
+                            receivedTrace = context?.traceContext
+                            receivedTimeoutSignal = context?.signal !== undefined
+                        },
+                        autoStart: false,
+                        timeoutMs: 10_000,
+                        traceContext: (item: unknown) => ({ item }),
+                        onFailure: 'fail',
+                    },
+                },
+            },
+            hydrate: false,
+        })
+
+        ;(system.queues.jobs as never as { start: () => void }).start()
+        await system.queues.jobs.enqueue(7)
+        await whenIdle(system.queues.jobs as never)
+
+        expect(receivedTrace).toEqual({ item: 7 })
+        expect(receivedTimeoutSignal).toBe(true)
+    })
+
     it('withLoop requeues failures', async () => {
         let attempts = 0
         const system = await buildFromConfig({
@@ -118,6 +147,21 @@ describe('buildFromConfig', () => {
                 queues: { q: { persist: { store: 'missing' } } },
             }),
         ).rejects.toBeInstanceOf(ConfigValidationError)
+    })
+
+    it('rejects invalid runtime worker policies', () => {
+        expect(() =>
+            defineConfig({
+                queues: {
+                    jobs: {
+                        worker: {
+                            run: () => {},
+                            onFailure: 123 as never,
+                        },
+                    },
+                },
+            }),
+        ).toThrow(ConfigValidationError)
     })
 
     it('memory adapter works without strategy field', async () => {

@@ -63,6 +63,16 @@ router.setUnmatchedTarget(unrouted) // or undefined to clear
 
 If a matched binding’s `enqueue` throws or rejects, `publish` still counts that binding as matched and does not deliver to the unmatched sink (see `router:error`).
 
+For durable targets, use `publishAsync` when the caller must await acceptance:
+
+```ts
+const result = await router.publishAsync('orders.created', { id: 1 })
+// { matched: 2, accepted: 2, failed: 0 }
+```
+
+`publish` remains the synchronous fire-and-forget form; `publishAsync` waits for
+all matching enqueues and reports fulfilled versus failed targets.
+
 **Not the same as dead letter.** Router unmatched is for publishes with no binding. [Dead letter](./failure-routing.md) is for **worker processing failures** after dequeue.
 
 Runnable demo: [`examples/router-topics`](../../../examples/router-topics).

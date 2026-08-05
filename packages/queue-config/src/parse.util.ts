@@ -67,6 +67,20 @@ export const expectNonNegativeInteger = (
     return value
 }
 
+export const expectNonNegativeFinite = (
+    value: unknown,
+    path: string,
+): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+        return configError(
+            'INVALID_TYPE',
+            `${path} must be a finite number >= 0`,
+            path,
+        )
+    }
+    return value
+}
+
 export const parseAdapter = (
     value: unknown,
     path: string,

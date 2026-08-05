@@ -58,6 +58,23 @@ describe('job operations', () => {
             expect.objectContaining({ state: 'ready' }),
         )
     })
+
+    it('pages a large job queue without changing its ordering', async () => {
+        const queue = buildQueue<ReturnType<typeof createJob<number>>>()
+        for (let i = 0; i < 2_000; i += 1) {
+            await queue.enqueue(createJob(i, { id: `job-${i}`, enqueuedAt: i }))
+        }
+
+        const ids: string[] = []
+        let cursor: number | undefined
+        do {
+            const page = queue.listJobs({ cursor, limit: 37 })
+            ids.push(...page.items.map((job) => job.id))
+            cursor = page.nextCursor
+        } while (cursor !== undefined)
+
+        expect(ids).toEqual(Array.from({ length: 2_000 }, (_, i) => `job-${i}`))
+    })
 })
 
 describe('withObservability', () => {
@@ -103,5 +120,17 @@ describe('withObservability', () => {
                 oldestAgeMs: expect.any(Number),
             }),
         )
+    })
+
+    it('computes metrics for a large job queue', async () => {
+        const queue = withObservability(buildQueue<ReturnType<typeof createJob<number>>>());
+        for (let i = 0; i < 1_000; i += 1) {
+            await queue.enqueue(createJob(i, { id: `metrics-${i}`, enqueuedAt: i }))
+        }
+
+        expect(queue.metrics()).toMatchObject({
+            depth: { available: 1_000, delayed: 0, leased: 0 },
+            oldestAgeMs: expect.any(Number),
+        })
     })
 })

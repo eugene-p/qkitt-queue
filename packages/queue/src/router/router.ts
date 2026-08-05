@@ -31,6 +31,15 @@ export type UnmatchedRecord = {
     data: unknown
 }
 
+export type RouterPublishResult = {
+    /** Number of matching bindings, regardless of enqueue outcome. */
+    matched: number
+    /** Number of target enqueues that fulfilled. */
+    accepted: number
+    /** Number of target enqueues that rejected or threw. */
+    failed: number
+}
+
 export type BuildRouterOptions = {
     /**
      * When a publish matches **no** bindings, enqueue a {@link RouteMessage}
@@ -115,6 +124,11 @@ export type Router<TEvents extends EventMap = RouterEvents> = {
      * (0 when unrouted; the unmatched sink does not count as a match).
      */
     publish: <T = unknown>(topic: string, data: T) => number
+    /** Await all matching target enqueues and report acceptance separately. */
+    publishAsync: <T = unknown>(
+        topic: string,
+        data: T,
+    ) => Promise<RouterPublishResult>
     /** Snapshot of current pattern → target bindings. */
     bindings: () => Binding[]
     /** Clear all bindings (does not clear unmatched stats or the sink target). */
@@ -280,6 +294,85 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         return matched
     }
 
+    const publishAsync = async <T = unknown>(
+        topic: string,
+        data: T,
+    ): Promise<RouterPublishResult> => {
+        const topicParts = topic.split(TOPIC_SEPARATOR)
+        if (!isValidTopicParts(topicParts)) {
+            const error = new InvalidTopicError(topic)
+            emitRouter('router:error', { operation: 'publish', error, topic })
+            throw error
+        }
+
+        const message: RouteMessage<T> = { topic, data }
+        const matching = [...routes].filter((route) =>
+            matchTopicParts(route.patternParts, topicParts),
+        )
+
+        if (matching.length === 0) {
+            unmatchedTotal += 1
+            lastUnmatchedRecord = { topic, data }
+            if (unmatchedTarget === undefined) {
+                emitRouter('router:unmatched', {
+                    topic,
+                    data,
+                    delivered: false,
+                })
+                return { matched: 0, accepted: 0, failed: 0 }
+            }
+            try {
+                await unmatchedTarget.enqueue({ topic, data })
+                emitRouter('router:unmatched', {
+                    topic,
+                    data,
+                    delivered: true,
+                })
+                return { matched: 0, accepted: 1, failed: 0 }
+            } catch (error) {
+                emitRouter('router:error', {
+                    operation: 'unmatched',
+                    error,
+                    topic,
+                })
+                emitRouter('router:unmatched', {
+                    topic,
+                    data,
+                    delivered: false,
+                })
+                return { matched: 0, accepted: 0, failed: 1 }
+            }
+        }
+
+        const outcomes = await Promise.all(
+            matching.map(async (route) => {
+                try {
+                    await route.target.enqueue(message as RouteMessage)
+                    return true
+                } catch (error) {
+                    emitRouter('router:error', {
+                        operation: 'publish',
+                        error,
+                        topic,
+                        pattern: route.pattern,
+                    })
+                    return false
+                }
+            }),
+        )
+        const accepted = outcomes.filter(Boolean).length
+        emitRouter('router:published', {
+            topic,
+            data,
+            matched: matching.length,
+        })
+        return {
+            matched: matching.length,
+            accepted,
+            failed: matching.length - accepted,
+        }
+    }
+
     const bindings = (): Binding[] =>
         routes.map((route) => ({
             pattern: route.pattern,
@@ -310,6 +403,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         bind,
         unbind,
         publish,
+        publishAsync,
         bindings,
         clear,
         setUnmatchedTarget,

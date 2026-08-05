@@ -211,6 +211,28 @@ describe('buildRouter', () => {
         })
     })
 
+    it('publishAsync distinguishes matched bindings from accepted writes', async () => {
+        const router = buildRouter()
+        const accepted = {
+            enqueue: vi.fn(async () => undefined),
+        }
+        const rejected = {
+            enqueue: vi.fn(async () => {
+                throw new Error('queue full')
+            }),
+        }
+        router.bind('orders.#', accepted)
+        router.bind('orders.#', rejected)
+
+        await expect(router.publishAsync('orders.created', { id: 1 })).resolves.toEqual({
+            matched: 2,
+            accepted: 1,
+            failed: 1,
+        })
+        expect(accepted.enqueue).toHaveBeenCalledOnce()
+        expect(rejected.enqueue).toHaveBeenCalledOnce()
+    })
+
     it('emits router:published with match count', () => {
         const router = buildRouter()
         const published = vi.fn()

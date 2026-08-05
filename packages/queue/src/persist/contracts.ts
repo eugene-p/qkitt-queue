@@ -42,7 +42,7 @@ export type PersistEvents = {
     'persist:lease-expired': { id: number; item: unknown }
     'persist:id-space-low': { remaining: number }
     'persist:error': {
-        operation: 'load' | 'put' | 'remove' | 'clear'
+        operation: 'load' | 'put' | 'remove' | 'clear' | 'replace'
         error: unknown
         id?: number
     }

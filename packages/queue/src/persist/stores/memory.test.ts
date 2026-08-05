@@ -107,6 +107,32 @@ describe('createMemoryRowStore', () => {
             ),
         ).toEqual([[2, 'b']])
     })
-})
 
+    it('handles a growing backlog and batch mutations', () => {
+        const store = createMemoryRowStore<number>()
+        for (let id = 1; id <= 2_000; id += 1) {
+            store.put({
+                id,
+                item: id,
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            })
+        }
+        expect(store.rows).toHaveLength(2_000)
+
+        store.removeBatch?.(Array.from({ length: 1_000 }, (_, i) => i + 1))
+        expect(store.rows).toHaveLength(1_000)
+        store.putBatch?.(
+            Array.from({ length: 1_000 }, (_, i) => ({
+                id: i + 2_001,
+                item: i + 2_001,
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            })),
+        )
+        expect(store.rows).toHaveLength(2_000)
+    })
+})
 

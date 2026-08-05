@@ -382,7 +382,7 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `StoreDefinition` | Built-in or custom store entry |
 | `PersistConfig` | `{ store, leaseTtlMs? }` on a queue |
 | `QueueConfig` | `maxSize`, `persist`, `worker`, `loop`, `dlq` |
-| `WorkerConfig` | Function or `{ run, concurrency?, autoStart?, onFailure? }` |
+| `WorkerConfig` | Function or `{ run, concurrency?, autoStart?, timeoutMs?, traceContext?, onFailure? }` |
 | `LoopConfig` | `true` or `{ map?, filter?, delay? }` for `withLoop` |
 | `DlqConfig` | Target queue name string or `{ queue, map?, filter? }` for `withDlq` |
 | `RouterConfig` / `BindingConfig` | Router section |

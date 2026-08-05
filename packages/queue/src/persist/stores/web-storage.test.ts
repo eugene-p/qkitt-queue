@@ -14,6 +14,37 @@ const memoryStorage = () => {
     }
 }
 
+const faultStorage = () => {
+    const base = memoryStorage()
+    let mutationCount = 0
+    let failAt: number | undefined
+    return {
+        ...base,
+        get mutationCount() {
+            return mutationCount
+        },
+        failMutation(offset: number) {
+            failAt = mutationCount + offset
+        },
+        setItem: (k: string, v: string) => {
+            mutationCount += 1
+            if (mutationCount === failAt) {
+                failAt = undefined
+                throw new Error('injected storage failure')
+            }
+            base.setItem(k, v)
+        },
+        removeItem: (k: string) => {
+            mutationCount += 1
+            if (mutationCount === failAt) {
+                failAt = undefined
+                throw new Error('injected storage failure')
+            }
+            base.removeItem(k)
+        },
+    }
+}
+
 describe('createWebRowStore', () => {
     it('round-trips full row records', () => {
         const storage = memoryStorage()
@@ -93,5 +124,94 @@ describe('createWebRowStore', () => {
                 leaseExpiresAt: null,
             },
         ])
+    })
+
+    it('keeps loadAll safe when put fails at either key mutation', () => {
+        for (let failure = 0; failure < 2; failure += 1) {
+            const storage = faultStorage()
+            const store = createWebRowStore<string>({ key: 'q', storage })
+            if (failure === 1) {
+                store.put({
+                    id: 1,
+                    item: 'existing',
+                    availableAt: 0,
+                    leaseGeneration: null,
+                    leaseExpiresAt: null,
+                })
+            }
+            storage.failMutation(failure + 1)
+            expect(() =>
+                store.put({
+                    id: 2,
+                    item: 'new',
+                    availableAt: 0,
+                    leaseGeneration: null,
+                    leaseExpiresAt: null,
+                }),
+            ).toThrow('injected storage failure')
+            expect(() => store.loadAll()).not.toThrow()
+        }
+    })
+
+    it('keeps loadAll safe when remove fails at either key mutation', () => {
+        for (let failure = 0; failure < 2; failure += 1) {
+            const storage = faultStorage()
+            const store = createWebRowStore<string>({ key: 'q', storage })
+            store.put({
+                id: 1,
+                item: 'existing',
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            })
+            storage.failMutation(failure + 1)
+            expect(() => store.remove(1)).toThrow('injected storage failure')
+            expect(() => store.loadAll()).not.toThrow()
+        }
+    })
+
+    it('keeps loadAll safe when replaceAll fails during cleanup or publish', () => {
+        for (let failure = 0; failure < 3; failure += 1) {
+            const storage = faultStorage()
+            const store = createWebRowStore<string>({ key: 'q', storage })
+            store.put({
+                id: 1,
+                item: 'old',
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            })
+            storage.failMutation(failure + 1)
+            expect(() =>
+                store.replaceAll?.([
+                    {
+                        id: 10,
+                        item: 'new',
+                        availableAt: 0,
+                        leaseGeneration: null,
+                        leaseExpiresAt: null,
+                    },
+                ]),
+            ).toThrow('injected storage failure')
+            expect(() => store.loadAll()).not.toThrow()
+        }
+    })
+
+    it('handles large batch writes and removals', () => {
+        const storage = memoryStorage()
+        const store = createWebRowStore<number>({ key: 'large', storage })
+        const records = Array.from({ length: 2_000 }, (_, i) => ({
+            id: i + 1,
+            item: i + 1,
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
+        }))
+        store.putBatch?.(records)
+        expect(store.loadAll()).toHaveLength(2_000)
+        store.removeBatch?.(records.slice(0, 1_000).map((record) => record.id))
+        expect(store.loadAll()).toHaveLength(1_000)
+        store.replaceAll?.(records.slice(0, 1_500))
+        expect(store.loadAll()).toHaveLength(1_500)
     })
 })

@@ -38,7 +38,14 @@ const resolveWorker = <T>(
             options: deferStart ? { autoStart: false } : {},
         }
     }
-    const { run, concurrency, autoStart, onFailure } = worker
+    const {
+        run,
+        concurrency,
+        autoStart,
+        timeoutMs,
+        traceContext,
+        onFailure,
+    } = worker
     const resolvedAutoStart = deferStart ? false : autoStart
     return {
         run: run as WorkerFn<T, unknown>,
@@ -49,6 +56,13 @@ const resolveWorker = <T>(
                 : {}),
             ...(onFailure !== undefined
                 ? { onFailure: onFailure as WithWorkerOptions<T>['onFailure'] }
+                : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            ...(traceContext !== undefined
+                ? {
+                      traceContext:
+                          traceContext as WithWorkerOptions<T>['traceContext'],
+                  }
                 : {}),
         },
     }

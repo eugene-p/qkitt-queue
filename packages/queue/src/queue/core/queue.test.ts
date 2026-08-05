@@ -3,6 +3,17 @@ import { createMemoryRowStore } from '../../persist/stores/memory'
 import { HydrateWhileActiveError, LeaseMismatchError } from '../../persist/errors'
 import { buildQueue, InvalidQueueOptionError, QueueFullError } from './queue'
 import { getQueueName } from './queue-name.util'
+import { MAX_TIMER_DELAY_MS } from '../../util/schedule-timeout.util'
+
+const deferred = <T = void>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    let reject!: (error?: unknown) => void
+    const promise = new Promise<T>((res, rej) => {
+        resolve = res
+        reject = rej
+    })
+    return { promise, resolve, reject }
+}
 
 describe('buildQueue', () => {
     it('enqueues and dequeues in FIFO order', async () => {
@@ -102,6 +113,25 @@ describe('buildQueue', () => {
 
             expect(handler).toHaveBeenCalledTimes(1)
             expect(handler).toHaveBeenCalledWith({ item: 1, size: 2 })
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('handles delays larger than the platform timer maximum', async () => {
+        vi.useFakeTimers({ now: 0 })
+        try {
+            const queue = buildQueue<string>()
+            await queue.enqueue('far away', {
+                delayMs: MAX_TIMER_DELAY_MS + 1,
+            })
+
+            await vi.advanceTimersByTimeAsync(MAX_TIMER_DELAY_MS)
+            expect(queue.readyCount()).toBe(0)
+
+            await vi.advanceTimersByTimeAsync(1)
+            expect(queue.readyCount()).toBe(1)
+            expect(await queue.dequeue()).toBe('far away')
         } finally {
             vi.useRealTimers()
         }
@@ -351,6 +381,35 @@ describe('buildQueue', () => {
         await expect(queue.enqueue(2)).rejects.toBeInstanceOf(QueueFullError)
     })
 
+    it('serializes durable maxSize admission behind pending puts', async () => {
+        const store = createMemoryRowStore<string>()
+        const putStarted = deferred<void>()
+        const releasePut = deferred<void>()
+        const put = store.put
+        store.put = async (record) => {
+            if (record.item === 'one') {
+                putStarted.resolve()
+                await releasePut.promise
+            }
+            put(record)
+        }
+        const queue = buildQueue<string>({ store, maxSize: 1 })
+
+        const first = queue.enqueue('one')
+        await putStarted.promise
+        const second = queue.enqueue('two')
+        releasePut.resolve()
+
+        const settled = await Promise.allSettled([first, second])
+        expect(settled[0]!.status).toBe('fulfilled')
+        expect(settled[1]!.status).toBe('rejected')
+        expect((settled[1] as PromiseRejectedResult).reason).toBeInstanceOf(
+            QueueFullError,
+        )
+        expect(queue.size()).toBe(1)
+        expect(queue.toArray()).toEqual(['one'])
+    })
+
     it('rejects invalid maxSize', () => {
         expect(() => buildQueue({ maxSize: 0 })).toThrow(
             InvalidQueueOptionError,
@@ -391,6 +450,106 @@ describe('buildQueue', () => {
         await queue.replaceAll(['x', 'y'])
         expect(queue.toArray()).toEqual(['x', 'y'])
     })
+
+    it('does not replace a queue while a durable claim is queued', async () => {
+        const store = createMemoryRowStore<string>()
+        const claimPutStarted = deferred<void>()
+        const releaseClaimPut = deferred<void>()
+        const put = store.put
+        store.put = async (record) => {
+            if (record.leaseGeneration !== null) {
+                claimPutStarted.resolve()
+                await releaseClaimPut.promise
+            }
+            put(record)
+        }
+        const queue = buildQueue<string>({ store })
+        await queue.enqueue('original')
+
+        const claiming = queue.claim()
+        await claimPutStarted.promise
+        const replacing = queue.replaceAll(['replacement'])
+        releaseClaimPut.resolve()
+
+        const lease = await claiming
+        expect(lease?.item).toBe('original')
+        await expect(replacing).rejects.toBeInstanceOf(HydrateWhileActiveError)
+        await queue.ack(lease!)
+        expect(queue.size()).toBe(0)
+        expect(store.rows).toEqual([])
+    })
+
+    it('does not hydrate over a durable claim that was already queued', async () => {
+        const store = createMemoryRowStore<string>()
+        const claimPutStarted = deferred<void>()
+        const releaseClaimPut = deferred<void>()
+        const put = store.put
+        store.put = async (record) => {
+            if (record.leaseGeneration !== null) {
+                claimPutStarted.resolve()
+                await releaseClaimPut.promise
+            }
+            put(record)
+        }
+        const queue = buildQueue<string>({ store })
+        await queue.enqueue('original')
+
+        const claiming = queue.claim()
+        await claimPutStarted.promise
+        const hydrating = queue.hydrate()
+        releaseClaimPut.resolve()
+
+        const lease = await claiming
+        expect(lease?.item).toBe('original')
+        await expect(hydrating).rejects.toBeInstanceOf(HydrateWhileActiveError)
+        expect(queue.stats()).toEqual({ available: 0, delayed: 0, leased: 1 })
+        await queue.ack(lease!)
+        expect(queue.size()).toBe(0)
+    })
+
+    it.each(['load', 'put', 'remove', 'clear', 'replace'] as const)(
+        'emits persist:error when %s fails',
+        async (operation) => {
+            const error = new Error(`${operation} failed`)
+            const store = createMemoryRowStore<number>()
+            const queue = buildQueue<number>({ store })
+            const onError = vi.fn()
+            queue.on('persist:error', onError)
+
+            if (operation === 'load') {
+                store.loadAll = () => {
+                    throw error
+                }
+                await expect(queue.hydrate()).rejects.toBe(error)
+            } else if (operation === 'put') {
+                store.put = () => {
+                    throw error
+                }
+                await expect(queue.enqueue(1)).rejects.toBe(error)
+            } else if (operation === 'remove') {
+                await queue.enqueue(1)
+                store.remove = () => {
+                    throw error
+                }
+                await expect(queue.dequeue()).rejects.toBe(error)
+            } else if (operation === 'clear') {
+                await queue.enqueue(1)
+                store.clear = () => {
+                    throw error
+                }
+                await expect(queue.clear()).rejects.toBe(error)
+            } else {
+                store.replaceAll = () => {
+                    throw error
+                }
+                await expect(queue.replaceAll([1])).rejects.toBe(error)
+            }
+
+            expect(onError).toHaveBeenCalledWith(
+                expect.objectContaining({ operation, error }),
+            )
+        },
+    )
 
     it('rejects every mutation while hydrate is loading', async () => {
         let beginLoad!: () => void
