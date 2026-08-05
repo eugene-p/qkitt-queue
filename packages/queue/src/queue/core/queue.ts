@@ -1317,52 +1317,6 @@ export const buildQueue = <T>(
         }
     }
 
-    const allJobs = (state?: QueueJob<T>['state']): QueueJob<T>[] => {
-        promoteDueDelayed()
-        const jobs: QueueJob<T>[] = []
-        if (state === undefined || state === 'ready') {
-            for (let i = availableHead; i < availableItems.length; i += 1) {
-                const job = makeJobView(
-                    availableItems[i]!,
-                    'ready',
-                    availableAttempts?.[i] ?? 1,
-                )
-                if (job) jobs.push(job)
-            }
-        }
-        if (state === undefined || state === 'delayed') {
-            const entries = (delayed?.toArray() ?? []).sort((a, b) => {
-                if (a.availableAt !== b.availableAt) {
-                    return a.availableAt - b.availableAt
-                }
-                return a.id - b.id
-            })
-            for (const entry of entries) {
-                const job = makeJobView(
-                    entry.item,
-                    'delayed',
-                    entry.attempt,
-                    entry.availableAt,
-                )
-                if (job) jobs.push(job)
-            }
-        }
-        if (state === undefined || state === 'leased') {
-            const entries = [...leased.values()].sort((a, b) => a.id - b.id)
-            for (const entry of entries) {
-                const job = makeJobView(
-                    entry.item,
-                    'leased',
-                    entry.attempt,
-                    undefined,
-                    entry.expiresAt ?? undefined,
-                )
-                if (job) jobs.push(job)
-            }
-        }
-        return jobs
-    }
-
     const getJob = (id: string): QueueJob<T> | undefined => {
         const applicationId = requireApplicationId(id)
         promoteDueDelayed()
@@ -1411,12 +1365,84 @@ export const buildQueue = <T>(
         if (!isIntegerInRange(limit, 1)) {
             throw new InvalidQueueOptionError('limit must be a safe integer >= 1')
         }
-        const jobs = allJobs(options.state)
-        const items = jobs.slice(cursor, cursor + limit)
+        promoteDueDelayed()
+        // Keep one look-ahead item, but do not materialize the entire queue.
+        // The numeric cursor remains backwards compatible; each page now
+        // allocates at most `limit + 1` job views.
+        const needed = Math.min(Number.MAX_SAFE_INTEGER, cursor + limit + 1)
+        const collected: QueueJob<T>[] = []
+        let skipped = 0
+        const collect = (job: QueueJob<T> | undefined): boolean => {
+            if (job === undefined) return collected.length < needed
+            if (skipped < cursor) {
+                skipped += 1
+                return true
+            }
+            collected.push(job)
+            return collected.length < needed
+        }
+
+        if (options.state === undefined || options.state === 'ready') {
+            for (let i = availableHead; i < availableItems.length; i += 1) {
+                if (
+                    !collect(
+                        makeJobView(
+                            availableItems[i]!,
+                            'ready',
+                            availableAttempts?.[i] ?? 1,
+                        ),
+                    )
+                ) break
+            }
+        }
+        if (
+            collected.length < needed &&
+            (options.state === undefined || options.state === 'delayed')
+        ) {
+            const entries = (delayed?.toArray() ?? []).sort((a, b) => {
+                if (a.availableAt !== b.availableAt) {
+                    return a.availableAt - b.availableAt
+                }
+                return a.id - b.id
+            })
+            for (const entry of entries) {
+                if (
+                    !collect(
+                        makeJobView(
+                            entry.item,
+                            'delayed',
+                            entry.attempt,
+                            entry.availableAt,
+                        ),
+                    )
+                ) break
+            }
+        }
+        if (
+            collected.length < needed &&
+            (options.state === undefined || options.state === 'leased')
+        ) {
+            const entries = [...leased.values()].sort((a, b) => a.id - b.id)
+            for (const entry of entries) {
+                if (
+                    !collect(
+                        makeJobView(
+                            entry.item,
+                            'leased',
+                            entry.attempt,
+                            undefined,
+                            entry.expiresAt ?? undefined,
+                        ),
+                    )
+                ) break
+            }
+        }
+
+        const items = collected.slice(0, limit)
         const next = cursor + items.length
         return {
             items,
-            ...(next < jobs.length ? { nextCursor: next } : {}),
+            ...(collected.length > items.length ? { nextCursor: next } : {}),
         }
     }
 

@@ -2,10 +2,13 @@ import type {
     JsonCodec,
     LoopMapContext,
     Queue,
+    QueueMetrics,
     Router,
     RowStore,
     WebStorageLike,
     WithWorkerOptions,
+    WithObservabilityOptions,
+    WithRetryOptions,
     WorkerControls,
     WorkerFn,
 } from '@qkitt/queue'
@@ -96,6 +99,25 @@ export type DlqConfig =
           map?: (item: any, error: unknown) => any
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           filter?: (item: any, error: unknown) => boolean
+          maxHandoffAttempts?: number
+      }
+
+export type RetryConfig =
+    | true
+    | {
+          maxAttempts?: number
+          initialDelayMs?: number
+          maxDelayMs?: number
+          jitter?: number
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          classify?: NonNullable<WithRetryOptions<any>['classify']>
+      }
+
+export type ObservabilityConfig =
+    | true
+    | {
+          onMetrics?: WithObservabilityOptions<unknown>['onMetrics']
+          onTrace?: WithObservabilityOptions<unknown>['onTrace']
       }
 
 export type QueueConfig = {
@@ -105,6 +127,8 @@ export type QueueConfig = {
     worker?: WorkerConfig
     loop?: LoopConfig
     dlq?: DlqConfig
+    retry?: RetryConfig
+    observability?: ObservabilityConfig
 }
 
 export type BindingConfig = {
@@ -143,14 +167,18 @@ export type ConfiguredPersistMethods = {
 
 export type ConfiguredQueue<T = unknown> = Queue<T> &
     Partial<WorkerControls> &
-    Partial<ConfiguredPersistMethods>
+    Partial<ConfiguredPersistMethods> &
+    Partial<{ metrics: () => QueueMetrics }>
 
 export type ConfiguredQueueFor<
     Q extends QueueConfig,
     T = unknown,
 > = Queue<T> &
     (Q extends { worker: WorkerConfig } ? WorkerControls : unknown) &
-    (Q extends { persist: PersistConfig } ? ConfiguredPersistMethods : unknown)
+    (Q extends { persist: PersistConfig } ? ConfiguredPersistMethods : unknown) &
+    (Q extends { observability: ObservabilityConfig }
+        ? { metrics: () => QueueMetrics }
+        : unknown)
 
 export type ConfiguredSystemQueues<
     TConfig extends SystemConfig,

@@ -149,7 +149,19 @@ describe('createWebRowStore', () => {
                     leaseExpiresAt: null,
                 }),
             ).toThrow('injected storage failure')
-            expect(() => store.loadAll()).not.toThrow()
+            expect(store.loadAll()).toEqual(
+                failure === 1
+                    ? [
+                          {
+                              id: 1,
+                              item: 'existing',
+                              availableAt: 0,
+                              leaseGeneration: null,
+                              leaseExpiresAt: null,
+                          },
+                      ]
+                    : [],
+            )
         }
     })
 
@@ -165,8 +177,13 @@ describe('createWebRowStore', () => {
                 leaseExpiresAt: null,
             })
             storage.failMutation(failure + 1)
-            expect(() => store.remove(1)).toThrow('injected storage failure')
-            expect(() => store.loadAll()).not.toThrow()
+            if (failure === 0) {
+                expect(() => store.remove(1)).toThrow('injected storage failure')
+                expect(store.loadAll()).toHaveLength(1)
+            } else {
+                expect(() => store.remove(1)).not.toThrow()
+                expect(store.loadAll()).toEqual([])
+            }
         }
     })
 
@@ -182,7 +199,7 @@ describe('createWebRowStore', () => {
                 leaseExpiresAt: null,
             })
             storage.failMutation(failure + 1)
-            expect(() =>
+            const replace = () =>
                 store.replaceAll?.([
                     {
                         id: 10,
@@ -191,9 +208,22 @@ describe('createWebRowStore', () => {
                         leaseGeneration: null,
                         leaseExpiresAt: null,
                     },
-                ]),
-            ).toThrow('injected storage failure')
-            expect(() => store.loadAll()).not.toThrow()
+                ])
+            if (failure < 2) {
+                expect(replace).toThrow('injected storage failure')
+                expect(store.loadAll()).toHaveLength(1)
+            } else {
+                expect(replace).not.toThrow()
+                expect(store.loadAll()).toEqual([
+                    {
+                        id: 10,
+                        item: 'new',
+                        availableAt: 0,
+                        leaseGeneration: null,
+                        leaseExpiresAt: null,
+                    },
+                ])
+            }
         }
     })
 

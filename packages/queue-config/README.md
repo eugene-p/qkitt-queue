@@ -5,7 +5,7 @@
 [![License: ISC](https://img.shields.io/npm/l/@qkitt/queue-config.svg)](./LICENSE)
 [![Node.js](https://img.shields.io/node/v/@qkitt/queue-config.svg)](https://nodejs.org)
 
-Declarative setup for [`@qkitt/queue`](https://www.npmjs.com/package/@qkitt/queue): named stores, queues, workers, optional loop / dead-letter, and topic-router bindings in one object.
+Declarative setup for [`@qkitt/queue`](https://www.npmjs.com/package/@qkitt/queue): named stores, queues, workers, retry / loop / dead-letter recovery, observability hooks, and topic-router bindings in one object.
 
 Builds the same stack as hand-written composition (`buildQueue({ store? })` → worker → loop → dlq → router) from a config object. Optional; most apps only need `@qkitt/queue`. See the core [composition](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/composition.md) and [failure routing](https://github.com/eugene-p/qkitt-queue/blob/main/packages/queue/docs/failure-routing.md) guides for the underlying model.
 
@@ -78,7 +78,7 @@ export default defineConfig({
 })
 ```
 
-Build order: stores → `buildQueue({ name, store? })` → worker → loop → dlq → router → hydrate.
+Build order: stores → `buildQueue({ name, store? })` → worker → retry / loop → observability → dlq → router → hydrate.
 
 ```ts
 // app.ts
@@ -141,9 +141,11 @@ For in-process queues with no durability, omit `persist` (bare queue). Do not us
 | --- | --- | --- |
 | `maxSize` | `number` | Safe integer ≥ 1; same as `buildQueue({ maxSize })` |
 | `persist` | `{ store, leaseTtlMs? }` | `store` = name in `stores`; optional in-process lease TTL |
-| `worker` | `WorkerFn` or `{ run, concurrency?, autoStart?, onFailure? }` | **JS only** — not available in JSON |
+| `worker` | `WorkerFn` or `{ run, concurrency?, autoStart?, timeoutMs?, traceContext?, onFailure? }` | **JS only** — not available in JSON |
 | `loop` | `true` or `{ map?, filter?, delay? }` | `withLoop` after worker; requires `worker`. Queue config key is `buildQueue({ name })`. `map` / `filter` / function `delay` **JS only**; static `delay` ms allowed in JSON. Delays on persisted queues survive restart. |
-| `dlq` | `string` or `{ queue, map?, filter? }` | `withDlq` after worker/loop; requires `worker`. Target must be another named queue. `map` / `filter` **JS only** |
+| `retry` | `true` or `{ maxAttempts?, initialDelayMs?, maxDelayMs?, jitter?, classify? }` | Durable retry policy after worker; requires `worker` and conflicts with `loop` / `onFailure: 'loop'`. `classify` is **JS only**. |
+| `dlq` | `string` or `{ queue, map?, filter?, maxHandoffAttempts? }` | `withDlq` after worker/recovery; requires `worker`. Target must be another named queue. `map` / `filter` **JS only** |
+| `observability` | `true` or `{ onMetrics?, onTrace? }` | Adds `metrics()` and optional JS hooks. Hooks are **JS only**. |
 
 Every queue is built with `name` equal to its key under `queues` (for hop meta and `getQueueName`).
 
@@ -381,10 +383,12 @@ Returned by `buildFromConfig` / `buildFromJson`:
 | `SystemConfig` | Top-level config |
 | `StoreDefinition` | Built-in or custom store entry |
 | `PersistConfig` | `{ store, leaseTtlMs? }` on a queue |
-| `QueueConfig` | `maxSize`, `persist`, `worker`, `loop`, `dlq` |
+| `QueueConfig` | `maxSize`, `persist`, `worker`, `loop`, `retry`, `dlq`, `observability` |
 | `WorkerConfig` | Function or `{ run, concurrency?, autoStart?, timeoutMs?, traceContext?, onFailure? }` |
 | `LoopConfig` | `true` or `{ map?, filter?, delay? }` for `withLoop` |
-| `DlqConfig` | Target queue name string or `{ queue, map?, filter? }` for `withDlq` |
+| `DlqConfig` | Target queue name string or `{ queue, map?, filter?, maxHandoffAttempts? }` for `withDlq` |
+| `RetryConfig` | `true` or retry bounds/classifier for `withRetry` |
+| `ObservabilityConfig` | `true` or JS metrics/trace hooks for `withObservability` |
 | `RouterConfig` / `BindingConfig` | Router section |
 | `BuildFromConfigOptions` | `{ storage?, skipValidate? }` |
 | `BuiltinStoreAdapter` | `'localStorage' \| 'sessionStorage'` (and other built-in adapter ids) |

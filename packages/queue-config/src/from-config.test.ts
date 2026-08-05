@@ -119,6 +119,64 @@ describe('buildFromConfig', () => {
         expect(attempts).toBe(2)
     })
 
+    it('configures durable retry policy', async () => {
+        let attempts = 0
+        const system = await buildFromConfig({
+            queues: {
+                jobs: {
+                    worker: async () => {
+                        attempts += 1
+                        if (attempts === 1) throw new Error('retry')
+                    },
+                    retry: {
+                        maxAttempts: 2,
+                        initialDelayMs: 0,
+                        maxDelayMs: 0,
+                        jitter: 0,
+                    },
+                },
+            },
+        })
+        await system.queues.jobs.enqueue(1)
+        await whenIdle(system.queues.jobs as never)
+        expect(attempts).toBe(2)
+    })
+
+    it('configures DLQ handoff limits', async () => {
+        const system = await buildFromConfig({
+            queues: {
+                jobs: {
+                    worker: async () => {
+                        throw new Error('failed')
+                    },
+                    dlq: { queue: 'dead', maxHandoffAttempts: 1 },
+                },
+                dead: {},
+            },
+        })
+        await system.queues.jobs.enqueue('bad')
+        await whenIdle(system.queues.jobs as never)
+        expect(system.queues.dead.toArray()).toEqual(['bad'])
+    })
+
+    it('configures observability hooks and metrics', async () => {
+        const reports: unknown[] = []
+        const system = await buildFromConfig({
+            queues: {
+                jobs: {
+                    worker: async () => {},
+                    observability: {
+                        onMetrics: (metrics) => reports.push(metrics),
+                    },
+                },
+            },
+        })
+        await system.queues.jobs.enqueue('ok')
+        await whenIdle(system.queues.jobs as never)
+        expect(typeof system.queues.jobs.metrics).toBe('function')
+        expect(reports.length).toBeGreaterThan(0)
+    })
+
     it('defineConfig rejects snapshot strategy', () => {
         expect(() =>
             defineConfig({
@@ -158,6 +216,46 @@ describe('buildFromConfig', () => {
                             run: () => {},
                             onFailure: 123 as never,
                         },
+                    },
+                },
+            }),
+        ).toThrow(ConfigValidationError)
+    })
+
+    it('rejects retry without a worker and invalid retry bounds', () => {
+        expect(() =>
+            defineConfig({ queues: { jobs: { retry: true } } }),
+        ).toThrow(ConfigValidationError)
+        expect(() =>
+            defineConfig({
+                queues: {
+                    jobs: {
+                        worker: () => {},
+                        retry: { initialDelayMs: 10, maxDelayMs: 1 },
+                    },
+                },
+            }),
+        ).toThrow(ConfigValidationError)
+    })
+
+    it('rejects conflicting retry and loop recovery policies', () => {
+        expect(() =>
+            defineConfig({
+                queues: {
+                    jobs: {
+                        worker: () => {},
+                        retry: true,
+                        loop: true,
+                    },
+                },
+            }),
+        ).toThrow(ConfigValidationError)
+        expect(() =>
+            defineConfig({
+                queues: {
+                    jobs: {
+                        worker: { run: () => {}, onFailure: 'loop' },
+                        retry: true,
                     },
                 },
             }),

@@ -103,7 +103,10 @@ await queue.hydrate()
 
 Also: `createSessionStorageRowStore`, `createWebRowStore` (custom `WebStorageLike`).
 
-Web Storage is not multi-tab safe or transactional. Prefer one owning tab when durability is shared.
+Web Storage is not multi-tab safe and is not a substitute for database
+transactions. The adapter publishes a generation manifest before cleanup, so
+reloads see a complete previous or newly committed row set after interruption.
+Prefer one owning tab when durability is shared.
 
 ### Browser integration checks
 

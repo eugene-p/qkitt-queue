@@ -18,9 +18,9 @@ export {
 
 export type WebRowStoreOptions<T> = {
     /**
-     * Key prefix. Uses:
-     * - `${key}:order` → numeric id list head → tail
-     * - `${key}:row:${id}` → serialized full {@link RowRecord}
+     * Key prefix. The active manifest is stored at `${key}:manifest` and
+     * generation-scoped rows at `${key}:g${generation}:row:${id}`. Older
+     * `${key}:order` / `${key}:row:${id}` data is read and migrated lazily.
      */
     key: string
     storage?: WebStorageLike
@@ -39,25 +39,38 @@ type StoredRecord<T> = {
 
 type OrderCodec = JsonCodec<number[]>
 
+type Manifest = {
+    version: 1
+    generation: number
+    ids: number[]
+}
+
+type StoreState = {
+    generation: number
+    ids: number[]
+    legacy: boolean
+}
+
+const normalizeIds = (values: unknown[]): number[] => {
+    const ids: number[] = []
+    for (const value of values) {
+        if (
+            typeof value === 'number' &&
+            Number.isSafeInteger(value) &&
+            value >= 1
+        ) {
+            ids.push(value)
+        }
+    }
+    return ids
+}
+
 const orderCodec: OrderCodec = {
     serialize: (ids) => JSON.stringify(ids),
     deserialize: (raw) => {
         const ids = JSON.parse(raw) as unknown
         if (!Array.isArray(ids)) return []
-        let count = 0
-        for (let i = 0; i < ids.length; i += 1) {
-            const id = ids[i]
-            if (
-                typeof id === 'number' &&
-                Number.isSafeInteger(id) &&
-                id >= 1
-            ) {
-                ids[count] = id
-                count += 1
-            }
-        }
-        ids.length = count
-        return ids as number[]
+        return normalizeIds(ids)
     },
 }
 
@@ -69,8 +82,9 @@ const defaultRecordCodec = <T>(): JsonCodec<StoredRecord<T>> => ({
 /**
  * Web Storage backend with full record state (claim/delay fields).
  *
- * **Limits (not multi-tab safe):** multi-key ops are not atomic; concurrent tabs
- * race without merge. Prefer one owning tab or a real DB when durability is shared.
+ * **Limits (not multi-tab safe):** concurrent tabs still race without merge.
+ * Each mutation publishes one manifest key after its row writes, so a reload
+ * sees either the previous generation or the newly published generation.
  *
  */
 export const createWebRowStore = <T>(
@@ -80,7 +94,10 @@ export const createWebRowStore = <T>(
     const itemCodec = options.itemCodec ?? defaultJsonCodec<T>()
     const recordCodec = defaultRecordCodec<T>()
     const orderKey = `${options.key}:order`
-    const recordKey = (id: number) => `${options.key}:row:${id}`
+    const manifestKey = `${options.key}:manifest`
+    const legacyRecordKey = (id: number) => `${options.key}:row:${id}`
+    const generationRecordKey = (generation: number, id: number) =>
+        `${options.key}:g${generation}:row:${id}`
     const hasCustomItemCodec = options.itemCodec !== undefined
 
     const loadOrderFromStorage = (): number[] => {
@@ -93,17 +110,91 @@ export const createWebRowStore = <T>(
         )
     }
 
-    const persistOrder = (ids: number[]): void => {
-        if (ids.length === 0) {
-            storage().removeItem(orderKey)
-            return
-        }
-        storage().setItem(orderKey, orderCodec.serialize(ids))
+    const loadManifest = (): Manifest | undefined => {
+        const raw = storage().getItem(manifestKey)
+        if (raw === null || raw === '') return undefined
+        return decodeWithCodec(`manifest "${manifestKey}"`, raw, (value) => {
+            const parsed = JSON.parse(value) as Partial<Manifest>
+            const generation = parsed.generation
+            if (
+                parsed.version !== 1 ||
+                typeof generation !== 'number' ||
+                !Number.isSafeInteger(generation) ||
+                generation < 1 ||
+                !Array.isArray(parsed.ids)
+            ) {
+                return { version: 1, generation: 1, ids: [] }
+            }
+            return {
+                version: 1,
+                generation,
+                ids: normalizeIds(parsed.ids),
+            }
+        })
     }
 
-    const writeRecord = (record: RowRecord<T>): void => {
+    const loadState = (): StoreState => {
+        const manifest = loadManifest()
+        if (manifest !== undefined) {
+            return {
+                generation: manifest.generation,
+                ids: manifest.ids,
+                legacy: false,
+            }
+        }
+        return { generation: 0, ids: loadOrderFromStorage(), legacy: true }
+    }
+
+    const persistManifest = (generation: number, ids: number[]): void => {
+        storage().setItem(
+            manifestKey,
+            JSON.stringify({ version: 1, generation, ids }),
+        )
+    }
+
+    const cleanupKeys = (state: StoreState): void => {
         const store = storage()
-        const key = recordKey(record.id)
+        for (const id of state.ids) {
+            try {
+                store.removeItem(
+                    state.legacy
+                        ? legacyRecordKey(id)
+                        : generationRecordKey(state.generation, id),
+                )
+            } catch {
+                // Manifest publication already committed the new state.
+            }
+        }
+        if (state.legacy) {
+            try {
+                store.removeItem(orderKey)
+            } catch {
+                // Legacy cleanup is best effort after migration/commit.
+            }
+        }
+    }
+
+    const ensureActiveState = (state: StoreState): StoreState => {
+        if (!state.legacy) return state
+        const migrated: StoreState = {
+            generation: 1,
+            ids: [...state.ids],
+            legacy: false,
+        }
+        const records = state.ids
+            .map((id) => readRecord(id, state))
+            .filter((record): record is RowRecord<T> => record !== undefined)
+        for (const record of records) writeRecord(record, migrated.generation)
+        persistManifest(migrated.generation, migrated.ids)
+        cleanupKeys(state)
+        return migrated
+    }
+
+    const writeRecord = (record: RowRecord<T>, generation: number): void => {
+        const store = storage()
+        const key = generation === 0
+            ? legacyRecordKey(record.id)
+            : generationRecordKey(generation, record.id)
         if (hasCustomItemCodec) {
             store.setItem(
                 key,
@@ -127,8 +218,14 @@ export const createWebRowStore = <T>(
         store.setItem(key, recordCodec.serialize(record as StoredRecord<T>))
     }
 
-    const readRecord = (id: number): RowRecord<T> | undefined => {
-        const raw = storage().getItem(recordKey(id))
+    const readRecord = (
+        id: number,
+        state: StoreState,
+    ): RowRecord<T> | undefined => {
+        const key = state.legacy
+            ? legacyRecordKey(id)
+            : generationRecordKey(state.generation, id)
+        const raw = storage().getItem(key)
         if (raw === null) return undefined
         if (hasCustomItemCodec) {
             const parsed = JSON.parse(raw) as StoredRecord<T> & {
@@ -151,7 +248,7 @@ export const createWebRowStore = <T>(
             }
         }
         const stored = decodeWithCodec(
-            `record "${recordKey(id)}"`,
+            `record "${key}"`,
             raw,
             recordCodec.deserialize,
         )
@@ -162,28 +259,39 @@ export const createWebRowStore = <T>(
     }
 
     const putOne = (record: RowRecord<T>): void => {
-        writeRecord(record)
-        const ids = loadOrderFromStorage()
-        if (ids.includes(record.id)) return
-        ids.push(record.id)
-        persistOrder(ids)
+        const state = ensureActiveState(loadState())
+        writeRecord(record, state.generation)
+        if (state.ids.includes(record.id)) return
+        persistManifest(state.generation, [...state.ids, record.id])
     }
 
     const removeOne = (id: number): void => {
-        storage().removeItem(recordKey(id))
-        const ids = loadOrderFromStorage()
-        const index = ids.indexOf(id)
+        const state = ensureActiveState(loadState())
+        const index = state.ids.indexOf(id)
         if (index < 0) return
-        ids.splice(index, 1)
-        persistOrder(ids)
+        const nextIds = [...state.ids]
+        nextIds.splice(index, 1)
+        // Publish the removal before deleting the row. A crash leaves only
+        // an unreachable orphan, never a manifest pointing at missing data.
+        persistManifest(state.generation, nextIds)
+        try {
+            storage().removeItem(
+                state.legacy
+                    ? legacyRecordKey(id)
+                    : generationRecordKey(state.generation, id),
+            )
+        } catch {
+            // The committed manifest is authoritative; cleanup can retry
+            // later without exposing the row after a reload.
+        }
     }
 
     return {
         loadAll: () => {
-            const ids = loadOrderFromStorage()
+            const state = loadState()
             const out: RowRecord<T>[] = []
-            for (let i = 0; i < ids.length; i += 1) {
-                const record = readRecord(ids[i]!)
+            for (let i = 0; i < state.ids.length; i += 1) {
+                const record = readRecord(state.ids[i]!, state)
                 if (record) out.push(record)
             }
             return out
@@ -191,56 +299,64 @@ export const createWebRowStore = <T>(
         put: putOne,
         remove: removeOne,
         clear: () => {
-            const store = storage()
-            const ids = loadOrderFromStorage()
-            for (let i = 0; i < ids.length; i += 1) {
-                store.removeItem(recordKey(ids[i]!))
-            }
-            store.removeItem(orderKey)
+            const state = ensureActiveState(loadState())
+            persistManifest(state.generation, [])
+            cleanupKeys(state)
         },
         putBatch: (batch) => {
             if (batch.length === 0) return
-            const ids = loadOrderFromStorage()
-            let orderChanged = false
-            for (let i = 0; i < batch.length; i += 1) {
-                const record = batch[i]!
-                writeRecord(record)
-                if (!ids.includes(record.id)) {
+            const state = ensureActiveState(loadState())
+            const ids = [...state.ids]
+            const seen = new Set(ids)
+            for (const record of batch) {
+                writeRecord(record, state.generation)
+                if (!seen.has(record.id)) {
+                    seen.add(record.id)
                     ids.push(record.id)
-                    orderChanged = true
                 }
             }
-            if (orderChanged) persistOrder(ids)
+            if (ids.length !== state.ids.length) {
+                persistManifest(state.generation, ids)
+            }
         },
         removeBatch: (batchIds) => {
             if (batchIds.length === 0) return
+            const state = ensureActiveState(loadState())
+            const ids = new Set(batchIds)
+            const remaining = state.ids.filter((id) => !ids.has(id))
+            if (remaining.length === state.ids.length) return
+            persistManifest(state.generation, remaining)
             const store = storage()
-            for (let i = 0; i < batchIds.length; i += 1) {
-                const id = batchIds[i]!
-                store.removeItem(recordKey(id))
+            for (const id of state.ids) {
+                if (!ids.has(id)) continue
+                try {
+                    store.removeItem(
+                        state.legacy
+                            ? legacyRecordKey(id)
+                            : generationRecordKey(state.generation, id),
+                    )
+                } catch {
+                    // The manifest is already committed; leave an orphan.
+                }
             }
-            const ids = loadOrderFromStorage()
-            const remaining = ids.filter((id) => !batchIds.includes(id))
-            if (remaining.length === ids.length) return
-            remaining.length === 0
-                ? store.removeItem(orderKey)
-                : store.setItem(orderKey, orderCodec.serialize(remaining))
         },
         replaceAll: (batch) => {
-            const store = storage()
-            const prev = loadOrderFromStorage()
-            for (let i = 0; i < prev.length; i += 1) {
-                store.removeItem(recordKey(prev[i]!))
-            }
+            const previous = loadState()
+            const generation = previous.legacy
+                ? 1
+                : previous.generation + 1
             const nextIds: number[] = []
-            for (let i = 0; i < batch.length; i += 1) {
-                const record = batch[i]!
-                writeRecord(record)
-                if (!nextIds.includes(record.id)) {
+            const seen = new Set<number>()
+            for (const record of batch) {
+                writeRecord(record, generation)
+                if (!seen.has(record.id)) {
+                    seen.add(record.id)
                     nextIds.push(record.id)
                 }
             }
-            persistOrder(nextIds)
+            // Publish one pointer only after every new row is present.
+            persistManifest(generation, nextIds)
+            cleanupKeys(previous)
         },
     }
 }

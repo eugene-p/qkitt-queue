@@ -2,11 +2,15 @@ import {
     buildQueue,
     buildRouter,
     withDlq,
+    withObservability,
+    withRetry,
     withLoop,
     withWorker,
     type RouteTarget,
     type Router,
     type WithDeadLetterOptions,
+    type WithObservabilityOptions,
+    type WithRetryOptions,
     type WithLoopOptions,
     type WithWorkerOptions,
     type WorkerFn,
@@ -19,8 +23,10 @@ import type {
     ConfiguredQueue,
     ConfiguredSystem,
     DlqConfig,
+    ObservabilityConfig,
     LoopConfig,
     QueueConfig,
+    RetryConfig,
     ResolvedStore,
     SystemConfig,
     WorkerConfig,
@@ -87,6 +93,44 @@ const resolveDlqOptions = <T>(
     return {
         ...(dlq.map !== undefined ? { map: dlq.map } : {}),
         ...(dlq.filter !== undefined ? { filter: dlq.filter } : {}),
+        ...(dlq.maxHandoffAttempts !== undefined
+            ? { maxHandoffAttempts: dlq.maxHandoffAttempts }
+            : {}),
+    }
+}
+
+const resolveRetryOptions = <T>(
+    retry: RetryConfig,
+): WithRetryOptions<T> => {
+    if (retry === true) return {}
+    return {
+        ...(retry.maxAttempts !== undefined
+            ? { maxAttempts: retry.maxAttempts }
+            : {}),
+        ...(retry.initialDelayMs !== undefined
+            ? { initialDelayMs: retry.initialDelayMs }
+            : {}),
+        ...(retry.maxDelayMs !== undefined
+            ? { maxDelayMs: retry.maxDelayMs }
+            : {}),
+        ...(retry.jitter !== undefined ? { jitter: retry.jitter } : {}),
+        ...(retry.classify !== undefined
+            ? { classify: retry.classify as WithRetryOptions<T>['classify'] }
+            : {}),
+    }
+}
+
+const resolveObservabilityOptions = <T>(
+    observability: ObservabilityConfig,
+): WithObservabilityOptions<T> => {
+    if (observability === true) return {}
+    return {
+        ...(observability.onMetrics !== undefined
+            ? { onMetrics: observability.onMetrics as WithObservabilityOptions<T>['onMetrics'] }
+            : {}),
+        ...(observability.onTrace !== undefined
+            ? { onTrace: observability.onTrace as WithObservabilityOptions<T>['onTrace'] }
+            : {}),
     }
 }
 
@@ -139,10 +183,24 @@ const buildQueueFromConfig = <T>(
         queue = withWorker(queue, run, workerOptions)
     }
 
+    if (queueConfig.retry !== undefined) {
+        queue = withRetry(
+            queue as never,
+            resolveRetryOptions<T>(queueConfig.retry),
+        ) as ConfiguredQueue<T>
+    }
+
     if (queueConfig.loop !== undefined) {
         queue = withLoop(
             queue as never,
             resolveLoopOptions(queueConfig.loop),
+        ) as ConfiguredQueue<T>
+    }
+
+    if (queueConfig.observability !== undefined) {
+        queue = withObservability(
+            queue,
+            resolveObservabilityOptions<T>(queueConfig.observability),
         ) as ConfiguredQueue<T>
     }
 

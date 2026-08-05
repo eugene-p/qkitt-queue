@@ -3,9 +3,14 @@ import type {
     LoopConfig,
     PersistConfig,
     QueueConfig,
+    RetryConfig,
+    ObservabilityConfig,
     WorkerConfig,
 } from '../types'
-import type { RecoveryPolicy } from '@qkitt/queue'
+import type {
+    RecoveryPolicy,
+    WithRetryOptions,
+} from '@qkitt/queue'
 import { configError } from '../errors'
 import {
     expectBoolean,
@@ -269,7 +274,113 @@ export const parseDlqConfig = (
         dlq.filter = value.filter as Exclude<DlqConfig, string>['filter']
     }
 
+    if (value.maxHandoffAttempts !== undefined) {
+        dlq.maxHandoffAttempts = expectPositiveInteger(
+            value.maxHandoffAttempts,
+            `${path}.maxHandoffAttempts`,
+        )
+    }
+
     return dlq
+}
+
+export const parseRetryConfig = (
+    value: unknown,
+    path: string,
+    ctx: ParseCtx,
+): RetryConfig => {
+    if (value === true) return true
+    const obj = expectPlainObject(value, path)
+    const maxAttempts =
+        obj.maxAttempts === undefined
+            ? undefined
+            : expectPositiveInteger(obj.maxAttempts, `${path}.maxAttempts`)
+    const initialDelayMs =
+        obj.initialDelayMs === undefined
+            ? undefined
+            : expectNonNegativeFinite(
+                  obj.initialDelayMs,
+                  `${path}.initialDelayMs`,
+              )
+    const maxDelayMs =
+        obj.maxDelayMs === undefined
+            ? undefined
+            : expectNonNegativeFinite(obj.maxDelayMs, `${path}.maxDelayMs`)
+    const effectiveInitial = initialDelayMs ?? 1_000
+    const effectiveMax = maxDelayMs ?? 30_000
+    if (effectiveMax < effectiveInitial) {
+        return configError(
+            'INVALID_TYPE',
+            `${path}.maxDelayMs must be >= initialDelayMs`,
+            `${path}.maxDelayMs`,
+        )
+    }
+    const jitter =
+        obj.jitter === undefined
+            ? undefined
+            : expectNonNegativeFinite(obj.jitter, `${path}.jitter`)
+    if (jitter !== undefined && jitter > 1) {
+        return configError(
+            'INVALID_TYPE',
+            `${path}.jitter must be a finite number from 0 to 1`,
+            `${path}.jitter`,
+        )
+    }
+    const out: Exclude<RetryConfig, true> = {}
+    if (obj.classify !== undefined) {
+        if (!ctx.allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.classify is only valid in JS config`,
+                `${path}.classify`,
+            )
+        }
+        if (typeof obj.classify !== 'function') {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.classify must be a function`,
+                `${path}.classify`,
+            )
+        }
+        out.classify = obj.classify as NonNullable<
+            WithRetryOptions<unknown>['classify']
+        >
+    }
+    if (maxAttempts !== undefined) out.maxAttempts = maxAttempts
+    if (initialDelayMs !== undefined) out.initialDelayMs = initialDelayMs
+    if (maxDelayMs !== undefined) out.maxDelayMs = maxDelayMs
+    if (jitter !== undefined) out.jitter = jitter
+    return out
+}
+
+export const parseObservabilityConfig = (
+    value: unknown,
+    path: string,
+    ctx: ParseCtx,
+): ObservabilityConfig => {
+    if (value === true) return true
+    const obj = expectPlainObject(value, path)
+    const out: Exclude<ObservabilityConfig, true> = {}
+    for (const field of ['onMetrics', 'onTrace'] as const) {
+        const candidate = obj[field]
+        if (candidate === undefined) continue
+        if (!ctx.allowJs) {
+            return configError(
+                'JS_ONLY_FIELD',
+                `${path}.${field} is only valid in JS config`,
+                `${path}.${field}`,
+            )
+        }
+        if (typeof candidate !== 'function') {
+            return configError(
+                'INVALID_TYPE',
+                `${path}.${field} must be a function`,
+                `${path}.${field}`,
+            )
+        }
+        out[field] = candidate as never
+    }
+    return out
 }
 
 /** Target queue name for a parsed {@link DlqConfig}. */
@@ -323,6 +434,43 @@ export const parseQueueConfig = (
                 `${path}.dlq`,
             )
         }
+    }
+
+    if (obj.retry !== undefined) {
+        if (obj.loop !== undefined) {
+            return configError(
+                'CONFLICTING_FIELDS',
+                `${path} cannot configure both "retry" and "loop" recovery`,
+                path,
+            )
+        }
+        if (
+            queue.worker &&
+            typeof queue.worker !== 'function' &&
+            queue.worker.onFailure === 'loop'
+        ) {
+            return configError(
+                'CONFLICTING_FIELDS',
+                `${path}.retry conflicts with ${path}.worker.onFailure "loop"`,
+                `${path}.retry`,
+            )
+        }
+        queue.retry = parseRetryConfig(obj.retry, `${path}.retry`, ctx)
+        if (queue.worker === undefined) {
+            return configError(
+                'INVALID_FIELD',
+                `${path}.retry requires worker on the same queue`,
+                `${path}.retry`,
+            )
+        }
+    }
+
+    if (obj.observability !== undefined) {
+        queue.observability = parseObservabilityConfig(
+            obj.observability,
+            `${path}.observability`,
+            ctx,
+        )
     }
 
     return queue

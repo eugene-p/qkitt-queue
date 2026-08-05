@@ -336,4 +336,6 @@ queue.on('worker:failed', ({ item, error }) => {
 })
 ```
 
-**Web Storage is not multi-tab safe or transactional.** Prefer one owning tab, or a real DB, when durability is shared.
+**Web Storage is not multi-tab safe and does not provide database transactions.**
+Its generation manifest keeps reloads coherent across interrupted row cleanup;
+prefer one owning tab, or a real DB, when durability is shared.

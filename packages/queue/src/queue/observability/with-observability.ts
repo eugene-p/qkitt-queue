@@ -1,5 +1,6 @@
 import type { EventCallback, EventMap } from '../../events'
 import { decorateQueue } from '../core/forward.util'
+import { createMinHeap, type MinHeap } from '../core/min-heap.util'
 import type { Queue, QueueEvents, QueueStats } from '../core/queue'
 import { isJob } from '../jobs/job'
 
@@ -45,6 +46,11 @@ export type QueueWithObservability<
 
 type QueueItem<TQueue> = TQueue extends Queue<infer T, any> ? T : never
 
+type JobAgeEntry = {
+    item: object
+    enqueuedAt: number
+}
+
 const average = (count: number, totalMs: number): number =>
     count === 0 ? 0 : totalMs / count
 
@@ -65,25 +71,50 @@ export const withObservability = <TQueue extends Queue<any, any>>(
     let handlerTotalMs = 0
     let storeCount = 0
     let storeTotalMs = 0
+    const jobTimes = new Map<object, number>()
+    const jobAges: MinHeap<JobAgeEntry> = createMinHeap(
+        (entry) => entry.enqueuedAt,
+    )
+    let jobIndexReady = false
+
+    const indexJob = (item: unknown): void => {
+        if (!isJob(item)) return
+        const objectItem = item as object
+        jobTimes.set(objectItem, item.enqueuedAt)
+        jobAges.push({ item: objectItem, enqueuedAt: item.enqueuedAt })
+    }
+
+    const removeJob = (item: unknown): void => {
+        if (item !== null && typeof item === 'object') {
+            jobTimes.delete(item)
+        }
+    }
+
+    const rebuildJobIndex = (): void => {
+        jobTimes.clear()
+        jobAges.clear()
+        const jobs = queue.listJobs({ limit: Number.MAX_SAFE_INTEGER }).items
+        for (const entry of jobs) indexJob(entry.item)
+        jobIndexReady = true
+    }
+
+    const oldestJobAge = (): number | undefined => {
+        if (!jobIndexReady) rebuildJobIndex()
+        for (;;) {
+            const head = jobAges.peek()
+            if (head === undefined) return undefined
+            if (jobTimes.get(head.item) === head.enqueuedAt) {
+                return Math.max(0, Date.now() - head.enqueuedAt)
+            }
+            jobAges.pop()
+        }
+    }
 
     const metrics = (): QueueMetrics => {
-        let oldestEnqueuedAt: number | undefined
-        // Request one page so metrics never rebuilds/sorts every job once per
-        // 100-row cursor. This remains an on-demand admin read, not a hot path.
-        const jobs = queue.listJobs({ limit: Number.MAX_SAFE_INTEGER }).items
-        for (const entry of jobs) {
-            if (isJob(entry.item)) {
-                oldestEnqueuedAt =
-                    oldestEnqueuedAt === undefined
-                        ? entry.item.enqueuedAt
-                        : Math.min(oldestEnqueuedAt, entry.item.enqueuedAt)
-            }
-        }
+        const oldestAgeMs = oldestJobAge()
         return {
             depth: queue.stats(),
-            ...(oldestEnqueuedAt === undefined
-                ? {}
-                : { oldestAgeMs: Math.max(0, Date.now() - oldestEnqueuedAt) }),
+            ...(oldestAgeMs === undefined ? {} : { oldestAgeMs }),
             completed,
             failed,
             retried,
@@ -136,13 +167,22 @@ export const withObservability = <TQueue extends Queue<any, any>>(
         })
     }
 
-    watch('queue:enqueued')
-    watch('queue:dequeued')
-    watch('queue:cleared')
-    watch('persist:loaded')
+    watch('queue:enqueued', (data) => indexJob(data.item))
+    watch('queue:dequeued', (data) => removeJob(data.item))
+    watch('queue:cleared', () => {
+        jobTimes.clear()
+        jobAges.clear()
+        jobIndexReady = true
+    })
+    watch('persist:loaded', () => {
+        // Hydrate coalesces its enqueue event to the head item, so rebuild the
+        // index once on the next metrics read instead of scanning every event.
+        jobIndexReady = false
+    })
     watch('worker:started', (data) => trace({ name: 'worker:started', item: data.item }))
     watch('worker:completed', (data) => {
         completed += 1
+        removeJob(data.item)
         trace({ name: 'worker:completed', item: data.item })
     })
     watch('worker:failed', (data) => {
@@ -158,6 +198,8 @@ export const withObservability = <TQueue extends Queue<any, any>>(
             durationMs: data.durationMs,
         })
     })
+    watch('worker:dropped', (data) => removeJob(data.item))
+    watch('dlq:enqueued', (data) => removeJob(data.item))
     watch('retry:scheduled', () => {
         retried += 1
     })
@@ -170,7 +212,53 @@ export const withObservability = <TQueue extends Queue<any, any>>(
         trace({ name: `store:${data.operation}`, durationMs: data.durationMs })
     })
 
-    return decorateQueue(queue, { metrics }) as TQueue & {
+    const ack = async (
+        lease: Parameters<TQueue['ack']>[0],
+    ): Promise<void> => {
+        await queue.ack(lease)
+        removeJob(lease.item)
+    }
+
+    const replaceAll = async (
+        items: Parameters<TQueue['replaceAll']>[0],
+    ): Promise<void> => {
+        await queue.replaceAll(items)
+        jobIndexReady = false
+    }
+
+    const cancelJob = async (
+        id: Parameters<TQueue['cancelJob']>[0],
+    ): Promise<boolean> => {
+        const cancelled = await queue.cancelJob(id)
+        if (cancelled) jobIndexReady = false
+        return cancelled
+    }
+
+    const rescheduleJob = async (
+        id: Parameters<TQueue['rescheduleJob']>[0],
+        delayMs: Parameters<TQueue['rescheduleJob']>[1],
+    ): Promise<boolean> => {
+        const rescheduled = await queue.rescheduleJob(id, delayMs)
+        if (rescheduled) jobIndexReady = false
+        return rescheduled
+    }
+
+    const promoteJob = async (
+        id: Parameters<TQueue['promoteJob']>[0],
+    ): Promise<boolean> => {
+        const promoted = await queue.promoteJob(id)
+        if (promoted) jobIndexReady = false
+        return promoted
+    }
+
+    return decorateQueue(queue, {
+        metrics,
+        ack,
+        replaceAll,
+        cancelJob,
+        rescheduleJob,
+        promoteJob,
+    }) as TQueue & {
         metrics: () => QueueMetrics
     }
 }
