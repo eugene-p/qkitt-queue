@@ -122,6 +122,7 @@ export type ObservabilityConfig =
 
 export type QueueConfig = {
     maxSize?: number
+    uniqueJobIds?: boolean
     /** Optional durable store via a named entry in `config.stores`. */
     persist?: PersistConfig
     worker?: WorkerConfig

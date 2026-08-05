@@ -9,5 +9,7 @@ export {
     type Router,
     type RouterEvents,
     type RouterPublishResult,
+    type RouterPublishDetailedResult,
+    type RouterDeliveryResult,
     type UnmatchedRecord,
 } from './router'

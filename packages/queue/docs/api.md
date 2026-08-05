@@ -20,6 +20,7 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `name` | `string` | — | Logical id (trimmed, non-empty). Used by `withLoop` hop meta and tracking (`getQueueName`). |
 | `store` | `RowStore<T>` | — | Durable backend. When set, mutations write rows; call `hydrate()` / `flush()`. |
 | `leaseTtlMs` | `number` | — | In-process lease TTL (safe integer ≥ 1). Omitted → reclaim leases on hydrate/restart only. The worker context aborts at this deadline. |
+| `uniqueJobIds` | `boolean` | `false` | Reject a second pending or leased `Job` with the same application id. |
 
 **Methods**
 
@@ -28,6 +29,7 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `enqueue(item, opts?)` | `Promise<void>` | Add to tail; optional `{ delayMs }` |
 | `claim()` | `Promise<Lease<T> \| undefined>` | Worker path: take head under a lease |
 | `ack(lease)` | `Promise<void>` | Complete lease (remove durable row) |
+| `extendLease(lease, ttlMs?)` | `Promise<Lease<T>>` | Persist a later deadline for a live lease |
 | `release(lease)` | `Promise<void>` | Return leased item to available |
 | `reschedule(lease, next)` | `Promise<void>` | Settle lease with a new item / delay |
 | `dequeue()` | `Promise<T \| undefined>` | Admin drop of head available (`undefined` if empty; ambiguous when `T` may be `undefined`) |
@@ -43,11 +45,13 @@ buildQueue<T>(options?: BuildQueueOptions): Queue<T>
 | `toArray()` | `T[]` | Snapshot available → delayed → leased |
 | `rowIds()` | `number[]` | Durable / delayed / leased ids (bare available has no stable ids until claim) |
 | `getJob(id)` | `QueueJob<T> \| undefined` | Inspect an opt-in `Job` by application id |
-| `listJobs({ state?, cursor?, limit? })` | `QueueJobPage<T>` | Page opt-in jobs; state is `ready`, `delayed`, or `leased` |
+| `getJobs(id)` | `QueueJob<T>[]` | Inspect every pending duplicate with an application id |
+| `listJobs({ state?, cursor?, limit?, stableCursor?, stable? })` | `QueueJobPage<T>` | Page opt-in jobs; state is `ready`, `delayed`, or `leased` |
 | `cancelJob(id)` | `Promise<boolean>` | Remove a ready or delayed job; leased work is never interrupted |
 | `rescheduleJob(id, delayMs)` | `Promise<boolean>` | Move a ready or delayed job to a new availability time |
 | `promoteJob(id)` | `Promise<boolean>` | Move a delayed job to ready immediately |
 | `replayJob(id, target)` | `Promise<boolean>` | Enqueue-first move to another queue, intended for a DLQ replay |
+| `replayJobDetailed(id, target)` | `Promise<ReplayJobResult<T>>` | Replay result with acceptance, cancellation, and errors |
 | `hydrate()` | `Promise<void>` | Load from `store` (no-op without store) |
 | `flush()` | `Promise<void>` | Await durable write chain (no-op without store) |
 | `on` | `() => void` | Subscribe; returns unsubscribe |
@@ -64,14 +68,22 @@ Bare (no `store`) mutators resolve immediately after the in-memory update. Durab
 The operations methods recognize the opt-in `Job` envelope and use its stable
 application `id`; plain payloads are not listed or changed by them. `listJobs`
 returns `{ items, nextCursor? }`, so pass `nextCursor` back with the same state
-filter for the next page. Apply it to a DLQ queue to page dead-letter jobs.
+filter for the next page. For a changing queue, use `listJobs({ stable: true })`
+and pass `nextStableCursor` back as `stableCursor`; that cursor is based on the
+Job identity and enqueue timestamp rather than a numeric offset. Apply it to a
+DLQ queue to page dead-letter jobs.
 
 Leased jobs remain visible but cannot be cancelled, rescheduled, promoted, or
 replayed: a handler may already have made an external side effect. `replayJob`
 is enqueue-first, then removes the source row. It is consequently at-least-once
 across queues; use the same `Job.id` idempotency key at the replay target.
 
-**Errors:** `QueueFullError` (`maxSize`); `InvalidQueueOptionError` for bad options; `InvalidStoreError` if `store` is not a `RowStore`; `HydrateWhileActiveError` during hydrate or with active leases; `LeaseMismatchError` on stale leases; `InvalidRowIdError` / `DuplicateRowIdError` on bad hydrate rows; `IdSpaceExhaustedError` when ids run out.
+**Errors:** `QueueFullError` (`maxSize`); `DuplicateJobIdError` when
+`uniqueJobIds` rejects a duplicate; `InvalidQueueOptionError` for bad options;
+`InvalidStoreError` if `store` is not a `RowStore`; `HydrateWhileActiveError`
+during hydrate or with active leases; `LeaseMismatchError` on stale leases;
+`InvalidRowIdError` / `DuplicateRowIdError` on bad hydrate rows;
+`IdSpaceExhaustedError` when ids run out.
 
 **Events**
 
@@ -147,6 +159,7 @@ withWorker<T, R>(
 | `concurrency` | `number` | `1` | Safe integer ≥ 1 |
 | `autoStart` | `boolean` | `true` | If `false`, no pump until `start()` |
 | `timeoutMs` | `number` | — | Finite ≥ 0. Cooperatively aborts the handler's `context.signal` after this duration; it does not forcibly stop JavaScript. |
+| `heartbeatMs` | `number` | — | Finite > 0. Renews a configured queue lease while the handler runs. |
 | `traceContext` | `(item) => unknown` | `Job.metadata` | Derives the opaque tracing/correlation value in worker context. |
 | `onFailure` | `RecoveryPolicy<T>` | `'fail'` | `'fail'` (DLQ if registered, else drop), `'loop'`, or custom result policy |
 

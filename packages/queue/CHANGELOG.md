@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-05
+
+### Added
+
+- Lease renewal with `extendLease()` and optional worker `heartbeatMs`.
+- Optional unique application-id enforcement with `uniqueJobIds` and
+  `DuplicateJobIdError`.
+- Stable job pagination cursors, all-match `getJobs()`, and detailed replay and
+  router delivery results.
+- Best-effort cleanup of unreachable Web Storage generation rows.
+
+### Changed
+
+- Reduce retained `MemoryRowStore` overhead by using insertion-ordered map
+  storage without linked-node metadata.
+
 ## [0.14.0] — 2026-08-05
 
 ### Added
@@ -534,7 +550,8 @@ First public release of `@qkitt/queue`.
 - Node.js `>=18`
 - Public surface: `@qkitt/queue` root entry only
 
-[Unreleased]: https://github.com/eugene-p/qkitt-queue/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/eugene-p/qkitt-queue/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.15.0
 [0.14.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.14.0
 [0.13.3]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.3
 [0.13.1]: https://github.com/eugene-p/qkitt-queue/releases/tag/v0.13.1

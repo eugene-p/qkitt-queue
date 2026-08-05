@@ -99,6 +99,18 @@ export const parseWorkerConfig = (value: unknown, path: string): WorkerConfig =>
             ? undefined
             : expectNonNegativeFinite(value.timeoutMs, `${path}.timeoutMs`)
 
+    const heartbeatMs =
+        value.heartbeatMs === undefined
+            ? undefined
+            : expectNonNegativeFinite(value.heartbeatMs, `${path}.heartbeatMs`)
+    if (heartbeatMs !== undefined && heartbeatMs <= 0) {
+        return configError(
+            'INVALID_TYPE',
+            `${path}.heartbeatMs must be a finite number > 0`,
+            `${path}.heartbeatMs`,
+        )
+    }
+
     const traceContext =
         value.traceContext === undefined
             ? undefined
@@ -129,6 +141,7 @@ export const parseWorkerConfig = (value: unknown, path: string): WorkerConfig =>
         ...(concurrency !== undefined ? { concurrency } : {}),
         ...(autoStart !== undefined ? { autoStart } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+        ...(heartbeatMs !== undefined ? { heartbeatMs } : {}),
         ...(traceContext !== undefined ? { traceContext } : {}),
         ...(onFailure !== undefined
             ? { onFailure: onFailure as RecoveryPolicy<unknown> }
@@ -397,6 +410,13 @@ export const parseQueueConfig = (
 
     if (obj.maxSize !== undefined) {
         queue.maxSize = expectPositiveInteger(obj.maxSize, `${path}.maxSize`)
+    }
+
+    if (obj.uniqueJobIds !== undefined) {
+        queue.uniqueJobIds = expectBoolean(
+            obj.uniqueJobIds,
+            `${path}.uniqueJobIds`,
+        )
     }
 
     if (obj.persist !== undefined) {

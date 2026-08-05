@@ -4,6 +4,10 @@ import { createWebRowStore } from './web-storage'
 const memoryStorage = () => {
     const map = new Map<string, string>()
     return {
+        get length() {
+            return map.size
+        },
+        key: (index: number) => [...map.keys()][index] ?? null,
         getItem: (k: string) => map.get(k) ?? null,
         setItem: (k: string, v: string) => {
             map.set(k, v)
@@ -243,5 +247,39 @@ describe('createWebRowStore', () => {
         expect(store.loadAll()).toHaveLength(1_000)
         store.replaceAll?.(records.slice(0, 1_500))
         expect(store.loadAll()).toHaveLength(1_500)
+    })
+
+    it('cleans orphaned generation rows when storage can enumerate keys', () => {
+        const storage = memoryStorage()
+        const store = createWebRowStore<number>({ key: 'q', storage })
+        store.put({
+            id: 10,
+            item: 10,
+            availableAt: 0,
+            leaseGeneration: null,
+            leaseExpiresAt: null,
+        })
+        store.replaceAll?.([
+            {
+                id: 1,
+                item: 1,
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            },
+        ])
+        storage.setItem(
+            'q:g1:row:999',
+            JSON.stringify({
+                id: 999,
+                item: 999,
+                availableAt: 0,
+                leaseGeneration: null,
+                leaseExpiresAt: null,
+            }),
+        )
+
+        expect(store.loadAll()).toHaveLength(1)
+        expect(storage.getItem('q:g1:row:999')).toBeNull()
     })
 })

@@ -14,17 +14,27 @@ import {
     LeaseMismatchError,
 } from '../../persist/errors'
 import { isRowStore } from '../../persist/store-guards.util'
-import { createWriteChain } from '../../persist/write-chain.util'
 import { isIntegerInRange } from '../../util/number.util'
 import {
     cancelTimeout,
     scheduleTimeout,
 } from '../../util/schedule-timeout.util'
 import { createIdCounter } from './id-counter.util'
+import { createDurableCoordinator } from './durable-coordinator.util'
 import { createMinHeap, type MinHeap } from './min-heap.util'
 import { markQueueMaxSize } from './queue-max-size.util'
 import { markQueueName } from './queue-name.util'
 import { isJob } from '../jobs/job'
+
+export type JobCursor = string
+
+export type ReplayJobResult<T> = {
+    found: boolean
+    accepted: boolean
+    cancelled: boolean
+    item?: T
+    error?: unknown
+}
 
 export type QueueEvents<T> = {
     /** Fired when an item becomes available; hydrate and batch promotion may coalesce it. */
@@ -73,12 +83,19 @@ export type QueueJobPage<T> = {
     items: QueueJob<T>[]
     /** Pass this value as `cursor` to read the following page. */
     nextCursor?: number
+    /** Stable alternative to the numeric offset cursor. */
+    nextStableCursor?: JobCursor
 }
 
 export type ListJobsOptions = {
     state?: QueueJob<unknown>['state']
+    /** Numeric offsets remain supported for compatibility. */
     cursor?: number
+    /** Pass a prior `nextStableCursor` here to avoid offset drift. */
+    stableCursor?: JobCursor
     limit?: number
+    /** Return an opaque cursor that resumes from the last job identity. */
+    stable?: boolean
 }
 
 /**
@@ -120,6 +137,8 @@ export type Queue<
     enqueue: (item: T, opts?: { delayMs?: number }) => Promise<void>
     claim: () => Promise<Lease<T> | undefined>
     ack: (lease: Lease<T>) => Promise<void>
+    /** Extend a live lease and return the same lease with its new deadline. */
+    extendLease: (lease: Lease<T>, ttlMs?: number) => Promise<Lease<T>>
     release: (lease: Lease<T>) => Promise<void>
     reschedule: (
         lease: Lease<T>,
@@ -148,6 +167,8 @@ export type Queue<
     rowIds: () => number[]
     /** Inspect one opt-in {@link Job} by its stable application id. */
     getJob: (id: string) => QueueJob<T> | undefined
+    /** Return every pending entry with the application id (duplicates allowed). */
+    getJobs: (id: string) => QueueJob<T>[]
     /** Page opt-in {@link Job} envelopes in ready, delayed, or leased state. */
     listJobs: (options?: ListJobsOptions) => QueueJobPage<T>
     /** Remove a ready or delayed job. Leased jobs are intentionally untouched. */
@@ -158,6 +179,11 @@ export type Queue<
     promoteJob: (id: string) => Promise<boolean>
     /** Enqueue a DLQ job on another queue, then remove its source row. */
     replayJob: (id: string, target: Pick<Queue<T>, 'enqueue'>) => Promise<boolean>
+    /** Detailed enqueue-first replay result; never hides a target failure. */
+    replayJobDetailed: (
+        id: string,
+        target: Pick<Queue<T>, 'enqueue'>,
+    ) => Promise<ReplayJobResult<T>>
     hydrate: () => Promise<void>
     flush: () => Promise<void>
     /** @internal Used by decorators to avoid building unobserved payloads. */
@@ -175,6 +201,8 @@ export type BuildQueueOptions<T = unknown> = {
      * Must be a safe integer ≥ 1 when set.
      */
     leaseTtlMs?: number
+    /** Reject a second pending/leased {@link Job} with the same application id. */
+    uniqueJobIds?: boolean
 }
 
 /** Thrown when enqueue/replaceAll would exceed maxSize. */
@@ -194,6 +222,17 @@ export class InvalidQueueOptionError extends Error {
 
     constructor(message: string) {
         super(message)
+    }
+}
+
+/** Thrown when {@link BuildQueueOptions.uniqueJobIds} rejects a duplicate. */
+export class DuplicateJobIdError extends Error {
+    override readonly name = 'DuplicateJobIdError'
+    readonly id: string
+
+    constructor(id: string) {
+        super(`Job id is already present in the queue: ${id}`)
+        this.id = id
     }
 }
 
@@ -227,15 +266,19 @@ export const buildQueue = <T>(
         )
     }
 
+    const uniqueJobIds = options.uniqueJobIds ?? false
+    if (typeof uniqueJobIds !== 'boolean') {
+        throw new InvalidQueueOptionError('uniqueJobIds must be a boolean')
+    }
+
     const store = options.store
     if (store !== undefined && !isRowStore(store)) {
         throw new InvalidStoreError(
             'buildQueue: store must implement RowStore (loadAll, put, remove, clear)',
         )
     }
-    const chain = store === undefined ? undefined : createWriteChain()
-    /** Durable queues keep available row ids; bare queues allocate on claim. */
-    const trackAvailableIds = store !== undefined
+    /** Durable and unique-job queues retain row ids for persistence/admin lookup. */
+    const trackAvailableIds = store !== undefined || uniqueJobIds
 
     // In-memory state: available FIFO (+ optional ids) + leased + delayed.
     let availableItems: T[] = []
@@ -253,6 +296,8 @@ export const buildQueue = <T>(
     let hasAvailableMetadata = false
     let availableCount = 0
     const leased = new Map<number, LeasedEntry<T>>()
+    // Job administration is opt-in so ordinary payload queues retain no id map.
+    const uniqueJobIndex = uniqueJobIds ? new Map<string, number>() : undefined
     // Lazy: most queues never use delay.
     let delayed: MinHeap<DelayedEntry<T>> | undefined
     const getDelayed = (): MinHeap<DelayedEntry<T>> => {
@@ -307,6 +352,37 @@ export const buildQueue = <T>(
     ): number | undefined =>
         value !== undefined && value > 0 ? value : undefined
 
+    const applicationIdOf = (item: T): string | undefined =>
+        isJob(item) ? item.id : undefined
+
+    const assertUniqueJob = (item: T, rowId: number): void => {
+        if (uniqueJobIndex === undefined) return
+        const applicationId = applicationIdOf(item)
+        if (applicationId === undefined) return
+        const existing = uniqueJobIndex.get(applicationId)
+        if (existing !== undefined && existing !== rowId) {
+            throw new DuplicateJobIdError(applicationId)
+        }
+    }
+
+    const indexJob = (item: T, rowId: number): void => {
+        const applicationId = applicationIdOf(item)
+        if (uniqueJobIndex !== undefined && applicationId !== undefined) {
+            uniqueJobIndex.set(applicationId, rowId)
+        }
+    }
+
+    const unindexJob = (item: T, rowId: number): void => {
+        const applicationId = applicationIdOf(item)
+        if (
+            uniqueJobIndex !== undefined &&
+            applicationId !== undefined &&
+            uniqueJobIndex.get(applicationId) === rowId
+        ) {
+            uniqueJobIndex.delete(applicationId)
+        }
+    }
+
     type QueueFullEvents = MergeEventMaps<QueueEvents<T>, PersistEvents>
     const emitter = buildEventEmitter<QueueFullEvents>()
     const listenerCounts = new Map<keyof QueueFullEvents, number>()
@@ -328,6 +404,15 @@ export const buildQueue = <T>(
     }
     const hasListeners = (eventName: string): boolean =>
         (listenerCounts.get(eventName as keyof QueueFullEvents) ?? 0) > 0
+
+    const durable = createDurableCoordinator<T>({
+        store,
+        now: nowMs,
+        hasListeners: (eventName) => hasListeners(eventName),
+        emit: (eventName, data) => emitter.emit(eventName, data as never),
+    })
+    const withChain = durable.withChain
+    const callStore = durable.callStore
 
     let delayTimer: unknown
     let delayTimerAt: number | undefined
@@ -573,44 +658,6 @@ export const buildQueue = <T>(
         }
     }
 
-    /** Serialize durable work; bare queues apply the operation immediately. */
-    const withChain = <R>(op: () => R | PromiseLike<R>): Promise<R> => {
-        if (!chain) {
-            return Promise.resolve(op())
-        }
-        // WriteChain returns the op result; no extra outer Promise wrapper.
-        return chain.push(op)
-    }
-
-    const callStore = async <R>(
-        operation: 'load' | 'put' | 'remove' | 'clear' | 'replace',
-        id: number | undefined,
-        op: () => R | PromiseLike<R>,
-    ): Promise<R> => {
-        const startedAt = nowMs()
-        let result: R
-        try {
-            result = await op()
-        } catch (error) {
-            if (hasListeners('persist:error')) {
-                emitter.emit('persist:error', {
-                    operation,
-                    error,
-                    ...(id !== undefined ? { id } : {}),
-                })
-            }
-            throw error
-        }
-        if (hasListeners('persist:operation')) {
-            emitter.emit('persist:operation', {
-                operation,
-                durationMs: Math.max(0, nowMs() - startedAt),
-                ...(id !== undefined ? { id } : {}),
-            })
-        }
-        return result
-    }
-
     const armDelayTimer = (): void => {
         if (delayed === undefined) {
             if (delayTimer !== undefined) cancelTimeout(delayTimer)
@@ -668,7 +715,6 @@ export const buildQueue = <T>(
             cancelTimeout(leaseTimer)
             leaseTimer = undefined
         }
-        if (leaseTtlMs === undefined) return
         if (leaseExpiries === undefined) return
         if (leased.size === 0) {
             leaseExpiries.clear()
@@ -789,7 +835,7 @@ export const buildQueue = <T>(
     }
 
     const reclaimExpiredLeases = async (): Promise<void> => {
-        if (leaseTtlMs === undefined) return
+        if (leaseExpiries === undefined || leaseExpiries.size === 0) return
         await withChain(() => reclaimExpiredLeasesCore(true))
     }
 
@@ -803,6 +849,7 @@ export const buildQueue = <T>(
         availableDlqMetadataCount = 0
         hasAvailableMetadata = false
         availableCount = 0
+        uniqueJobIndex?.clear()
         leased.clear()
         delayed?.clear()
         leaseExpiries?.clear()
@@ -830,7 +877,9 @@ export const buildQueue = <T>(
     /** Claim one available row and persist the lease when a store is present. */
     const claimCore = async (): Promise<Lease<T> | undefined> => {
         promoteDueDelayed()
-        if (leaseTtlMs !== undefined) await reclaimExpiredLeasesCore(false)
+        if (leaseTtlMs !== undefined || (leaseExpiries?.size ?? 0) > 0) {
+            await reclaimExpiredLeasesCore(false)
+        }
 
         const head = popAvailable()
         if (head === undefined) return undefined
@@ -896,6 +945,7 @@ export const buildQueue = <T>(
             getDelayed().push({ id, item, availableAt, attempt: 1 })
             armDelayTimer()
         }
+        indexJob(item, id)
         emitEnqueued(item)
     }
 
@@ -916,7 +966,7 @@ export const buildQueue = <T>(
             )
         }
 
-        if (!chain) {
+        if (!durable.hasStore) {
             try {
                 assertNotFull(1)
             } catch (e) {
@@ -934,8 +984,9 @@ export const buildQueue = <T>(
 
         const availableAt = delayMs > 0 ? nowMs() + delayMs : 0
 
-        if (!chain) {
+        if (!durable.hasStore) {
             try {
+                assertUniqueJob(item, id)
                 applyEnqueueMemory(item, id, availableAt)
                 return RESOLVED_VOID
             } catch (error) {
@@ -945,6 +996,7 @@ export const buildQueue = <T>(
 
         return withChain(async () => {
             assertNotFull(1)
+            assertUniqueJob(item, id)
             await callStore('put', id, () => store!.put(
                 toRecord(id, item, availableAt, null, null),
             ))
@@ -981,8 +1033,67 @@ export const buildQueue = <T>(
             ) {
                 throw new LeaseMismatchError()
             }
+            unindexJob(entry.item, lease.id)
             leased.delete(lease.id)
             armLeaseTimer()
+        })
+    }
+
+    const extendLease = (
+        lease: Lease<T>,
+        requestedTtlMs?: number,
+    ): Promise<Lease<T>> => {
+        const ttlMs = requestedTtlMs ?? leaseTtlMs
+        if (ttlMs === undefined || !isIntegerInRange(ttlMs, 1)) {
+            return Promise.reject(
+                new InvalidQueueOptionError(
+                    'extendLease requires a safe integer ttlMs >= 1 or a queue leaseTtlMs',
+                ),
+            )
+        }
+        return withChain(async () => {
+            const entry = requireLease(lease)
+            const expiresAt = nowMs() + ttlMs
+            if (!Number.isSafeInteger(expiresAt)) {
+                throw new InvalidQueueOptionError(
+                    'lease deadline must remain a safe integer',
+                )
+            }
+            if (store) {
+                await callStore('put', lease.id, () => store.put(
+                    toRecord(
+                        lease.id,
+                        entry.item,
+                        0,
+                        entry.generation,
+                        expiresAt,
+                        entry.attempt,
+                        entry.dlqHandoffAttempt,
+                    ),
+                ))
+            }
+            const still = leased.get(lease.id)
+            if (
+                still === undefined ||
+                still.generation !== lease.generation
+            ) {
+                throw new LeaseMismatchError()
+            }
+            still.expiresAt = expiresAt
+            getLeaseExpiries().push({
+                id: lease.id,
+                generation: still.generation,
+                expiresAt,
+            })
+            armLeaseTimer()
+            return allocLease(
+                lease.id,
+                still.item,
+                still.generation,
+                expiresAt,
+                still.attempt,
+                still.dlqHandoffAttempt,
+            )
         })
     }
 
@@ -1115,8 +1226,8 @@ export const buildQueue = <T>(
             promoteDueDelayed()
             const head = popAvailable()
             if (head === undefined) return undefined
+            const id = head.id as number
             if (store) {
-                const id = head.id as number
                 try {
                     await callStore('remove', id, () => store.remove(id))
                 } catch (error) {
@@ -1129,6 +1240,7 @@ export const buildQueue = <T>(
                     throw error
                 }
             }
+            unindexJob(head.item, id)
             emitDequeued(head.item)
             return { value: head.item }
         })
@@ -1208,7 +1320,18 @@ export const buildQueue = <T>(
         }
 
         const planned = new Array<RowRecord<T>>(items.length)
+        const plannedJobIds = new Set<string>()
         for (let i = 0; i < items.length; i += 1) {
+            const item = items[i]!
+            if (uniqueJobIndex !== undefined) {
+                const applicationId = applicationIdOf(item)
+                if (applicationId !== undefined) {
+                    if (plannedJobIds.has(applicationId)) {
+                        return Promise.reject(new DuplicateJobIdError(applicationId))
+                    }
+                    plannedJobIds.add(applicationId)
+                }
+            }
             planned[i] = toRecord(i + 1, items[i]!, 0, null, null)
         }
 
@@ -1218,6 +1341,7 @@ export const buildQueue = <T>(
             leaseGenSeq = 0
             for (const rec of planned) {
                 pushAvailable(rec.item, trackAvailableIds ? rec.id : undefined)
+                indexJob(rec.item, rec.id)
                 if (trackAvailableIds) ids.fixup(rec.id)
             }
         }
@@ -1317,43 +1441,197 @@ export const buildQueue = <T>(
         }
     }
 
-    const getJob = (id: string): QueueJob<T> | undefined => {
+    const jobViewByRowId = (rowId: number): QueueJob<T> | undefined => {
+        for (let i = availableHead; i < availableItems.length; i += 1) {
+            if (availableIds?.[i] !== rowId) continue
+            return makeJobView(
+                availableItems[i]!,
+                'ready',
+                availableAttempts?.[i] ?? 1,
+            )
+        }
+        const delayedEntry = delayed?.find((entry) => entry.id === rowId)
+        if (delayedEntry !== undefined) {
+            return makeJobView(
+                delayedEntry.item,
+                'delayed',
+                delayedEntry.attempt,
+                delayedEntry.availableAt,
+            )
+        }
+        const leasedEntry = leased.get(rowId)
+        if (leasedEntry !== undefined) {
+            return makeJobView(
+                leasedEntry.item,
+                'leased',
+                leasedEntry.attempt,
+                undefined,
+                leasedEntry.expiresAt ?? undefined,
+            )
+        }
+        return undefined
+    }
+
+    const getJobs = (id: string): QueueJob<T>[] => {
         const applicationId = requireApplicationId(id)
         promoteDueDelayed()
+        if (uniqueJobIndex !== undefined) {
+            const rowId = uniqueJobIndex.get(applicationId)
+            if (rowId === undefined) return []
+            const view = jobViewByRowId(rowId)
+            return view === undefined ? [] : [view]
+        }
+        const out: QueueJob<T>[] = []
         for (let i = availableHead; i < availableItems.length; i += 1) {
             const item = availableItems[i]!
             if (isJob(item) && item.id === applicationId) {
-                return makeJobView(
+                const view = makeJobView(
                     item,
                     'ready',
                     availableAttempts?.[i] ?? 1,
                 )
+                if (view) out.push(view)
             }
         }
-        const delayedJob = delayed?.find(
-            (entry) => isJob(entry.item) && entry.item.id === applicationId,
-        )
-        if (delayedJob !== undefined) {
-            const job = makeJobView(
-                delayedJob.item,
-                'delayed',
-                delayedJob.attempt,
-                delayedJob.availableAt,
-            )
-            if (job) return job
+        if (delayed !== undefined) {
+            for (const entry of delayed.toArray()) {
+                if (!isJob(entry.item) || entry.item.id !== applicationId) continue
+                const view = makeJobView(
+                    entry.item,
+                    'delayed',
+                    entry.attempt,
+                    entry.availableAt,
+                )
+                if (view) out.push(view)
+            }
         }
         for (const entry of leased.values()) {
             if (isJob(entry.item) && entry.item.id === applicationId) {
-                return makeJobView(
+                const view = makeJobView(
                     entry.item,
                     'leased',
                     entry.attempt,
                     undefined,
                     entry.expiresAt ?? undefined,
                 )
+                if (view) out.push(view)
             }
         }
-        return undefined
+        return out
+    }
+
+    const getJob = (id: string): QueueJob<T> | undefined =>
+        getJobs(id)[0]
+
+    type StableJobCursor = {
+        version: 1
+        id: string
+        enqueuedAt: number
+        state: QueueJob<T>['state']
+    }
+
+    const stableCursor = (job: QueueJob<T>): JobCursor =>
+        JSON.stringify({
+            version: 1,
+            id: job.id,
+            enqueuedAt: (job.item as { enqueuedAt: number }).enqueuedAt,
+            state: job.state,
+        } satisfies StableJobCursor)
+
+    const parseStableCursor = (value: string): StableJobCursor => {
+        try {
+            const parsed = JSON.parse(value) as Partial<StableJobCursor>
+            if (
+                parsed.version !== 1 ||
+                typeof parsed.id !== 'string' ||
+                !Number.isFinite(parsed.enqueuedAt) ||
+                (parsed.state !== 'ready' &&
+                    parsed.state !== 'delayed' &&
+                    parsed.state !== 'leased')
+            ) {
+                throw new Error()
+            }
+            return parsed as StableJobCursor
+        } catch {
+            throw new InvalidQueueOptionError('cursor is not a valid stable job cursor')
+        }
+    }
+
+    const stableStateRank = (state: QueueJob<T>['state']): number =>
+        state === 'ready' ? 0 : state === 'delayed' ? 1 : 2
+
+    const compareStableJobs = (a: QueueJob<T>, b: QueueJob<T>): number => {
+        const aTime = (a.item as { enqueuedAt: number }).enqueuedAt
+        const bTime = (b.item as { enqueuedAt: number }).enqueuedAt
+        if (aTime !== bTime) return aTime - bTime
+        const stateDiff = stableStateRank(a.state) - stableStateRank(b.state)
+        if (stateDiff !== 0) return stateDiff
+        return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    }
+
+    const listStableJobs = (
+        options: ListJobsOptions,
+        limit: number,
+    ): QueueJobPage<T> => {
+        const cursor =
+            options.stableCursor !== undefined
+                ? parseStableCursor(options.stableCursor)
+                : undefined
+        promoteDueDelayed()
+        const jobs: QueueJob<T>[] = []
+        const state = options.state
+        if (state === undefined || state === 'ready') {
+            for (let i = availableHead; i < availableItems.length; i += 1) {
+                const job = makeJobView(
+                    availableItems[i]!,
+                    'ready',
+                    availableAttempts?.[i] ?? 1,
+                )
+                if (job) jobs.push(job)
+            }
+        }
+        if (state === undefined || state === 'delayed') {
+            for (const entry of delayed?.toArray() ?? []) {
+                const job = makeJobView(
+                    entry.item,
+                    'delayed',
+                    entry.attempt,
+                    entry.availableAt,
+                )
+                if (job) jobs.push(job)
+            }
+        }
+        if (state === undefined || state === 'leased') {
+            for (const entry of leased.values()) {
+                const job = makeJobView(
+                    entry.item,
+                    'leased',
+                    entry.attempt,
+                    undefined,
+                    entry.expiresAt ?? undefined,
+                )
+                if (job) jobs.push(job)
+            }
+        }
+        jobs.sort(compareStableJobs)
+
+        let start = 0
+        if (cursor !== undefined) {
+            start = jobs.findIndex((job) => compareStableJobs(job, {
+                id: cursor.id,
+                item: { enqueuedAt: cursor.enqueuedAt } as T,
+                state: cursor.state,
+                attempt: 0,
+            }) > 0)
+            if (start < 0) start = jobs.length
+        }
+        const items = jobs.slice(start, start + limit)
+        return {
+            items,
+            ...(start + items.length < jobs.length && items.length > 0
+                ? { nextStableCursor: stableCursor(items[items.length - 1]!) }
+                : {}),
+        }
     }
 
     const listJobs = (options: ListJobsOptions = {}): QueueJobPage<T> => {
@@ -1365,10 +1643,11 @@ export const buildQueue = <T>(
         if (!isIntegerInRange(limit, 1)) {
             throw new InvalidQueueOptionError('limit must be a safe integer >= 1')
         }
+        if (options.stable || options.stableCursor !== undefined) {
+            return listStableJobs(options, limit)
+        }
         promoteDueDelayed()
-        // Keep one look-ahead item, but do not materialize the entire queue.
-        // The numeric cursor remains backwards compatible; each page now
-        // allocates at most `limit + 1` job views.
+        // Numeric offsets remain the low-allocation compatibility path.
         const needed = Math.min(Number.MAX_SAFE_INTEGER, cursor + limit + 1)
         const collected: QueueJob<T>[] = []
         let skipped = 0
@@ -1384,60 +1663,21 @@ export const buildQueue = <T>(
 
         if (options.state === undefined || options.state === 'ready') {
             for (let i = availableHead; i < availableItems.length; i += 1) {
-                if (
-                    !collect(
-                        makeJobView(
-                            availableItems[i]!,
-                            'ready',
-                            availableAttempts?.[i] ?? 1,
-                        ),
-                    )
-                ) break
+                if (!collect(makeJobView(availableItems[i]!, 'ready', availableAttempts?.[i] ?? 1))) break
             }
         }
-        if (
-            collected.length < needed &&
-            (options.state === undefined || options.state === 'delayed')
-        ) {
-            const entries = (delayed?.toArray() ?? []).sort((a, b) => {
-                if (a.availableAt !== b.availableAt) {
-                    return a.availableAt - b.availableAt
-                }
-                return a.id - b.id
-            })
+        if (collected.length < needed && (options.state === undefined || options.state === 'delayed')) {
+            const entries = (delayed?.toArray() ?? []).sort((a, b) => a.availableAt !== b.availableAt ? a.availableAt - b.availableAt : a.id - b.id)
             for (const entry of entries) {
-                if (
-                    !collect(
-                        makeJobView(
-                            entry.item,
-                            'delayed',
-                            entry.attempt,
-                            entry.availableAt,
-                        ),
-                    )
-                ) break
+                if (!collect(makeJobView(entry.item, 'delayed', entry.attempt, entry.availableAt))) break
             }
         }
-        if (
-            collected.length < needed &&
-            (options.state === undefined || options.state === 'leased')
-        ) {
+        if (collected.length < needed && (options.state === undefined || options.state === 'leased')) {
             const entries = [...leased.values()].sort((a, b) => a.id - b.id)
             for (const entry of entries) {
-                if (
-                    !collect(
-                        makeJobView(
-                            entry.item,
-                            'leased',
-                            entry.attempt,
-                            undefined,
-                            entry.expiresAt ?? undefined,
-                        ),
-                    )
-                ) break
+                if (!collect(makeJobView(entry.item, 'leased', entry.attempt, undefined, entry.expiresAt ?? undefined))) break
             }
         }
-
         const items = collected.slice(0, limit)
         const next = cursor + items.length
         return {
@@ -1500,6 +1740,7 @@ export const buildQueue = <T>(
                 await callStore('remove', rowId, () => store!.remove(rowId))
             }
             removePendingJob(found)
+            unindexJob(found.entry.item, rowId ?? 0)
             return true
         })
     }
@@ -1596,10 +1837,10 @@ export const buildQueue = <T>(
         })
     }
 
-    const replayJob = (
+    const replayJobDetailed = async (
         id: string,
         target: Pick<Queue<T>, 'enqueue'>,
-    ): Promise<boolean> => {
+    ): Promise<ReplayJobResult<T>> => {
         const applicationId = requireApplicationId(id)
         if ((target as object) === api || target.enqueue === enqueue) {
             return Promise.reject(
@@ -1607,17 +1848,52 @@ export const buildQueue = <T>(
             )
         }
         const found = locatePendingJob(applicationId)
-        if (!found) return Promise.resolve(false)
+        if (!found) {
+            return { found: false, accepted: false, cancelled: false }
+        }
         // Cross-queue replay is deliberately enqueue-first, so a crash may
         // duplicate work but never silently loses a dead-letter row.
-        return Promise.resolve(target.enqueue(found.entry.item)).then(() =>
-            cancelJob(applicationId),
-        )
+        try {
+            await target.enqueue(found.entry.item)
+        } catch (error) {
+            return {
+                found: true,
+                accepted: false,
+                cancelled: false,
+                item: found.entry.item,
+                error,
+            }
+        }
+        try {
+            const cancelled = await cancelJob(applicationId)
+            return {
+                found: true,
+                accepted: true,
+                cancelled,
+                item: found.entry.item,
+            }
+        } catch (error) {
+            return {
+                found: true,
+                accepted: true,
+                cancelled: false,
+                item: found.entry.item,
+                error,
+            }
+        }
     }
 
+    const replayJob = (
+        id: string,
+        target: Pick<Queue<T>, 'enqueue'>,
+    ): Promise<boolean> =>
+        replayJobDetailed(id, target).then((result) => {
+            if (result.error !== undefined) throw result.error
+            return result.accepted && result.cancelled
+        })
+
     const flush = (): Promise<void> => {
-        if (!chain) return Promise.resolve()
-        return chain.flush()
+        return durable.flush()
     }
 
     const hydrate = async (): Promise<void> => {
@@ -1636,6 +1912,7 @@ export const buildQueue = <T>(
             }
             const loaded = await callStore('load', undefined, () => store.loadAll())
             const seen = new Set<number>()
+            const seenJobIds = new Set<string>()
             let maxId = 0
             for (const record of loaded) {
                 if (!isSafeId(record.id)) {
@@ -1647,6 +1924,15 @@ export const buildQueue = <T>(
                     throw new DuplicateRowIdError(record.id)
                 }
                 seen.add(record.id)
+                if (uniqueJobIndex !== undefined) {
+                    const applicationId = applicationIdOf(record.item)
+                    if (applicationId !== undefined) {
+                        if (seenJobIds.has(applicationId)) {
+                            throw new DuplicateJobIdError(applicationId)
+                        }
+                        seenJobIds.add(applicationId)
+                    }
+                }
                 if (record.id > maxId) maxId = record.id
             }
 
@@ -1700,9 +1986,11 @@ export const buildQueue = <T>(
                     row.attempt ?? 1,
                     row.dlqHandoffAttempt,
                 )
+                indexJob(row.item, row.id)
             }
             for (const d of delayedRows) {
                 getDelayed().push(d)
+                indexJob(d.item, d.id)
             }
             armDelayTimer()
             if (hasListeners('persist:loaded')) {
@@ -1721,6 +2009,7 @@ export const buildQueue = <T>(
         enqueue,
         claim,
         ack,
+        extendLease,
         release,
         reschedule,
         dequeue,
@@ -1736,11 +2025,13 @@ export const buildQueue = <T>(
         toArray,
         rowIds,
         getJob,
+        getJobs,
         listJobs,
         cancelJob,
         rescheduleJob,
         promoteJob,
         replayJob,
+        replayJobDetailed,
         hydrate,
         flush,
         hasListeners,

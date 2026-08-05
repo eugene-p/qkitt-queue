@@ -76,6 +76,8 @@ export type WithWorkerOptions<T = unknown> = {
     autoStart?: boolean
     /** Cooperatively abort a handler after this many milliseconds. */
     timeoutMs?: number
+    /** Renew a configured queue lease at this interval while the handler runs. */
+    heartbeatMs?: number
     /** Derive opaque tracing/correlation context for each delivery. */
     traceContext?: (item: T) => unknown
     /**
@@ -186,6 +188,15 @@ export const withWorker = <
     const concurrency = resolveConcurrency(options.concurrency)
     const autoStart = options.autoStart ?? true
     const timeoutMs = resolveTimeoutMs(options.timeoutMs)
+    const heartbeatMs = options.heartbeatMs
+    if (
+        heartbeatMs !== undefined &&
+        (!Number.isFinite(heartbeatMs) || heartbeatMs <= 0)
+    ) {
+        throw new InvalidWorkerOptionError(
+            'heartbeatMs must be a finite number > 0',
+        )
+    }
     const policyExplicit = options.onFailure !== undefined
     const recovery: RecoveryConfig<T> = {
         policyExplicit,
@@ -542,6 +553,7 @@ export const withWorker = <
     ): R | PromiseLike<R> => worker(item, context)
 
     const processLease = (lease: Lease<T>): void => {
+        let currentLease = lease
         const item = lease.item
         if (hasInnerListeners('worker:started')) {
             emitInner('worker:started', { item })
@@ -569,6 +581,9 @@ export const withWorker = <
         let dispose: () => void = NOOP_DISPOSE
         if (needsAbort) {
             const timers: unknown[] = []
+            let deadlineTimer: unknown
+            let heartbeatTimer: unknown
+            let finished = false
             const abortAfter = (ms: number, reason: unknown): void => {
                 timers.push(
                     scheduleTimeout(() => {
@@ -578,17 +593,59 @@ export const withWorker = <
                     }, ms),
                 )
             }
+            const armDeadline = (): void => {
+                if (deadlineTimer !== undefined) cancelTimeout(deadlineTimer)
+                if (currentLease.expiresAt === null) return
+                deadlineTimer = scheduleTimeout(() => {
+                    if (!controller!.signal.aborted) {
+                        controller!.abort(
+                            new WorkerLeaseExpiredError(currentLease.expiresAt!),
+                        )
+                    }
+                }, Math.max(0, currentLease.expiresAt - Date.now()))
+            }
+            const armHeartbeat = (): void => {
+                if (
+                    heartbeatMs === undefined ||
+                    currentLease.expiresAt === null ||
+                    finished
+                ) {
+                    return
+                }
+                heartbeatTimer = scheduleTimeout(() => {
+                    heartbeatTimer = undefined
+                    if (finished) return
+                    void inner.extendLease(currentLease).then(
+                        (renewed) => {
+                            if (finished) return
+                            currentLease = renewed
+                            context.leaseDeadline = renewed.expiresAt ?? undefined
+                            armDeadline()
+                            armHeartbeat()
+                        },
+                        (error: unknown) => {
+                            if (!finished && !controller!.signal.aborted) {
+                                controller!.abort(error)
+                            }
+                        },
+                    )
+                }, Math.min(
+                    heartbeatMs,
+                    Math.max(1, (currentLease.expiresAt - Date.now()) / 2),
+                ))
+            }
             if (timeoutMs !== undefined) {
                 abortAfter(timeoutMs, new WorkerTimeoutError(timeoutMs))
             }
             if (lease.expiresAt !== null) {
-                abortAfter(
-                    Math.max(0, lease.expiresAt - Date.now()),
-                    new WorkerLeaseExpiredError(lease.expiresAt),
-                )
+                armDeadline()
+                armHeartbeat()
             }
             dispose = () => {
+                finished = true
                 for (const timer of timers) cancelTimeout(timer)
+                if (deadlineTimer !== undefined) cancelTimeout(deadlineTimer)
+                if (heartbeatTimer !== undefined) cancelTimeout(heartbeatTimer)
             }
         }
 
@@ -599,23 +656,23 @@ export const withWorker = <
                 Promise.resolve(ret).then(
                     (result) => {
                         dispose()
-                        completeLease(lease, item, result as R, startedAt)
+                        completeLease(currentLease, item, result as R, startedAt)
                     },
                     (error: unknown) => {
                         dispose()
-                        failLease(lease, item, error, startedAt)
+                        failLease(currentLease, item, error, startedAt)
                     },
                 )
                 return
             }
         } catch (error) {
             dispose()
-            failLease(lease, item, error, startedAt)
+            failLease(currentLease, item, error, startedAt)
             return
         }
 
         dispose()
-        completeLease(lease, item, ret, startedAt)
+        completeLease(currentLease, item, ret, startedAt)
     }
 
     let unsubscribeEnqueued: (() => void) | undefined

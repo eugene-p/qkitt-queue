@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createMemoryRowStore } from '../../persist/stores/memory'
 import { HydrateWhileActiveError, LeaseMismatchError } from '../../persist/errors'
-import { buildQueue, InvalidQueueOptionError, QueueFullError } from './queue'
+import {
+    buildQueue,
+    DuplicateJobIdError,
+    InvalidQueueOptionError,
+    QueueFullError,
+} from './queue'
+import { createJob } from '../jobs/job'
 import { getQueueName } from './queue-name.util'
 import { MAX_TIMER_DELAY_MS } from '../../util/schedule-timeout.util'
 
@@ -373,6 +379,39 @@ describe('buildQueue', () => {
         } finally {
             vi.useRealTimers()
         }
+    })
+
+    it('extends a lease before its deadline and persists the new expiry', async () => {
+        vi.useFakeTimers()
+        try {
+            const store = createMemoryRowStore<string>()
+            const queue = buildQueue<string>({ store, leaseTtlMs: 100 })
+            await queue.enqueue('work')
+            const lease = await queue.claim()
+            const originalDeadline = lease?.expiresAt
+            expect(originalDeadline).toEqual(expect.any(Number))
+
+            await vi.advanceTimersByTimeAsync(50)
+            const renewed = await queue.extendLease(lease!)
+            expect(renewed.expiresAt).toBeGreaterThan(originalDeadline!)
+            expect(store.rows[0]?.leaseExpiresAt).toBe(renewed.expiresAt)
+
+            await vi.advanceTimersByTimeAsync(50)
+            expect(queue.stats().leased).toBe(1)
+            await vi.advanceTimersByTimeAsync(renewed.expiresAt! - Date.now())
+            expect(queue.readyCount()).toBe(1)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('can reject duplicate application job ids without retaining an index for plain queues', async () => {
+        const queue = buildQueue({ uniqueJobIds: true })
+        await queue.enqueue(createJob('first', { id: 'same' }))
+        await expect(queue.enqueue(createJob('second', { id: 'same' }))).rejects.toBeInstanceOf(
+            DuplicateJobIdError,
+        )
+        expect(queue.getJobs('same')).toHaveLength(1)
     })
 
     it('throws QueueFullError at maxSize', async () => {

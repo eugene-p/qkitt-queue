@@ -49,6 +49,7 @@ const resolveWorker = <T>(
         concurrency,
         autoStart,
         timeoutMs,
+        heartbeatMs,
         traceContext,
         onFailure,
     } = worker
@@ -64,6 +65,7 @@ const resolveWorker = <T>(
                 ? { onFailure: onFailure as WithWorkerOptions<T>['onFailure'] }
                 : {}),
             ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            ...(heartbeatMs !== undefined ? { heartbeatMs } : {}),
             ...(traceContext !== undefined
                 ? {
                       traceContext:
@@ -148,6 +150,7 @@ const buildQueueFromConfig = <T>(
     const buildOptions: {
         name: string
         maxSize?: number
+        uniqueJobIds?: boolean
         store?: ResolvedStore<T>
         leaseTtlMs?: number
     } = {
@@ -155,6 +158,9 @@ const buildQueueFromConfig = <T>(
     }
     if (queueConfig.maxSize !== undefined) {
         buildOptions.maxSize = queueConfig.maxSize
+    }
+    if (queueConfig.uniqueJobIds !== undefined) {
+        buildOptions.uniqueJobIds = queueConfig.uniqueJobIds
     }
 
     if (queueConfig.persist) {

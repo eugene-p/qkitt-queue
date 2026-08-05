@@ -75,6 +75,21 @@ describe('job operations', () => {
 
         expect(ids).toEqual(Array.from({ length: 2_000 }, (_, i) => `job-${i}`))
     })
+
+    it('supports stable job cursors when rows change between pages', async () => {
+        const queue = buildQueue<ReturnType<typeof createJob<number>>>()
+        await queue.enqueue(createJob(1, { id: 'one', enqueuedAt: 1 }))
+        await queue.enqueue(createJob(2, { id: 'two', enqueuedAt: 2 }))
+        const first = queue.listJobs({ stable: true, limit: 1 })
+        expect(first.nextStableCursor).toEqual(expect.any(String))
+
+        await queue.enqueue(createJob(3, { id: 'three', enqueuedAt: 3 }))
+        const second = queue.listJobs({
+            stableCursor: first.nextStableCursor,
+            limit: 10,
+        })
+        expect(second.items.map((job) => job.id)).toEqual(['two', 'three'])
+    })
 })
 
 describe('withObservability', () => {

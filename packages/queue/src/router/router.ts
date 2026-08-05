@@ -38,6 +38,20 @@ export type RouterPublishResult = {
     accepted: number
     /** Number of target enqueues that rejected or threw. */
     failed: number
+    /** Present on async results; use `publishAsyncDetailed` for enumerable data. */
+    deliveries?: RouterDeliveryResult[]
+}
+
+export type RouterPublishDetailedResult = RouterPublishResult & {
+    /** One delivery outcome per matched target (or the unmatched sink). */
+    deliveries: RouterDeliveryResult[]
+}
+
+export type RouterDeliveryResult = {
+    target: RouteTarget
+    pattern?: string
+    accepted: boolean
+    error?: unknown
 }
 
 export type BuildRouterOptions = {
@@ -129,6 +143,11 @@ export type Router<TEvents extends EventMap = RouterEvents> = {
         topic: string,
         data: T,
     ) => Promise<RouterPublishResult>
+    /** Async result with target identity and failure objects. */
+    publishAsyncDetailed: <T = unknown>(
+        topic: string,
+        data: T,
+    ) => Promise<RouterPublishDetailedResult>
     /** Snapshot of current pattern → target bindings. */
     bindings: () => Binding[]
     /** Clear all bindings (does not clear unmatched stats or the sink target). */
@@ -294,10 +313,10 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         return matched
     }
 
-    const publishAsync = async <T = unknown>(
+    const publishAsyncDetailed = async <T = unknown>(
         topic: string,
         data: T,
-    ): Promise<RouterPublishResult> => {
+    ): Promise<RouterPublishDetailedResult> => {
         const topicParts = topic.split(TOPIC_SEPARATOR)
         if (!isValidTopicParts(topicParts)) {
             const error = new InvalidTopicError(topic)
@@ -319,7 +338,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
                     data,
                     delivered: false,
                 })
-                return { matched: 0, accepted: 0, failed: 0 }
+                return { matched: 0, accepted: 0, failed: 0, deliveries: [] }
             }
             try {
                 await unmatchedTarget.enqueue({ topic, data })
@@ -328,7 +347,12 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
                     data,
                     delivered: true,
                 })
-                return { matched: 0, accepted: 1, failed: 0 }
+                return {
+                    matched: 0,
+                    accepted: 1,
+                    failed: 0,
+                    deliveries: [{ target: unmatchedTarget, accepted: true }],
+                }
             } catch (error) {
                 emitRouter('router:error', {
                     operation: 'unmatched',
@@ -340,15 +364,26 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
                     data,
                     delivered: false,
                 })
-                return { matched: 0, accepted: 0, failed: 1 }
+                return {
+                    matched: 0,
+                    accepted: 0,
+                    failed: 1,
+                    deliveries: [
+                        { target: unmatchedTarget, accepted: false, error },
+                    ],
+                }
             }
         }
 
-        const outcomes = await Promise.all(
+        const deliveries = await Promise.all(
             matching.map(async (route) => {
                 try {
                     await route.target.enqueue(message as RouteMessage)
-                    return true
+                    return {
+                        target: route.target,
+                        pattern: route.pattern,
+                        accepted: true,
+                    }
                 } catch (error) {
                     emitRouter('router:error', {
                         operation: 'publish',
@@ -356,11 +391,16 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
                         topic,
                         pattern: route.pattern,
                     })
-                    return false
+                    return {
+                        target: route.target,
+                        pattern: route.pattern,
+                        accepted: false,
+                        error,
+                    }
                 }
             }),
         )
-        const accepted = outcomes.filter(Boolean).length
+        const accepted = deliveries.filter((delivery) => delivery.accepted).length
         emitRouter('router:published', {
             topic,
             data,
@@ -370,7 +410,25 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
             matched: matching.length,
             accepted,
             failed: matching.length - accepted,
+            deliveries,
         }
+    }
+
+    const publishAsync = async <T = unknown>(
+        topic: string,
+        data: T,
+    ): Promise<RouterPublishResult> => {
+        const result = await publishAsyncDetailed(topic, data)
+        const summary: RouterPublishResult = {
+            matched: result.matched,
+            accepted: result.accepted,
+            failed: result.failed,
+        }
+        Object.defineProperty(summary, 'deliveries', {
+            value: result.deliveries,
+            enumerable: false,
+        })
+        return summary
     }
 
     const bindings = (): Binding[] =>
@@ -404,6 +462,7 @@ export const buildRouter = (options: BuildRouterOptions = {}): Router => {
         unbind,
         publish,
         publishAsync,
+        publishAsyncDetailed,
         bindings,
         clear,
         setUnmatchedTarget,

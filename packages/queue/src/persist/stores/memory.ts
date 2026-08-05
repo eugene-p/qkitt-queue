@@ -21,51 +21,26 @@ const cloneRecord = <T>(row: RowRecord<T>): RowRecord<T> => ({
 export const createMemoryRowStore = <T>(
     initial: readonly RowRecord<T>[] = [],
 ): MemoryRowStore<T> => {
-    type Node = {
-        record: RowRecord<T>
-        prev: number | undefined
-        next: number | undefined
-    }
-    const nodes = new Map<number, Node>()
-    let head: number | undefined
-    let tail: number | undefined
-
-    const append = (record: RowRecord<T>): void => {
-        const id = record.id
-        nodes.set(id, { record, prev: tail, next: undefined })
-        if (tail === undefined) head = id
-        else nodes.get(tail)!.next = id
-        tail = id
-    }
+    // Map preserves insertion order while delete remains O(1), so no linked
+    // nodes or tombstone/order arrays are needed for the in-process backend.
+    const rowsById = new Map<number, RowRecord<T>>()
 
     for (const record of initial) {
         const next = cloneRecord(record)
-        if (!nodes.has(record.id)) append(next)
-        else nodes.get(record.id)!.record = next
+        rowsById.set(record.id, next)
     }
 
     const putOne = (record: RowRecord<T>): void => {
-        const next = cloneRecord(record)
-        const node = nodes.get(record.id)
-        if (node === undefined) append(next)
-        else node.record = next
+        rowsById.set(record.id, cloneRecord(record))
     }
 
     const removeOne = (id: number): void => {
-        const node = nodes.get(id)
-        if (node === undefined) return
-        nodes.delete(id)
-        if (node.prev === undefined) head = node.next
-        else nodes.get(node.prev)!.next = node.next
-        if (node.next === undefined) tail = node.prev
-        else nodes.get(node.next)!.prev = node.prev
+        rowsById.delete(id)
     }
 
     const currentRows = (): RowRecord<T>[] => {
         const out: RowRecord<T>[] = []
-        for (let id = head; id !== undefined; id = nodes.get(id)!.next) {
-            out.push(nodes.get(id)!.record)
-        }
+        for (const record of rowsById.values()) out.push(record)
         return out
     }
 
@@ -78,9 +53,7 @@ export const createMemoryRowStore = <T>(
         put: putOne,
         remove: removeOne,
         clear: () => {
-            nodes.clear()
-            head = undefined
-            tail = undefined
+            rowsById.clear()
         },
         putBatch: (records) => {
             for (const record of records) putOne(record)
@@ -89,9 +62,7 @@ export const createMemoryRowStore = <T>(
             for (const id of new Set(ids)) removeOne(id)
         },
         replaceAll: (nextRecords) => {
-            nodes.clear()
-            head = undefined
-            tail = undefined
+            rowsById.clear()
             for (const record of nextRecords) {
                 putOne(record)
             }

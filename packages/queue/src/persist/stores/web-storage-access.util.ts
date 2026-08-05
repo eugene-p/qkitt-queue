@@ -3,6 +3,9 @@ export type WebStorageLike = {
     getItem: (key: string) => string | null
     setItem: (key: string, value: string) => void
     removeItem: (key: string) => void
+    /** Optional standard Web Storage enumeration used for orphan cleanup. */
+    readonly length?: number
+    key?: (index: number) => string | null
 }
 
 /** Thrown when `localStorage` / `sessionStorage` is missing and no mock was passed. */
@@ -48,6 +51,10 @@ export const lazyGlobalStorage = (
         getItem: (key) => resolve().getItem(key),
         setItem: (key, value) => resolve().setItem(key, value),
         removeItem: (key) => resolve().removeItem(key),
+        get length() {
+            return resolve().length
+        },
+        key: (index) => resolve().key?.(index) ?? null,
     }
 }
 

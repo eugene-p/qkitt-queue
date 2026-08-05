@@ -43,6 +43,7 @@ export {
     InvalidDeadLetterOptionError,
     InvalidLoopOptionError,
     InvalidQueueOptionError,
+    DuplicateJobIdError,
     InvalidDurableRetryOptionError,
     InvalidJobOptionError,
     InvalidWorkerOptionError,
@@ -81,6 +82,8 @@ export {
     type QueueJob,
     type QueueJobPage,
     type ListJobsOptions,
+    type JobCursor,
+    type ReplayJobResult,
     type QueueWithWorker,
     type RecoveryPolicy,
     type RecoveryPolicyResult,
@@ -115,6 +118,8 @@ export {
     type Router,
     type RouterEvents,
     type RouterPublishResult,
+    type RouterPublishDetailedResult,
+    type RouterDeliveryResult,
     type UnmatchedRecord,
 } from './router'
 

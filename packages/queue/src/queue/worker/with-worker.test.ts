@@ -15,6 +15,14 @@ const flush = async (times = 1) => {
     }
 }
 
+const deferred = <T = void>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    const promise = new Promise<T>((res) => {
+        resolve = res
+    })
+    return { promise, resolve }
+}
+
 const waitForIdle = (queue: {
     on: (event: 'worker:idle', cb: () => void) => () => void
 }) =>
@@ -26,6 +34,35 @@ const waitForIdle = (queue: {
     })
 
 describe('withWorker', () => {
+    it('renews a lease with a heartbeat while a handler is running', async () => {
+        vi.useFakeTimers()
+        try {
+            const started = deferred()
+            const finish = deferred()
+            const base = buildQueue<number>({ leaseTtlMs: 20 })
+            const queue = withWorker(
+                base,
+                async () => {
+                    started.resolve()
+                    await finish.promise
+                },
+                { heartbeatMs: 5 },
+            )
+
+            const idle = waitForIdle(queue)
+            await queue.enqueue(1)
+            await started.promise
+            await vi.advanceTimersByTimeAsync(100)
+            expect(base.stats()).toEqual({ available: 0, delayed: 0, leased: 1 })
+
+            finish.resolve()
+            await idle
+            expect(base.size()).toBe(0)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('supplies stable job, delivery, lease, and tracing context', async () => {
         const contexts: Array<{
             jobId: string | undefined

@@ -233,6 +233,22 @@ describe('buildRouter', () => {
         expect(rejected.enqueue).toHaveBeenCalledOnce()
     })
 
+    it('publishAsyncDetailed includes target identity and errors', async () => {
+        const router = buildRouter()
+        const error = new Error('queue full')
+        const accepted = { enqueue: vi.fn(async () => undefined) }
+        const rejected = { enqueue: vi.fn(async () => { throw error }) }
+        router.bind('orders.#', accepted)
+        router.bind('orders.#', rejected)
+
+        const result = await router.publishAsyncDetailed('orders.created', 1)
+        expect(result.matched).toBe(2)
+        expect(result.deliveries).toEqual([
+            { target: accepted, pattern: 'orders.#', accepted: true },
+            { target: rejected, pattern: 'orders.#', accepted: false, error },
+        ])
+    })
+
     it('emits router:published with match count', () => {
         const router = buildRouter()
         const published = vi.fn()

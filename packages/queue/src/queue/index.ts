@@ -1,6 +1,7 @@
 export {
     buildQueue,
     InvalidQueueOptionError,
+    DuplicateJobIdError,
     QueueFullError,
     type BuildQueueOptions,
     type Lease,
@@ -11,6 +12,8 @@ export {
     type QueueJob,
     type QueueJobPage,
     type ListJobsOptions,
+    type JobCursor,
+    type ReplayJobResult,
 } from './core/queue'
 
 export { getQueueName } from './core/queue-name.util'

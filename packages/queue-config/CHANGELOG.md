@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-05
+
+### Added
+
+- Queue `uniqueJobIds` and worker `heartbeatMs` configuration, validation, and
+  forwarding.
+
 ## [0.9.0] — 2026-08-05
 
 ### Breaking
@@ -218,7 +225,8 @@ try {
 
 Error **messages** are unchanged in spirit; prefer `instanceof ConfigValidationError` + `code` over regex on `message`.
 
-[Unreleased]: https://github.com/eugene-p/qkitt-queue/compare/queue-config-v0.9.0...HEAD
+[Unreleased]: https://github.com/eugene-p/qkitt-queue/compare/queue-config-v0.10.0...HEAD
+[0.10.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.10.0
 [0.9.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.9.0
 [0.8.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.8.0
 [0.7.0]: https://github.com/eugene-p/qkitt-queue/releases/tag/queue-config-v0.7.0

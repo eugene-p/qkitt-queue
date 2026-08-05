@@ -174,6 +174,28 @@ export const createWebRowStore = <T>(
         }
     }
 
+    /** Remove generation rows no longer reachable from the active manifest. */
+    const cleanupOrphanGenerations = (activeGeneration: number): void => {
+        const store = storage()
+        if (store.length === undefined || typeof store.key !== 'function') return
+        const rowPrefix = `${options.key}:g`
+        const keys: string[] = []
+        for (let index = 0; index < store.length; index += 1) {
+            const key = store.key(index)
+            if (key !== null && key.startsWith(rowPrefix)) keys.push(key)
+        }
+        const activePrefix = `${options.key}:g${activeGeneration}:row:`
+        for (const key of keys) {
+            if (!key.startsWith(activePrefix)) {
+                try {
+                    store.removeItem(key)
+                } catch {
+                    // Cleanup is best effort; the manifest remains authoritative.
+                }
+            }
+        }
+    }
+
     const ensureActiveState = (state: StoreState): StoreState => {
         if (!state.legacy) return state
         const migrated: StoreState = {
@@ -261,8 +283,12 @@ export const createWebRowStore = <T>(
     const putOne = (record: RowRecord<T>): void => {
         const state = ensureActiveState(loadState())
         writeRecord(record, state.generation)
-        if (state.ids.includes(record.id)) return
+        if (state.ids.includes(record.id)) {
+            cleanupOrphanGenerations(state.generation)
+            return
+        }
         persistManifest(state.generation, [...state.ids, record.id])
+        cleanupOrphanGenerations(state.generation)
     }
 
     const removeOne = (id: number): void => {
@@ -284,6 +310,7 @@ export const createWebRowStore = <T>(
             // The committed manifest is authoritative; cleanup can retry
             // later without exposing the row after a reload.
         }
+        cleanupOrphanGenerations(state.generation)
     }
 
     return {
@@ -294,6 +321,7 @@ export const createWebRowStore = <T>(
                 const record = readRecord(state.ids[i]!, state)
                 if (record) out.push(record)
             }
+            cleanupOrphanGenerations(state.generation)
             return out
         },
         put: putOne,
@@ -302,6 +330,7 @@ export const createWebRowStore = <T>(
             const state = ensureActiveState(loadState())
             persistManifest(state.generation, [])
             cleanupKeys(state)
+            cleanupOrphanGenerations(state.generation)
         },
         putBatch: (batch) => {
             if (batch.length === 0) return
@@ -318,6 +347,7 @@ export const createWebRowStore = <T>(
             if (ids.length !== state.ids.length) {
                 persistManifest(state.generation, ids)
             }
+            cleanupOrphanGenerations(state.generation)
         },
         removeBatch: (batchIds) => {
             if (batchIds.length === 0) return
@@ -339,6 +369,7 @@ export const createWebRowStore = <T>(
                     // The manifest is already committed; leave an orphan.
                 }
             }
+            cleanupOrphanGenerations(state.generation)
         },
         replaceAll: (batch) => {
             const previous = loadState()
@@ -357,6 +388,7 @@ export const createWebRowStore = <T>(
             // Publish one pointer only after every new row is present.
             persistManifest(generation, nextIds)
             cleanupKeys(previous)
+            cleanupOrphanGenerations(generation)
         },
     }
 }
